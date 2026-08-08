@@ -1,0 +1,102 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghostlink"
+version = "0.3.0"
+# Keep in sync with ghostlink/__init__.py::__version__ — enforced by
+# tests/test_packaging.py (the root ghostlink.py launcher shadows the package
+# for build-time attr imports, so a static version is used here).
+description = "GhostLink — a terminal-only encrypted messenger for Termux and Linux"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "cybervault-Hacky" }]
+keywords = ["terminal", "tui", "termux", "messenger", "privacy", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Chat",
+    "Topic :: Terminals",
+]
+dependencies = [
+    "rich>=13.7,<16",
+    "simple-term-menu>=1.6.6,<2.0",
+    "cryptography>=42,<47",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<10",
+    "ruff>=0.8",
+    "mypy>=1.11",
+]
+
+[project.urls]
+Repository = "https://github.com/cybervault-Hacky/Ghostlink"
+Issues = "https://github.com/cybervault-Hacky/Ghostlink/issues"
+
+[project.scripts]
+ghostlink = "ghostlink.cli.entrypoint:main"
+
+[tool.setuptools.packages.find]
+include = ["ghostlink*"]
+
+[tool.setuptools.package-data]
+"ghostlink.assets" = ["*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["."]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "W",   # pycodestyle warnings
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    # PlatformKind deliberately stays `str, Enum` so the packaged code also
+    # runs under the 3.11 interpreter used by the CI lint job on Termux.
+    "UP042",
+    # PEP 695 type-parameter syntax is a SyntaxError on that same 3.11
+    # interpreter; generic helpers keep TypeVar declarations.
+    "UP047",
+]
+# Intentional terminal typography, not typos.
+allowed-confusables = ["×", "❯", "…", "·", "—", "─"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ghostlink"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+packages = ["ghostlink"]
+exclude = "(tests|scripts)/"
+
+[[tool.mypy.overrides]]
+module = "simple_term_menu"
+ignore_missing_imports = true

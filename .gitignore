@@ -1,0 +1,24 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Runtime artifacts (never commit user state or logs)
+*.log
+.ghostlink/
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store

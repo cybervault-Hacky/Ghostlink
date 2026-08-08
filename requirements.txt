@@ -1,0 +1,6 @@
+# GhostLink — runtime dependencies (Python 3.12+)
+# Install with: pip install -r requirements.txt
+
+rich>=13.7,<16            # terminal rendering engine (pure Python, Termux-safe)
+simple-term-menu>=1.6.6   # arrow-key menus; degrades to numbered prompts if absent
+cryptography>=42,<47      # X25519 + ChaCha20-Poly1305 for end-to-end encryption

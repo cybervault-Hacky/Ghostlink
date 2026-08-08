@@ -1,0 +1,1 @@
+"""GhostLink test suite."""

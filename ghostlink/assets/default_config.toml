@@ -50,6 +50,12 @@ default_lifetime_minutes = 60
 # whether invites are single-use by default.
 default_lifetime_minutes = 15
 one_time = true
+# Phase 5 join invites (gl://join/…): default lifetime in seconds (the relay
+# authority enforces it), the maximum `--expires` accepts, and how many
+# hours expired/revoked invite records are kept before being purged.
+default_expiry_seconds = 900
+max_expiry_seconds = 86400
+retention_hours = 24
 
 [chat]
 # Pseudonym shown to your chat peer. Empty picks a per-run default.
@@ -66,3 +72,22 @@ timestamp_format = "24h"
 notification_style = "banner"
 # Wrap long message lines to fit narrow terminal windows.
 message_wrapping = true
+
+[transfer]
+# Where received files land. Empty = "~/Download/GhostLink". The peer can
+# never choose a destination; filenames are always sanitized.
+download_dir = ""
+# Largest file a peer may offer, in megabytes (1..4096).
+max_file_size_mb = 100
+# Simultaneous active transfers (1..10); further offers queue.
+max_concurrent_transfers = 3
+# Chunk size in kilobytes (1..4). Every chunk travels sealed in one frame.
+chunk_size_kb = 4
+# Seconds to wait for a chunk acknowledgement before retrying (0.5..60).
+ack_timeout_seconds = 5.0
+# Retries per chunk before the transfer fails (1..20).
+retry_limit = 5
+# Abandoned transfers expire after this many minutes (1..1440).
+transfer_expiry_minutes = 60
+# Total encrypted temp storage for in-flight transfers, in MB (16..65536).
+temp_storage_limit_mb = 1024

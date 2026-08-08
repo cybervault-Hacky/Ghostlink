@@ -68,7 +68,12 @@ def parse_history_mode(value: str) -> HistoryMode:
 
 @dataclass(frozen=True, slots=True)
 class HistoryEntry:
-    """One message snapshot as stored in history."""
+    """One retained snapshot: a message, or a file-transfer metadata record.
+
+    Transfer entries (``kind == "transfer"``, Phase 4) reuse the same fields:
+    ``message_id`` holds the transfer id, ``author`` the peer, ``text`` a
+    metadata-only summary (filename and size — never contents, never keys).
+    """
 
     message_id: str
     conversation_id: str
@@ -77,6 +82,7 @@ class HistoryEntry:
     text: str
     sent_at: float
     status: str
+    kind: str = "message"  # "message" | "transfer"
 
     @classmethod
     def from_message(cls, message: Message) -> HistoryEntry:
@@ -99,6 +105,7 @@ class HistoryEntry:
             "text": self.text,
             "ts": self.sent_at,
             "status": self.status,
+            "kind": self.kind,
         }
 
     @classmethod
@@ -112,6 +119,7 @@ class HistoryEntry:
                 text=str(data["text"]),
                 sent_at=float(data["ts"]),  # type: ignore[arg-type]
                 status=str(data["status"]),
+                kind=str(data.get("kind", "message")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise HistoryError(
@@ -145,7 +153,39 @@ class BaseHistory:
         return False
 
     def record(self, message: Message) -> None:
-        self._entries.append(HistoryEntry.from_message(message))
+        self._append(HistoryEntry.from_message(message))
+
+    def record_transfer(
+        self,
+        *,
+        transfer_id: str,
+        conversation_id: str,
+        direction: str,
+        peer: str,
+        summary: str,
+        status: str,
+    ) -> None:
+        """Retain one completed transfer's *metadata* (Phase 4).
+
+        ``summary`` carries the sanitized filename and size only — file
+        contents and key material never enter history.
+        """
+
+        self._append(
+            HistoryEntry(
+                message_id=transfer_id,
+                conversation_id=conversation_id,
+                direction=direction,
+                author=peer,
+                text=summary,
+                sent_at=time.time(),
+                status=status,
+                kind="transfer",
+            )
+        )
+
+    def _append(self, entry: HistoryEntry) -> None:
+        self._entries.append(entry)
         if len(self._entries) > MAX_HISTORY_ENTRIES:
             del self._entries[: len(self._entries) - MAX_HISTORY_ENTRIES]
 
@@ -165,8 +205,14 @@ class BaseHistory:
             if day != current_day:
                 current_day = day
                 lines.append(f"── {day} ──")
-            lines.append(f"{format_timestamp(entry.sent_at, timestamp_format)} {entry.author}:")
-            lines.append(f"  {entry.text}")
+            stamp = format_timestamp(entry.sent_at, timestamp_format)
+            if entry.kind == "transfer":
+                verb = "sent to" if entry.direction == "outgoing" else "received from"
+                lines.append(f"{stamp} 📎 {entry.text}")
+                lines.append(f"  {verb} {entry.author} — {entry.status}")
+            else:
+                lines.append(f"{stamp} {entry.author}:")
+                lines.append(f"  {entry.text}")
         return "\n".join(lines)
 
     def write_export(self, path: Path, *, timestamp_format: str = "24h") -> Path:
@@ -198,6 +244,18 @@ class NullHistory(BaseHistory):
 
     def record(self, message: Message) -> None:
         del message  # deliberately not retained
+
+    def record_transfer(
+        self,
+        *,
+        transfer_id: str,
+        conversation_id: str,
+        direction: str,
+        peer: str,
+        summary: str,
+        status: str,
+    ) -> None:
+        del transfer_id, conversation_id, direction, peer, summary, status  # not retained
 
 
 class SessionHistory(BaseHistory):
@@ -300,6 +358,26 @@ class EncryptedHistory(BaseHistory):
 
     def record(self, message: Message) -> None:
         super().record(message)
+        self._flush()
+
+    def record_transfer(
+        self,
+        *,
+        transfer_id: str,
+        conversation_id: str,
+        direction: str,
+        peer: str,
+        summary: str,
+        status: str,
+    ) -> None:
+        super().record_transfer(
+            transfer_id=transfer_id,
+            conversation_id=conversation_id,
+            direction=direction,
+            peer=peer,
+            summary=summary,
+            status=status,
+        )
         self._flush()
 
     def _flush(self) -> None:

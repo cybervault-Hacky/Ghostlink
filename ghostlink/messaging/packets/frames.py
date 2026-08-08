@@ -47,6 +47,11 @@ MAX_CIPHERTEXT_B64_LENGTH: int = 4096
 MAX_ERROR_MESSAGE_LENGTH: int = 256
 MAX_CHANNEL_LENGTH: int = 64
 MAX_PEER_NAME_LENGTH: int = 24
+MAX_TRANSFER_ID_LENGTH: int = 24
+MAX_OFFER_B64_LENGTH: int = 1200
+MAX_CHUNK_B64_LENGTH: int = 5600
+MAX_BITMAP_B64_LENGTH: int = 5600
+MAX_CANCEL_REASON_LENGTH: int = 64
 
 
 class FrameType(str, Enum):
@@ -60,6 +65,32 @@ class FrameType(str, Enum):
     TYPING_START = "TYPING_START"
     TYPING_STOP = "TYPING_STOP"
     ERROR = "ERROR"
+    FILE_OFFER = "FILE_OFFER"
+    FILE_ACCEPT = "FILE_ACCEPT"
+    FILE_REJECT = "FILE_REJECT"
+    FILE_CHUNK = "FILE_CHUNK"
+    FILE_ACK = "FILE_ACK"
+    FILE_PAUSE = "FILE_PAUSE"
+    FILE_RESUME = "FILE_RESUME"
+    FILE_CANCEL = "FILE_CANCEL"
+    FILE_COMPLETE = "FILE_COMPLETE"
+    FILE_ERROR = "FILE_ERROR"
+
+
+FILE_FRAME_TYPES: frozenset[FrameType] = frozenset(
+    {
+        FrameType.FILE_OFFER,
+        FrameType.FILE_ACCEPT,
+        FrameType.FILE_REJECT,
+        FrameType.FILE_CHUNK,
+        FrameType.FILE_ACK,
+        FrameType.FILE_PAUSE,
+        FrameType.FILE_RESUME,
+        FrameType.FILE_CANCEL,
+        FrameType.FILE_COMPLETE,
+        FrameType.FILE_ERROR,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +216,79 @@ def _require_optional_name(data: dict[str, Any]) -> None:
         _fail("'name' must be printable text")
 
 
+def _require_optional_idpub(data: dict[str, Any]) -> None:
+    """Handshake identity public keys ('idpub') are optional 32-byte hex."""
+
+    value = data.get("idpub")
+    if value is None:
+        return
+    _require_hex(data, "idpub", length_hex=MAX_KEY_HEX_LENGTH)
+
+
+def _require_transfer_id(data: dict[str, Any]) -> None:
+    value = data.get("id")
+    if not (isinstance(value, str) and 1 <= len(value) <= MAX_TRANSFER_ID_LENGTH):
+        _fail(f"transfer 'id' must be a string of 1..{MAX_TRANSFER_ID_LENGTH} characters")
+
+
+def _require_optional_reason(data: dict[str, Any]) -> None:
+    value = data.get("reason")
+    if value is not None and not (
+        isinstance(value, str) and 0 < len(value) <= MAX_CANCEL_REASON_LENGTH
+    ):
+        _fail(f"'reason' must be a string of 1..{MAX_CANCEL_REASON_LENGTH} characters")
+
+
+def _require_optional_bitmap(data: dict[str, Any]) -> None:
+    value = data.get("bm")
+    if value is None:
+        return
+    if not (isinstance(value, str) and len(value) <= MAX_BITMAP_B64_LENGTH):
+        _fail(f"'bm' must be at most {MAX_BITMAP_B64_LENGTH} characters")
+    try:
+        base64.b64decode(value.encode("ascii"), validate=True)
+    except (binascii.Error, UnicodeEncodeError):
+        _fail("'bm' must be base64")
+
+
+def _require_transfer(data: dict[str, Any], frame_type: FrameType) -> None:
+    """Schema checks for file-transfer frames (Phase 4).
+
+    Only presence, types, lengths, and alphabets live here; semantic rules
+    (size limits, manifest cross-checks, chunk/decryption verification) are
+    enforced by the transfer layer before any processing."""
+
+    _require_transfer_id(data)
+    if frame_type is FrameType.FILE_OFFER:
+        _require_b64(data, "ct", max_length=MAX_OFFER_B64_LENGTH)
+    elif frame_type is FrameType.FILE_ACCEPT:
+        _require_optional_bitmap(data)
+    elif frame_type is FrameType.FILE_REJECT:
+        _require_optional_reason(data)
+    elif frame_type is FrameType.FILE_CHUNK:
+        _require_int(data, "n", minimum=1)
+        _require_b64(data, "ct", max_length=MAX_CHUNK_B64_LENGTH)
+    elif frame_type is FrameType.FILE_ACK:
+        _require_int(data, "n", minimum=1)
+    elif frame_type in (FrameType.FILE_PAUSE, FrameType.FILE_RESUME):
+        _require(set(data) == {"id"}, f"'data' for {frame_type.value} must hold 'id' only")
+    elif frame_type is FrameType.FILE_CANCEL:
+        _require_optional_reason(data)
+        _require(
+            set(data) <= {"id", "reason"},
+            f"'data' for {frame_type.value} must hold 'id'/'reason' only",
+        )
+    elif frame_type is FrameType.FILE_COMPLETE:
+        _require_hex(data, "sha256", length_hex=64)
+    elif frame_type is FrameType.FILE_ERROR:
+        _require_str(data, "code", max_length=64)
+        _require_str(data, "message", max_length=MAX_ERROR_MESSAGE_LENGTH)
+        _require(
+            set(data) <= {"id", "code", "message"},
+            f"'data' for {frame_type.value} must hold 'id'/'code'/'message' only",
+        )
+
+
 def validate_frame(frame_type: FrameType, sequence: int, data: dict[str, Any]) -> None:
     """Validate ``data`` against the schema of ``frame_type``."""
 
@@ -198,11 +302,13 @@ def validate_frame(frame_type: FrameType, sequence: int, data: dict[str, Any]) -
         _require_hex(data, "pub", length_hex=MAX_KEY_HEX_LENGTH)
         _require_hex(data, "nonce", length_hex=MAX_HELLO_NONCE_HEX)
         _require_optional_name(data)
+        _require_optional_idpub(data)
     elif frame_type is FrameType.KEX_REPLY:
         _require_hex(data, "pub", length_hex=MAX_KEY_HEX_LENGTH)
         _require_hex(data, "nonce", length_hex=MAX_HELLO_NONCE_HEX)
         _require_b64(data, "proof", max_length=MAX_PROOF_B64_LENGTH)
         _require_optional_name(data)
+        _require_optional_idpub(data)
     elif frame_type is FrameType.MESSAGE:
         _require_str(data, "id", max_length=MAX_MESSAGE_ID_LENGTH)
         _require_b64(data, "ct", max_length=MAX_CIPHERTEXT_B64_LENGTH)
@@ -216,6 +322,8 @@ def validate_frame(frame_type: FrameType, sequence: int, data: dict[str, Any]) -
         _require_str(data, "message", max_length=MAX_ERROR_MESSAGE_LENGTH)
     elif frame_type in (FrameType.TYPING_START, FrameType.TYPING_STOP):
         _require(data == {}, f"'data' for {frame_type.value} must be empty")
+    elif frame_type in FILE_FRAME_TYPES:
+        _require_transfer(data, frame_type)
 
 
 # ------------------------------------------------------------------- codec

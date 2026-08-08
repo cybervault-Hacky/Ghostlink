@@ -3,17 +3,21 @@
 A two-message authenticated key exchange inside the already-encrypted
 anonymous channel:
 
-    host   → KEX_HELLO  (ephemeral public key, nonce)
-    guest  → KEX_REPLY  (ephemeral public key, nonce, AEAD proof)
+    host   → KEX_HELLO  (ephemeral public key, nonce, [identity key])
+    guest  → KEX_REPLY  (ephemeral public key, nonce, AEAD proof, [identity key])
 
 Both sides derive the same session key from X25519 ECDH + HKDF bound to the
-full transcript (channel, both public keys, both nonces). The responder
-proves possession of the matching key by sealing a confirmation of the
-transcript hash under it — a tampered or mismatched exchange fails
-verification loudly (:class:`HandshakeFailedError`), never silently.
+full transcript (channel, both public keys, both nonces, and each side's
+identity public key — Phase 5 — when presented). The responder proves
+possession of the matching key by sealing a confirmation of the transcript
+hash under it — a tampered or mismatched exchange fails verification loudly
+(:class:`HandshakeFailedError`), never silently.
 
 The responder's proof gives key-confirmation; a separate out-of-band
 fingerprint comparison (:func:`transcript_fingerprint`) is the MITM check.
+Because presented identity keys join the transcript, two Phase 5 peers can
+also compare GLFP identity fingerprints out-of-band — a relay that tampers
+with a presented identity key breaks key-confirmation.
 """
 
 from __future__ import annotations
@@ -49,6 +53,7 @@ class SecureSession:
     conversation_id: str
     fingerprint: str
     initiator: bool
+    identity_bound: bool = False
 
 
 def _build_transcript(
@@ -57,8 +62,18 @@ def _build_transcript(
     hello_nonce: bytes,
     reply_pub: bytes,
     reply_nonce: bytes,
+    hello_idpub: bytes | None = None,
+    reply_idpub: bytes | None = None,
 ) -> bytes:
-    return (
+    """Transcript committed into the AEAD proof.
+
+    Each side's identity public key (Phase 5) joins the transcript exactly
+    when its payload carried one, so a Phase 5 client still interoperates
+    with a peer that presents no identity — while a relay tampering with a
+    presented key flips the transcript and breaks the proof loudly.
+    """
+
+    transcript = (
         _TRANSCRIPT_PREFIX
         + channel_id.encode("utf-8")
         + b"|"
@@ -67,6 +82,11 @@ def _build_transcript(
         + reply_pub
         + reply_nonce
     )
+    if hello_idpub is not None:
+        transcript += b"|" + hello_idpub
+    if reply_idpub is not None:
+        transcript += b"|" + reply_idpub
+    return transcript
 
 
 def _decode_hex(payload: dict[str, Any], field: str) -> bytes:
@@ -95,12 +115,34 @@ def _decode_hex(payload: dict[str, Any], field: str) -> bytes:
         ) from exc
 
 
+def _optional_idpub(payload: dict[str, Any]) -> bytes | None:
+    """Decode the optional identity public key field ('idpub')."""
+
+    raw = payload.get("idpub")
+    if raw is None:
+        return None
+    decoded = _decode_hex(payload, "idpub")
+    if len(decoded) != 32:
+        raise HandshakeFailedError(
+            "Handshake identity key must be 32 bytes.",
+            hint="The peer does not speak the GhostLink handoff protocol.",
+        )
+    return decoded
+
+
 class HandshakeInitiator:
     """Host side: sends KEX_HELLO, verifies the reply's proof."""
 
-    def __init__(self, channel_id: str, *, display_name: str = "") -> None:
+    def __init__(
+        self,
+        channel_id: str,
+        *,
+        display_name: str = "",
+        identity_public_key_hex: str | None = None,
+    ) -> None:
         self._channel_id = channel_id
         self._display_name = display_name.strip()
+        self._idpub_hex = identity_public_key_hex
         self._private_key: X25519PrivateKey | None
         self._private_key, self._public_raw = generate_ephemeral_keypair()
         self._nonce = generate_handshake_nonce()
@@ -110,6 +152,8 @@ class HandshakeInitiator:
         payload = {"pub": self._public_raw.hex(), "nonce": self._nonce.hex()}
         if self._display_name:
             payload["name"] = self._display_name
+        if self._idpub_hex:
+            payload["idpub"] = self._idpub_hex
         return payload
 
     def complete(self, reply_payload: dict[str, Any]) -> SecureSession:
@@ -122,8 +166,16 @@ class HandshakeInitiator:
         reply_pub = _decode_hex(reply_payload, "pub")
         reply_nonce = _decode_hex(reply_payload, "nonce")
         proof = _decode_hex(reply_payload, "proof")
+        reply_idpub = _optional_idpub(reply_payload)
+        hello_idpub = bytes.fromhex(self._idpub_hex) if self._idpub_hex else None
         transcript = _build_transcript(
-            self._channel_id, self._public_raw, self._nonce, reply_pub, reply_nonce
+            self._channel_id,
+            self._public_raw,
+            self._nonce,
+            reply_pub,
+            reply_nonce,
+            hello_idpub=hello_idpub,
+            reply_idpub=reply_idpub,
         )
         assert self._private_key is not None  # single-use guard above
         try:
@@ -154,15 +206,23 @@ class HandshakeInitiator:
             conversation_id="conv_" + hashlib.sha256(transcript).hexdigest()[:12],
             fingerprint=transcript_fingerprint(transcript),
             initiator=True,
+            identity_bound=hello_idpub is not None and reply_idpub is not None,
         )
 
 
 class HandshakeResponder:
     """Guest side: answers KEX_HELLO with KEX_REPLY + AEAD proof."""
 
-    def __init__(self, channel_id: str, *, display_name: str = "") -> None:
+    def __init__(
+        self,
+        channel_id: str,
+        *,
+        display_name: str = "",
+        identity_public_key_hex: str | None = None,
+    ) -> None:
         self._channel_id = channel_id
         self._display_name = display_name.strip()
+        self._idpub_hex = identity_public_key_hex
         self._private_key: X25519PrivateKey | None
         self._private_key, self._public_raw = generate_ephemeral_keypair()
         self._nonce = generate_handshake_nonce()
@@ -177,8 +237,16 @@ class HandshakeResponder:
         self._used = True
         hello_pub = _decode_hex(hello_payload, "pub")
         hello_nonce = _decode_hex(hello_payload, "nonce")
+        hello_idpub = _optional_idpub(hello_payload)
+        reply_idpub = bytes.fromhex(self._idpub_hex) if self._idpub_hex else None
         transcript = _build_transcript(
-            self._channel_id, hello_pub, hello_nonce, self._public_raw, self._nonce
+            self._channel_id,
+            hello_pub,
+            hello_nonce,
+            self._public_raw,
+            self._nonce,
+            hello_idpub=hello_idpub,
+            reply_idpub=reply_idpub,
         )
         assert self._private_key is not None  # single-use guard above
         try:
@@ -200,6 +268,7 @@ class HandshakeResponder:
             conversation_id="conv_" + hashlib.sha256(transcript).hexdigest()[:12],
             fingerprint=transcript_fingerprint(transcript),
             initiator=False,
+            identity_bound=hello_idpub is not None and reply_idpub is not None,
         )
         payload = {
             "pub": self._public_raw.hex(),
@@ -208,4 +277,6 @@ class HandshakeResponder:
         }
         if self._display_name:
             payload["name"] = self._display_name
+        if self._idpub_hex:
+            payload["idpub"] = self._idpub_hex
         return payload, session

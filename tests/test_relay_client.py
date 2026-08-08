@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from ghostlink.constants.net import PROTOCOL_VERSION
 from ghostlink.exceptions.transport import TransportError
 from ghostlink.transport.connection import ConnectionState
 from ghostlink.transport.relay.client import (
@@ -263,7 +264,7 @@ class TestProbe:
                 assert report.secure is False
                 assert report.session_id.startswith("sess_")
                 assert report.server_name == "relay-under-test"
-                assert report.protocol_version == 2
+                assert report.protocol_version == PROTOCOL_VERSION
                 assert len(report.rtt_samples_ms) == 3
                 assert all(sample >= 0.0 for sample in report.rtt_samples_ms)
                 assert report.heartbeats_acked >= 1

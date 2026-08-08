@@ -15,10 +15,18 @@ import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from ghostlink.constants.net import PROTOCOL_VERSION
 from ghostlink.core.logging import get_logger
+from ghostlink.exceptions.invites import (
+    InviteAlreadyUsedError,
+    InviteError,
+    InviteExpiredError,
+    InvitePermissionError,
+    InviteRevokedError,
+    InviteUnknownError,
+)
 from ghostlink.exceptions.transport import (
     ConnectionTimeoutError,
     HandshakeError,
@@ -26,6 +34,7 @@ from ghostlink.exceptions.transport import (
     RelayError,
     TransportError,
 )
+from ghostlink.invites.authority import InviteGrant
 from ghostlink.models.room import is_valid_room_id
 from ghostlink.transport.connection import (
     ConnectionManager,
@@ -46,8 +55,12 @@ from ghostlink.transport.relay.protocol import (
     forward_packet,
     heartbeat_packet,
     hello_packet,
+    invite_create_packet,
+    invite_query_packet,
+    invite_revoke_packet,
     ping_packet,
     pong_packet,
+    redeem_packet,
 )
 from ghostlink.transport.session import Session
 from ghostlink.transport.transport import Transport, TransportStats
@@ -57,6 +70,18 @@ PING_TIMEOUT_SECONDS = 5.0
 PROBE_PING_INTERVAL_SECONDS = 0.5
 PROBE_HEARTBEAT_WINDOW_SECONDS = 3.0
 MAX_ERROR_PACKETS_KEPT = 20
+
+
+@dataclass(frozen=True, slots=True)
+class RelayInviteStatus:
+    """Safe invite metadata answered by the relay authority (v3)."""
+
+    invite_id: str
+    state: str
+    uses: int
+    max_uses: int
+    expires_in_seconds: float
+    room_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +133,7 @@ class RelayClient:
         self._session: Session | None = None
         self._pending_pings: dict[str, asyncio.Future[float]] = {}
         self._pending_attaches: dict[str, asyncio.Future[Packet]] = {}
+        self._pending_invites: dict[str, asyncio.Future[Packet]] = {}
         self._attachments: dict[str, str] = {}  # channel -> role
         self._on_forward: Callable[[str, str], None] | None = None
         self._on_peer: Callable[[str, str], None] | None = None
@@ -196,6 +222,9 @@ class RelayClient:
         for future in self._pending_pings.values():
             future.cancel()
         self._pending_pings.clear()
+        for pending in self._pending_invites.values():
+            pending.cancel()
+        self._pending_invites.clear()
         previous_sid = self._session.session_id if self._session else "none"
         if self._manager.is_usable:
             try:
@@ -355,6 +384,114 @@ class RelayClient:
 
         await self.send_packet(forward_packet(channel, body))
 
+    # ---------------------------------------------------------- invites (v3)
+
+    async def _invite_roundtrip(self, invite_id: str, packet: Packet, timeout: float) -> Packet:
+        """Send one invite packet and await its correlated response."""
+
+        if not self._manager.is_usable:
+            raise TransportError(
+                f"Cannot send {packet.type.value}: connection is {self._manager.state.value}.",
+                hint="Connect to the relay before issuing invite operations.",
+            )
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Packet] = loop.create_future()
+        self._pending_invites[invite_id] = future
+        try:
+            await self.send_packet(packet)
+            return await asyncio.wait_for(future, timeout=timeout)
+        except TimeoutError as exc:
+            raise ConnectionTimeoutError(
+                f"Relay did not answer the {packet.type.value} request in time.",
+                hint="The relay may be overloaded; check relay-status and retry.",
+            ) from exc
+        finally:
+            self._pending_invites.pop(invite_id, None)
+
+    async def create_invite(
+        self,
+        token: str,
+        *,
+        room_id: str,
+        ttl_seconds: float,
+        max_redemptions: int,
+        timeout_seconds: float = 10.0,
+    ) -> InviteGrant:
+        """Register an invite with the relay authority; returns the grant."""
+
+        from ghostlink.invites.tokens import invite_id_for_token, normalize_invite_token
+
+        normalized = normalize_invite_token(token)
+        invite_id = invite_id_for_token(normalized)
+        packet = await self._invite_roundtrip(
+            invite_id,
+            invite_create_packet(normalized, room_id, ttl_seconds, max_redemptions),
+            timeout_seconds,
+        )
+        if packet.type is not PacketType.INVITE_GRANTED:
+            raise InviteError(
+                f"Unexpected relay answer to INVITE_CREATE: {packet.type.value}.",
+                hint="The relay may run an older protocol — upgrade it.",
+            )
+        expires_at = datetime.fromtimestamp(float(packet.payload["expires_at"]), tz=UTC)
+        self._logger.info("invite registered with relay — %s", invite_id)
+        return InviteGrant(
+            invite_id=invite_id,
+            expires_at=expires_at,
+            max_redemptions=max_redemptions,
+        )
+
+    async def query_invite(self, token: str, *, timeout_seconds: float = 10.0) -> RelayInviteStatus:
+        """Safe invite metadata from the authority (never the token back)."""
+
+        from ghostlink.invites.tokens import invite_id_for_token, normalize_invite_token
+
+        normalized = normalize_invite_token(token)
+        invite_id = invite_id_for_token(normalized)
+        packet = await self._invite_roundtrip(
+            invite_id, invite_query_packet(normalized), timeout_seconds
+        )
+        payload = packet.payload
+        room = payload.get("room")
+        return RelayInviteStatus(
+            invite_id=str(payload["invite"]),
+            state=str(payload["state"]),
+            uses=int(str(payload["uses"])),
+            max_uses=int(str(payload["max_uses"])),
+            expires_in_seconds=float(payload["expires_in"]),
+            room_id=str(room) if isinstance(room, str) else None,
+        )
+
+    async def revoke_invite(self, token: str, *, timeout_seconds: float = 10.0) -> str:
+        """Revoke one of this session's invites; returns the invite id."""
+
+        from ghostlink.invites.tokens import invite_id_for_token, normalize_invite_token
+
+        normalized = normalize_invite_token(token)
+        invite_id = invite_id_for_token(normalized)
+        packet = await self._invite_roundtrip(
+            invite_id, invite_revoke_packet(normalized), timeout_seconds
+        )
+        self._logger.info("invite revoked at relay — %s", invite_id)
+        return str(packet.payload["invite"])
+
+    async def redeem_invite(
+        self, token: str, *, timeout_seconds: float = 10.0
+    ) -> tuple[str, datetime]:
+        """Consume an invite atomically; returns (room to join, expiry)."""
+
+        from ghostlink.invites.tokens import invite_id_for_token, normalize_invite_token
+
+        normalized = normalize_invite_token(token)
+        invite_id = invite_id_for_token(normalized)
+        packet = await self._invite_roundtrip(invite_id, redeem_packet(normalized), timeout_seconds)
+        room_id = str(packet.payload["room"])
+        expires_at = datetime.fromtimestamp(float(packet.payload["expires_at"]), tz=UTC)
+        # The relay attached us as guest as part of the REDEEMED exchange.
+        self._attachments[room_id] = "guest"
+        self._logger.info("invite %s redeemed — joined %s as guest", invite_id, room_id)
+        return room_id, expires_at
+
     # ------------------------------------------------------------------- I/O
 
     def _handle_bytes(self, data: bytes) -> None:
@@ -382,6 +519,12 @@ class RelayClient:
             self._route_forward(packet)
         elif packet.type is PacketType.PEER:
             self._route_peer(packet)
+        elif packet.type in (
+            PacketType.INVITE_GRANTED,
+            PacketType.INVITE_STATE,
+            PacketType.REDEEMED,
+        ):
+            self._resolve_invite(packet)
         elif packet.type is PacketType.ERROR:
             self._error_packets.append(packet)
             del self._error_packets[:-MAX_ERROR_PACKETS_KEPT]
@@ -391,6 +534,7 @@ class RelayClient:
                 packet.payload.get("message"),
             )
             self._reject_pending_attach(packet)
+            self._reject_pending_invite(packet)
         elif packet.type is PacketType.DISCONNECT:
             self._logger.info("relay requested disconnect — %s", packet.payload.get("reason", ""))
 
@@ -401,6 +545,45 @@ class RelayClient:
             future.set_result(packet)
         else:
             self._logger.debug("ATTACHED for %s with no pending attach", channel)
+
+    # ------------------------------------------------------------ invites (v3)
+
+    _INVITE_ERROR_MAP: ClassVar[dict[str, type[InviteError]]] = {
+        "invite/expired": InviteExpiredError,
+        "invite/already-used": InviteAlreadyUsedError,
+        "invite/revoked": InviteRevokedError,
+        "invite/unknown": InviteUnknownError,
+        "invite/not-creator": InvitePermissionError,
+    }
+
+    def _resolve_invite(self, packet: Packet) -> None:
+        """Match an INVITE_GRANTED / INVITE_STATE / REDEEMED to its waiter."""
+
+        invite = packet.payload.get("invite")
+        if not isinstance(invite, str):
+            self._logger.debug("invite response without an invite id — dropped")
+            return
+        future = self._pending_invites.get(invite)
+        if future is None or future.done():
+            self._logger.debug("unsolicited %s for %s — dropped", packet.type.value, invite)
+            return
+        future.set_result(packet)
+
+    def _reject_pending_invite(self, packet: Packet) -> None:
+        """Fail a pending invite operation when the relay answers ERROR."""
+
+        invite = packet.payload.get("invite")
+        if not isinstance(invite, str):
+            return
+        future = self._pending_invites.pop(invite, None)
+        if future is None or future.done():
+            return
+        code = str(packet.payload.get("code", "invite/error"))
+        message = str(packet.payload.get("message", "Invite operation refused."))
+        error_type = self._INVITE_ERROR_MAP.get(code, InviteError)
+        hint = "Ask the host for a fresh invite."
+        future.set_exception(error_type(message, hint=hint))
+        self._logger.info("invite %s refused — %s", invite, code)
 
     def _reject_pending_attach(self, packet: Packet) -> None:
         """Fail a pending attach when the relay answers with a channel ERROR."""

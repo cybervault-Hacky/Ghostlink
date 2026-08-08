@@ -30,7 +30,15 @@ ALLOWED_SCHEMA: dict[str, frozenset[str]] = {
         }
     ),
     "rooms": frozenset({"default_lifetime_minutes"}),
-    "invites": frozenset({"default_lifetime_minutes", "one_time"}),
+    "invites": frozenset(
+        {
+            "default_lifetime_minutes",
+            "one_time",
+            "default_expiry_seconds",
+            "max_expiry_seconds",
+            "retention_hours",
+        }
+    ),
     "chat": frozenset(
         {
             "display_name",
@@ -40,6 +48,18 @@ ALLOWED_SCHEMA: dict[str, frozenset[str]] = {
             "timestamp_format",
             "notification_style",
             "message_wrapping",
+        }
+    ),
+    "transfer": frozenset(
+        {
+            "download_dir",
+            "max_file_size_mb",
+            "max_concurrent_transfers",
+            "chunk_size_kb",
+            "ack_timeout_seconds",
+            "retry_limit",
+            "transfer_expiry_minutes",
+            "temp_storage_limit_mb",
         }
     ),
 }

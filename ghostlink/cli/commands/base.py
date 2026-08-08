@@ -8,6 +8,10 @@ from ghostlink.cli.arguments import CLIOptions
 from ghostlink.config.manager import ConfigOverrides, ConfigurationManager
 from ghostlink.core.environment import EnvironmentDetector
 from ghostlink.core.logging import get_logger, setup_logging
+from ghostlink.identity.lifecycle import IdentityManager
+from ghostlink.identity.storage import IdentityStore
+from ghostlink.invites.lifecycle import SecureInviteManager
+from ghostlink.invites.registry import LocalInviteRegistry
 from ghostlink.models.environment import ColorSupport, EnvironmentInfo
 from ghostlink.models.settings import AppSettings
 from ghostlink.services.rooms import RoomService
@@ -26,6 +30,8 @@ class CommandRuntime:
     config: ConfigurationManager
     environment: EnvironmentInfo
     rooms: RoomService
+    identities: IdentityManager
+    invites: SecureInviteManager
 
 
 def build_runtime(options: CLIOptions) -> CommandRuntime:
@@ -47,7 +53,10 @@ def build_runtime(options: CLIOptions) -> CommandRuntime:
         theme,
         no_color=options.no_color or environment.color_support is ColorSupport.NONE,
     )
-    rooms = RoomService(StorageManager(config.state_dir), settings)
+    storage = StorageManager(config.state_dir)
+    rooms = RoomService(storage, settings)
+    identities = IdentityManager(IdentityStore(storage))
+    invites = SecureInviteManager(LocalInviteRegistry(storage))
     get_logger("cli.commands").debug("command runtime built")
     return CommandRuntime(
         console=console,
@@ -55,6 +64,8 @@ def build_runtime(options: CLIOptions) -> CommandRuntime:
         config=config,
         environment=environment,
         rooms=rooms,
+        identities=identities,
+        invites=invites,
     )
 
 

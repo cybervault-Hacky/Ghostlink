@@ -69,6 +69,19 @@ class TestNullHistory:
         assert history.enabled is False
         assert history.export_text() == ""
 
+    def test_transfer_metadata_is_also_discarded(self) -> None:
+        history = NullHistory()
+        history.record_transfer(
+            transfer_id="tf_ab12cd34",
+            conversation_id="conv_1",
+            direction="incoming",
+            peer="Ravi",
+            summary="report.pdf (18.4 MB)",
+            status="completed",
+        )
+        assert len(history) == 0
+        assert history.export_text() == ""
+
 
 class TestSessionHistory:
     def test_records_and_wipes(self) -> None:
@@ -86,6 +99,38 @@ class TestSessionHistory:
         assert "hello export" in text
         assert "Nova:" in text
         assert "[" in text  # timestamps
+
+    def test_transfer_entries_hold_metadata_only(self) -> None:
+        history = SessionHistory()
+        history.record_transfer(
+            transfer_id="tf_ab12cd34",
+            conversation_id="conv_1",
+            direction="incoming",
+            peer="Ravi",
+            summary="report.pdf (18.4 MB)",
+            status="completed",
+        )
+        entry = history.entries()[0]
+        assert entry.kind == "transfer"
+        assert entry.message_id == "tf_ab12cd34"
+        text = history.export_text()
+        assert "report.pdf (18.4 MB)" in text
+        assert "received from Ravi — completed" in text
+
+    def test_transfer_entries_survive_dict_round_trip(self) -> None:
+        history = SessionHistory()
+        history.record_transfer(
+            transfer_id="tf_0000000a",
+            conversation_id="conv_9",
+            direction="outgoing",
+            peer="Nova",
+            summary="photo.jpg (2.0 MB)",
+            status="completed",
+        )
+        clone = HistoryEntry.from_dict(history.entries()[0].to_dict())
+        assert clone.kind == "transfer"
+        assert clone.text == "photo.jpg (2.0 MB)"
+        assert clone.direction == "outgoing"
 
     def test_write_export(self, tmp_path: Path) -> None:
         history = SessionHistory()
@@ -112,6 +157,30 @@ class TestEncryptedHistory:
         entries = second.entries()
         assert [entry.text for entry in entries] == ["persist me"]
         second.close()
+
+    def test_transfer_metadata_persists_encrypted(self, tmp_path: Path) -> None:
+        path = tmp_path / "chat-history.gle"
+        first = EncryptedHistory.open(path, passphrase="s3cret")
+        first.record_transfer(
+            transfer_id="tf_ab12cd34",
+            conversation_id="conv_1",
+            direction="outgoing",
+            peer="Ravi",
+            summary="report.pdf (18.4 MB)",
+            status="completed",
+        )
+        first.close()
+        # Nothing readable at rest: neither filename nor transfer id leaks.
+        raw = path.read_bytes()
+        assert b"report.pdf" not in raw
+        assert b"tf_ab12cd34" not in raw
+
+        reopened = EncryptedHistory.open(path, passphrase="s3cret")
+        entries = reopened.entries()
+        assert len(entries) == 1
+        assert entries[0].kind == "transfer"
+        assert entries[0].text == "report.pdf (18.4 MB)"
+        reopened.close()
 
     def test_plaintext_never_touches_disk(self, tmp_path: Path) -> None:
         path = tmp_path / "chat-history.gle"

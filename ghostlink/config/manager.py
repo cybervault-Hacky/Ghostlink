@@ -32,6 +32,7 @@ from ghostlink.models.settings import (
     RelaySettings,
     RoomsSettings,
     StorageSettings,
+    TransferSettings,
     UISettings,
 )
 from ghostlink.utils.paths import (
@@ -168,6 +169,7 @@ class ConfigurationManager:
             rooms=RoomsSettings(**sections.get("rooms", {})),
             invites=InvitesSettings(**sections.get("invites", {})),
             chat=ChatSettings(**sections.get("chat", {})),
+            transfer=TransferSettings(**sections.get("transfer", {})),
         )
         return self._apply_overrides(settings)
 

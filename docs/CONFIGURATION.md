@@ -66,8 +66,11 @@ The config file is generated with explanatory comments on first launch.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `default_lifetime_minutes` | integer | `15` | Invite lifetime in minutes (minimum 1 — invites always expire). |
-| `one_time` | boolean | `true` | Whether invites are single-use by default (`--multi-use` flips it per room). |
+| `default_lifetime_minutes` | integer | `15` | Phase 2 room-invite lifetime in minutes (minimum 1 — invites always expire). |
+| `one_time` | boolean | `true` | Whether Phase 2 room invites are single-use by default. |
+| `default_expiry_seconds` | integer | `900` | Lifetime of `gl://join/…` invites when `--expires` is omitted (1..86400; enforced by the relay authority on a monotonic clock). |
+| `max_expiry_seconds` | integer | `86400` | Ceiling for `--expires` on `invite create` (60..604800); defaults must not exceed it. |
+| `retention_hours` | integer | `24` | How long terminal invite records (expired / revoked / redeemed) are kept locally before `invite list` purges them (1..720). |
 
 ### `[chat]`
 
@@ -86,6 +89,24 @@ the history file with ChaCha20-Poly1305; writes are atomic with `0600`
 permissions. A wrong passphrase aborts with a clear error — the file is
 never silently reset. Non-interactive runs (piped stdin) refuse `encrypted`
 mode with guidance, since the passphrase prompt needs a real terminal.
+
+### `[transfer]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `download_dir` | string | `""` | Where verified incoming files land. Empty = `~/Download/GhostLink`. The peer can never choose or influence this path; filenames are always sanitized. |
+| `max_file_size_mb` | int | `100` | Largest file a peer may offer, in MiB (1…4096). Larger offers are rejected before any bytes move. |
+| `max_concurrent_transfers` | int | `3` | Simultaneous active transfers (1…10); your own sends beyond the cap queue locally, inbound offers beyond it are politely declined. |
+| `chunk_size_kb` | int | `4` | Chunk size in KiB (1…4). Every chunk travels sealed inside one secure-channel frame, so 4 KiB is the protocol ceiling. |
+| `ack_timeout_seconds` | number | `5.0` | Seconds to wait for a chunk acknowledgement before resending it (0.5…60). Also paces offer re-sends. |
+| `retry_limit` | int | `5` | Retries per chunk (and per offer/completion probe) before the transfer fails loudly (1…20). |
+| `transfer_expiry_minutes` | int | `60` | Absolute lifetime of one transfer; abandoned transfers expire and their temp state is deleted (1…1440). Unanswered offers always expire after two minutes regardless. |
+| `temp_storage_limit_mb` | int | `1024` | Total encrypted temp storage for in-flight incoming transfers, in MiB (16…65536). Offers that would exceed it are declined automatically. |
+
+Two cross-checks apply: `max_file_size_mb / chunk_size_kb` must not exceed
+32768 chunks (the resume bitmap's capacity), and `temp_storage_limit_mb`
+must be able to hold what your concurrency cap allows. Invalid combinations
+abort launch with a hint naming both keys.
 
 ## Precedence
 
@@ -145,6 +166,9 @@ default_lifetime_minutes = 60
 [invites]
 default_lifetime_minutes = 15
 one_time = true
+default_expiry_seconds = 900
+max_expiry_seconds = 86400
+retention_hours = 24
 
 [chat]
 display_name = "Nova"
@@ -154,4 +178,14 @@ history_mode = "session"
 timestamp_format = "24h"
 notification_style = "banner"
 message_wrapping = true
+
+[transfer]
+download_dir = ""
+max_file_size_mb = 100
+max_concurrent_transfers = 3
+chunk_size_kb = 4
+ack_timeout_seconds = 5.0
+retry_limit = 5
+transfer_expiry_minutes = 60
+temp_storage_limit_mb = 1024
 ```

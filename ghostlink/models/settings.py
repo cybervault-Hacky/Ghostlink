@@ -20,6 +20,18 @@ from ghostlink.constants.app import (
     DEFAULT_THEME,
     DEFAULT_TIMESTAMP_FORMAT,
     SUPPORTED_LANGUAGES,
+    TRANSFER_DEFAULT_CHUNK_KB,
+    TRANSFER_DEFAULT_CONCURRENT,
+    TRANSFER_DEFAULT_EXPIRY_MINUTES,
+    TRANSFER_DEFAULT_MAX_FILE_MB,
+    TRANSFER_DEFAULT_TEMP_LIMIT_MB,
+    TRANSFER_MAX_CHUNK_KB,
+    TRANSFER_MAX_CHUNKS_PER_FILE,
+    TRANSFER_MAX_CONCURRENT,
+    TRANSFER_MAX_FILE_MB,
+    TRANSFER_MAX_TEMP_LIMIT_MB,
+    TRANSFER_MIN_CHUNK_KB,
+    TRANSFER_MIN_TEMP_LIMIT_MB,
 )
 from ghostlink.constants.net import (
     CONNECT_TIMEOUT_SECONDS,
@@ -28,6 +40,10 @@ from ghostlink.constants.net import (
     HANDSHAKE_TIMEOUT_SECONDS,
     HEARTBEAT_INTERVAL_SECONDS,
     HEARTBEAT_TIMEOUT_SECONDS,
+    INVITE_DEFAULT_TTL_SECONDS,
+    INVITE_MAX_TTL_SECONDS,
+    INVITE_MIN_TTL_SECONDS,
+    INVITE_RETENTION_HOURS,
     RECONNECT_ATTEMPTS,
     RECONNECT_BASE_DELAY_SECONDS,
 )
@@ -164,10 +180,18 @@ class RoomsSettings:
 
 @dataclass(frozen=True, slots=True)
 class InvitesSettings:
-    """Invite defaults: one-time use and lifetime in minutes (≥ 1)."""
+    """Invite defaults (Phase 2 rooms + Phase 5 one-time join invites).
+
+    ``default_expiry_seconds`` bounds how long a join invite stays valid;
+    the relay authority enforces it. ``retention_hours`` controls how long
+    terminal (expired/revoked/redeemed) invite records are kept locally.
+    """
 
     default_lifetime_minutes: int = DEFAULT_INVITE_LIFETIME_MINUTES
     one_time: bool = True
+    default_expiry_seconds: int = INVITE_DEFAULT_TTL_SECONDS
+    max_expiry_seconds: int = int(INVITE_MAX_TTL_SECONDS)
+    retention_hours: int = INVITE_RETENTION_HOURS
 
     def __post_init__(self) -> None:
         if not isinstance(self.default_lifetime_minutes, int) or self.default_lifetime_minutes < 1:
@@ -180,6 +204,30 @@ class InvitesSettings:
             raise ConfigValidationError(
                 f"Setting 'invites.one_time' must be true or false, got {self.one_time!r}.",
                 hint="Use a TOML boolean: one_time = true",
+            )
+        for field_name, minimum, maximum in (
+            ("default_expiry_seconds", int(INVITE_MIN_TTL_SECONDS), int(INVITE_MAX_TTL_SECONDS)),
+            ("max_expiry_seconds", 60, 7 * 24 * 3600),
+            ("retention_hours", 1, 30 * 24),
+        ):
+            value = getattr(self, field_name)
+            in_range = (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and minimum <= value <= maximum
+            )
+            if not in_range:
+                raise ConfigValidationError(
+                    f"Setting 'invites.{field_name}' must be an integer between {minimum} "
+                    f"and {maximum}, got {value!r}.",
+                    hint=f"Choose a value in [{minimum}, {maximum}].",
+                )
+        if self.default_expiry_seconds > self.max_expiry_seconds:
+            raise ConfigValidationError(
+                "Setting 'invites.default_expiry_seconds' must not exceed "
+                f"'invites.max_expiry_seconds' ({self.default_expiry_seconds} > "
+                f"{self.max_expiry_seconds}).",
+                hint="Raise max_expiry_seconds or lower the default.",
             )
 
 
@@ -236,6 +284,89 @@ class ChatSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class TransferSettings:
+    """Secure file-transfer limits and behaviour (Phase 4).
+
+    Empty ``download_dir`` selects ``~/Download/GhostLink``. Chunk size is
+    capped at 4 KiB so every chunk fits one secure-channel frame; the
+    chunk/file-size cross-check guarantees resume bitmaps stay bounded."""
+
+    download_dir: str = ""
+    max_file_size_mb: int = TRANSFER_DEFAULT_MAX_FILE_MB
+    max_concurrent_transfers: int = TRANSFER_DEFAULT_CONCURRENT
+    chunk_size_kb: int = TRANSFER_DEFAULT_CHUNK_KB
+    ack_timeout_seconds: float = 5.0
+    retry_limit: int = 5
+    transfer_expiry_minutes: int = TRANSFER_DEFAULT_EXPIRY_MINUTES
+    temp_storage_limit_mb: int = TRANSFER_DEFAULT_TEMP_LIMIT_MB
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.download_dir, str):
+            raise ConfigValidationError(
+                "Setting 'transfer.download_dir' must be a string path.",
+                hint='Use a TOML string: download_dir = "~/Download/GhostLink"',
+            )
+        _require_int_range(
+            self.max_file_size_mb,
+            field="transfer.max_file_size_mb",
+            minimum=1,
+            maximum=TRANSFER_MAX_FILE_MB,
+        )
+        _require_int_range(
+            self.max_concurrent_transfers,
+            field="transfer.max_concurrent_transfers",
+            minimum=1,
+            maximum=TRANSFER_MAX_CONCURRENT,
+        )
+        _require_int_range(
+            self.chunk_size_kb,
+            field="transfer.chunk_size_kb",
+            minimum=TRANSFER_MIN_CHUNK_KB,
+            maximum=TRANSFER_MAX_CHUNK_KB,
+        )
+        if (
+            not isinstance(self.ack_timeout_seconds, int | float)
+            or isinstance(self.ack_timeout_seconds, bool)
+            or not 0.5 <= self.ack_timeout_seconds <= 60.0
+        ):
+            raise ConfigValidationError(
+                "Setting 'transfer.ack_timeout_seconds' must be between 0.5 and 60."
+                f" Got {self.ack_timeout_seconds!r}.",
+                hint="Use seconds, e.g. ack_timeout_seconds = 5.0",
+            )
+        _require_int_range(self.retry_limit, field="transfer.retry_limit", minimum=1, maximum=20)
+        _require_int_range(
+            self.transfer_expiry_minutes,
+            field="transfer.transfer_expiry_minutes",
+            minimum=1,
+            maximum=1440,
+        )
+        _require_int_range(
+            self.temp_storage_limit_mb,
+            field="transfer.temp_storage_limit_mb",
+            minimum=TRANSFER_MIN_TEMP_LIMIT_MB,
+            maximum=TRANSFER_MAX_TEMP_LIMIT_MB,
+        )
+        total_chunks = -(-(self.max_file_size_mb * 1024) // self.chunk_size_kb)
+        if total_chunks > TRANSFER_MAX_CHUNKS_PER_FILE:
+            raise ConfigValidationError(
+                "That combination needs more than "
+                f"{TRANSFER_MAX_CHUNKS_PER_FILE} chunks per file "
+                f"(max_file_size_mb={self.max_file_size_mb}, "
+                f"chunk_size_kb={self.chunk_size_kb}).",
+                hint="Increase chunk_size_kb or lower max_file_size_mb.",
+            )
+
+
+def _require_int_range(value: object, *, field: str, minimum: int, maximum: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
+        raise ConfigValidationError(
+            f"Setting '{field}' must be an integer between {minimum} and {maximum}, got {value!r}.",
+            hint=f"Choose a value in [{minimum}, {maximum}].",
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AppSettings:
     """The fully-resolved settings tree for one application run."""
 
@@ -247,6 +378,7 @@ class AppSettings:
     rooms: RoomsSettings
     invites: InvitesSettings
     chat: ChatSettings
+    transfer: TransferSettings
 
     @classmethod
     def defaults(cls) -> AppSettings:
@@ -259,4 +391,5 @@ class AppSettings:
             rooms=RoomsSettings(),
             invites=InvitesSettings(),
             chat=ChatSettings(),
+            transfer=TransferSettings(),
         )

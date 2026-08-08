@@ -38,6 +38,7 @@ from ghostlink.exceptions.messaging import (
     SecureChannelError,
 )
 from ghostlink.exceptions.transport import TransportError
+from ghostlink.identity.fingerprint import identity_fingerprint
 from ghostlink.messaging.history import BaseHistory
 from ghostlink.messaging.models.message import (
     EncryptedPayload,
@@ -49,6 +50,7 @@ from ghostlink.messaging.models.message import (
     validate_display_name,
 )
 from ghostlink.messaging.packets.frames import (
+    FILE_FRAME_TYPES,
     Frame,
     FrameType,
     decode_frame,
@@ -80,6 +82,10 @@ _logger = get_logger("messaging.session")
 PEER_DEFAULT_NAME: str = "Peer"
 _RECONNECT_SETTLE_SECONDS: float = 0.25
 _WATCHDOG_TICK_SECONDS: float = 1.0
+
+#: Async consumer of validated FILE_* frames — the transfer manager registers
+#: one while a session lives, so the messaging layer never imports transfer code.
+TransferFrameHandler = Callable[[Frame], Coroutine[Any, Any, None]]
 
 
 class ChatEventKind(str, Enum):
@@ -143,6 +149,7 @@ class ChatSession:
         config: ChatSessionConfig | None = None,
         history: BaseHistory | None = None,
         peer_name: str | None = None,
+        identity_public_key_hex: str | None = None,
     ) -> None:
         if role not in ("host", "guest"):
             raise MessageValidationError(
@@ -156,6 +163,8 @@ class ChatSession:
         self._config = config or ChatSessionConfig()
         self._history = history
         self._peer_name = validate_display_name(peer_name) if peer_name else PEER_DEFAULT_NAME
+        self._identity_public_key_hex = identity_public_key_hex
+        self._peer_identity_key_hex: str | None = None
 
         self._secure: SecureSession | None = None
         self._session_key: bytearray | None = None
@@ -169,6 +178,7 @@ class ChatSession:
 
         self._next_sequence = 1
         self._listeners: list[Callable[[ChatEvent], None]] = []
+        self._transfer_delegate: TransferFrameHandler | None = None
         self._ready = asyncio.Event()
         self._peer_present = asyncio.Event()
         self._closing_event = asyncio.Event()
@@ -219,6 +229,24 @@ class ChatSession:
         return self._secure.fingerprint if self._secure else None
 
     @property
+    def identity_bound(self) -> bool:
+        """True when both peers presented transcript-bound identity keys."""
+
+        return self._secure.identity_bound if self._secure else False
+
+    @property
+    def peer_identity_key_hex(self) -> str | None:
+        """The peer's identity public key as presented in the handshake."""
+
+        return self._peer_identity_key_hex
+
+    @property
+    def own_identity_key_hex(self) -> str | None:
+        """The identity public key presented by this side of the session."""
+
+        return self._identity_public_key_hex
+
+    @property
     def unread_count(self) -> int:
         return self._inbox.unread_count
 
@@ -250,6 +278,27 @@ class ChatSession:
     def remove_listener(self, listener: Callable[[ChatEvent], None]) -> None:
         if listener in self._listeners:
             self._listeners.remove(listener)
+
+    # ------------------------------------------------------ sub-protocols (Phase 4)
+
+    def set_transfer_delegate(self, delegate: TransferFrameHandler | None) -> None:
+        """Attach (or detach) the transfer manager as the FILE_* frame consumer."""
+
+        self._transfer_delegate = delegate
+
+    def session_key_copy(self) -> bytes | None:
+        """A copy of the live session key for in-process sub-protocols.
+
+        The transfer layer HKDF-derives per-transfer keys from it; returns
+        None before the handshake completes or after close/wipe.
+        """
+
+        return self._key_bytes()
+
+    async def send_channel_frame(self, frame: Frame) -> None:
+        """Send one validated frame for a layered sub-protocol (transfer)."""
+
+        await self._send_frame(frame)
 
     def _emit(self, kind: ChatEventKind, detail: str = "", message: Message | None = None) -> None:
         event = ChatEvent(kind=kind, detail=detail, message=message)
@@ -513,7 +562,11 @@ class ChatSession:
 
         if self._closing:
             return
-        self._initiator = HandshakeInitiator(self._channel, display_name=self._display_name)
+        self._initiator = HandshakeInitiator(
+            self._channel,
+            display_name=self._display_name,
+            identity_public_key_hex=self._identity_public_key_hex,
+        )
         if self._secure is not None:
             self._stats.rekeys += 1
             self._ready.clear()
@@ -535,6 +588,12 @@ class ChatSession:
             ChatEventKind.SESSION,
             f"Encryption: Active — safety code {secure.fingerprint}",
         )
+        if secure.identity_bound and self.peer_identity_fingerprint is not None:
+            self._emit(
+                ChatEventKind.NOTICE,
+                f"Peer identity: {self.peer_identity_fingerprint} "
+                f"({self._peer_name}) — verify it with /fingerprint",
+            )
 
     def _adopt_peer_name(self, payload: dict[str, object]) -> None:
         candidate = payload.get("name")
@@ -544,6 +603,35 @@ class ChatSession:
             self._peer_name = validate_display_name(candidate, field="peer name")
         except MessageValidationError:
             _logger.debug("peer sent an unusable display name — keeping default")
+
+    def _adopt_peer_identity(self, payload: dict[str, object]) -> None:
+        """Remember the identity public key the peer presented, when valid."""
+
+        candidate = payload.get("idpub")
+        if not isinstance(candidate, str):
+            return
+        try:
+            raw = bytes.fromhex(candidate)
+        except ValueError:
+            _logger.debug("peer sent an unusable identity key — ignoring it")
+            return
+        if len(raw) != 32:
+            _logger.debug("peer sent an unusable identity key — ignoring it")
+            return
+        self._peer_identity_key_hex = candidate
+
+    @property
+    def peer_identity_fingerprint(self) -> str | None:
+        """The peer's ``GLFP-…`` fingerprint, when an identity key was shown.
+
+        When :attr:`identity_bound` is true the key is committed to the
+        handshake transcript, so a relay cannot swap it without breaking
+        key-confirmation.
+        """
+
+        if self._peer_identity_key_hex is None:
+            return None
+        return identity_fingerprint(bytes.fromhex(self._peer_identity_key_hex))
 
     # --------------------------------------------------------------- inbound
 
@@ -598,13 +686,33 @@ class ChatSession:
                 if code == "decrypt_failed"
                 else f"Peer error: {frame.data.get('message', code)}",
             )
+        elif frame.type in FILE_FRAME_TYPES:
+            await self._dispatch_file_frame(frame)
+
+    async def _dispatch_file_frame(self, frame: Frame) -> None:
+        """Hand a validated FILE_* frame to the transfer manager (Phase 4)."""
+
+        delegate = self._transfer_delegate
+        if delegate is None:
+            self._stats.frames_dropped += 1
+            _logger.info("file frame %s without a transfer manager — dropped", frame.type.value)
+            return
+        try:
+            await delegate(frame)
+        except Exception as exc:  # the manager must never break the session
+            _logger.info("transfer delegate failed for %s — %s", frame.type.value, exc)
 
     async def _handle_kex_hello(self, frame: Frame) -> None:
         if self._role != "guest":
             self._stats.frames_dropped += 1
             return
         self._adopt_peer_name(frame.data)
-        responder = HandshakeResponder(self._channel, display_name=self._display_name)
+        self._adopt_peer_identity(frame.data)
+        responder = HandshakeResponder(
+            self._channel,
+            display_name=self._display_name,
+            identity_public_key_hex=self._identity_public_key_hex,
+        )
         try:
             reply, secure = responder.answer(frame.data)
         except HandshakeFailedError as exc:
@@ -632,6 +740,7 @@ class ChatSession:
             )
             return
         self._adopt_peer_name(frame.data)
+        self._adopt_peer_identity(frame.data)
         self._set_session(secure)
 
     async def _handle_message(self, frame: Frame) -> None:

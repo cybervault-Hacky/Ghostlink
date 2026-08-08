@@ -16,6 +16,7 @@ class ExitCode(IntEnum):
     STORAGE = 4
     UI = 5
     NETWORK = 6
+    INVITE = 7
     INTERRUPTED = 130
 
 

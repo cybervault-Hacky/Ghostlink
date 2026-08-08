@@ -42,6 +42,14 @@ class CLIOptions:
     pings: int | None = None
     timeout: float | None = None
     chat_name: str | None = None
+    identity_action: str | None = None
+    nickname: str | None = None
+    invite_action: str | None = None
+    invite_target: str | None = None
+    expires: str | None = None
+    uses: int | None = None
+    invite_room: str | None = None
+    no_chat: bool = False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,8 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
             "  ghostlink                          Launch the interactive menu\n"
             "  ghostlink host --relay ws://127.0.0.1:8787\n"
             "                                   Create a room and host the chat\n"
+            "  ghostlink invite create --expires 5m   Share a one-time join invite\n"
+            "  ghostlink join gl://join/XXXX…         Join via a secure invite\n"
             "  ghostlink join gl-room-XXXX-… --relay ws://127.0.0.1:8787\n"
             "                                   Join the room's encrypted chat\n"
+            "  ghostlink identity                   Show your local identity\n"
             "  ghostlink relay-status --relay ws://127.0.0.1:8787\n"
             "  ghostlink doctor                   Diagnose the environment\n"
         ),
@@ -148,11 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="display name shown to your peer in the chat",
     )
 
-    join = subparsers.add_parser("join", help="join a room and start the encrypted chat")
+    join = subparsers.add_parser("join", help="join a room or redeem an invite, then chat")
     join.add_argument(
         "room_id",
-        metavar="gl-room-XXXX-XXXX-XXXX",
-        help="the room identifier shared by the host",
+        metavar="gl-room-…|gl://join/…",
+        help="the room identifier or one-time invite link shared by the host",
     )
     join.add_argument(
         "--relay",
@@ -167,6 +178,82 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="NAME",
         help="display name shown to your peer in the chat",
+    )
+
+    identity = subparsers.add_parser(
+        "identity", help="inspect and manage your local ephemeral identity"
+    )
+    identity.add_argument(
+        "identity_action",
+        nargs="?",
+        choices=["show", "fingerprint", "nickname"],
+        default=None,
+        help="show the identity (default), only its fingerprint, or manage the nickname",
+    )
+    identity.add_argument(
+        "nickname",
+        nargs="?",
+        default=None,
+        metavar="NAME",
+        help="new display nickname (with the 'nickname' action)",
+    )
+
+    invite = subparsers.add_parser(
+        "invite", help="create and manage one-time join invites (gl://join/…)"
+    )
+    invite.add_argument(
+        "invite_action",
+        nargs="?",
+        choices=["create", "list", "info", "revoke"],
+        default=None,
+        help="create (default), list, inspect, or revoke invites",
+    )
+    invite.add_argument(
+        "invite_target",
+        nargs="?",
+        default=None,
+        metavar="INVITE",
+        help="invite id (gi_…) or link — required by info and revoke",
+    )
+    invite.add_argument(
+        "--expires",
+        default=None,
+        metavar="DURATION",
+        help="invite lifetime: 900, 30s, 5m, 1h (default from configuration)",
+    )
+    invite.add_argument(
+        "--uses",
+        type=int,
+        default=None,
+        metavar="N",
+        help="maximum redemptions (default 1 — one-time)",
+    )
+    invite.add_argument(
+        "--room",
+        dest="invite_room",
+        default=None,
+        metavar="gl-room-XXXX-…",
+        help="bind the invite to an existing room instead of a fresh one",
+    )
+    invite.add_argument(
+        "--relay",
+        dest="relay_url",
+        default=None,
+        metavar="URL",
+        help="relay endpoint (falls back to configuration)",
+    )
+    invite.add_argument(
+        "--as",
+        dest="chat_name",
+        default=None,
+        metavar="NAME",
+        help="display name shown to your peer in the chat",
+    )
+    invite.add_argument(
+        "--no-chat",
+        action="store_true",
+        default=False,
+        help="print the invite and countdown only — do not enter the chat",
     )
 
     relay_status = subparsers.add_parser(
@@ -233,4 +320,12 @@ def parse_args(argv: Sequence[str] | None = None) -> CLIOptions:
         pings=getattr(namespace, "pings", None),
         timeout=getattr(namespace, "timeout", None),
         chat_name=getattr(namespace, "chat_name", None),
+        identity_action=getattr(namespace, "identity_action", None),
+        nickname=getattr(namespace, "nickname", None),
+        invite_action=getattr(namespace, "invite_action", None),
+        invite_target=getattr(namespace, "invite_target", None),
+        expires=getattr(namespace, "expires", None),
+        uses=getattr(namespace, "uses", None),
+        invite_room=getattr(namespace, "invite_room", None),
+        no_chat=getattr(namespace, "no_chat", False),
     )

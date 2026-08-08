@@ -26,6 +26,20 @@ def pluralize(count: int, singular: str, plural: str | None = None) -> str:
     return f"{count} {form}"
 
 
+def format_bytes(size: float) -> str:
+    """Human-readable byte count, 1024-based: ``512 B``, ``18.4 MB``."""
+
+    if size < 0:
+        size = 0
+    if size < 1024:
+        return f"{int(size)} B"
+    for unit in ("KB", "MB", "GB", "TB"):
+        size /= 1024.0
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+    return f"{size:.1f} PB"
+
+
 def format_duration(seconds: float) -> str:
     """Render a duration compactly: ``0.42s``, ``3m 04s``, ``1h 02m``."""
 

@@ -23,6 +23,7 @@ from ghostlink.constants.net import (
     CHANNEL_CAPACITY,
     DEFAULT_RELAY_PORT,
     HEARTBEAT_INTERVAL_SECONDS,
+    INVITE_PROTOCOL_VERSION,
     RELAY_SESSION_TTL_SECONDS,
     SERVER_NAME,
     SESSION_SWEEP_INTERVAL_SECONDS,
@@ -34,6 +35,12 @@ from ghostlink.exceptions.transport import (
     PacketValidationError,
     TransportError,
 )
+from ghostlink.invites.authority import (
+    InviteAuthority,
+    RedemptionResult,
+    RedemptionVerdict,
+)
+from ghostlink.invites.tokens import invite_id_for_token, is_valid_invite_token
 from ghostlink.transport.relay.protocol import (
     Packet,
     PacketType,
@@ -44,8 +51,10 @@ from ghostlink.transport.relay.protocol import (
     error_packet,
     forward_packet,
     heartbeat_packet,
+    invite_state_packet,
     peer_packet,
     pong_packet,
+    redeemed_packet,
     welcome_packet,
 )
 from ghostlink.transport.session import Session, SessionRegistry
@@ -55,7 +64,7 @@ from ghostlink.transport.websocket.protocol import (
     perform_server_handshake,
 )
 
-SERVER_PROTOCOL_VERSION = 2
+SERVER_PROTOCOL_VERSION = 3
 HELLO_TIMEOUT_SECONDS = 5.0
 HANDSHAKE_TIMEOUT_SECONDS = 5.0
 
@@ -70,6 +79,7 @@ class _ClientContext:
     handler_task: asyncio.Task[None] | None = field(default=None, repr=False)
     # channel -> role this connection is attached as (rendezvous routing)
     attachments: dict[str, str] = field(default_factory=dict)
+    protocol_version: int = 1
 
     @property
     def conn(self) -> WebSocketConnection:
@@ -118,6 +128,15 @@ class RelayServer:
         )
         self._next_client_id = 0
         self._channels: dict[str, _Channel] = {}
+        self._invites = InviteAuthority()
+
+    # ------------------------------------------------------------- invites
+
+    @property
+    def invites(self) -> InviteAuthority:
+        """The relay-side invite authority (observability/tests)."""
+
+        return self._invites
 
     # ------------------------------------------------------------- properties
 
@@ -280,6 +299,8 @@ class RelayServer:
                 ttl_seconds=self._session_ttl,
             )
         )
+        protocol_raw = packet.payload.get("protocol", 1)
+        context.protocol_version = protocol_raw if isinstance(protocol_raw, int) else 1
         await self._send(
             context,
             welcome_packet(
@@ -332,6 +353,14 @@ class RelayServer:
             await self._handle_detach(client_id, context, str(packet.payload["channel"]))
         elif packet.type is PacketType.FORWARD:
             await self._handle_forward(client_id, context, packet)
+        elif packet.type is PacketType.INVITE_CREATE:
+            await self._handle_invite_create(client_id, context, packet)
+        elif packet.type is PacketType.INVITE_QUERY:
+            await self._handle_invite_query(client_id, context, packet)
+        elif packet.type is PacketType.INVITE_REVOKE:
+            await self._handle_invite_revoke(client_id, context, packet)
+        elif packet.type is PacketType.REDEEM:
+            await self._handle_redeem(client_id, context, packet)
         elif packet.type in (PacketType.HELLO, PacketType.WELCOME):
             await self._send(
                 context,
@@ -349,27 +378,259 @@ class RelayServer:
                 ),
             )
 
+    # --------------------------------------------------------- invites (v3)
+
+    def _invite_session_id(self, context: _ClientContext) -> str:
+        return context.session.session_id if context.session is not None else "none"
+
+    @staticmethod
+    def _public_invite_id(token: str) -> str:
+        """Public id for correlation — derivable from any token-shaped string."""
+
+        import hashlib
+
+        normalized = token.strip().upper()
+        if is_valid_invite_token(normalized):
+            return invite_id_for_token(normalized)
+        digest = hashlib.sha256(normalized.encode("utf-8", "ignore")).hexdigest()
+        return f"gi_{digest[:10]}"
+
+    async def _invite_error(
+        self, context: _ClientContext, code: str, message: str, invite_id: str = ""
+    ) -> None:
+        """ERROR packet scoped to an invite — carries the public id only."""
+
+        payload: dict[str, object] = {"code": code, "message": message}
+        if invite_id:
+            payload["invite"] = invite_id
+        await self._send(context, Packet(PacketType.ERROR, payload))
+        self._logger.info("invite refused — %s (%s)", code, invite_id or "unidentified")
+
+    @staticmethod
+    def invite_correlation(packet: Packet) -> str | None:
+        """The public invite id carried by an invite-scoped packet, if any."""
+
+        invite = packet.payload.get("invite")
+        return invite if isinstance(invite, str) else None
+
+    async def _handle_invite_create(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        if context.protocol_version < INVITE_PROTOCOL_VERSION:
+            token_hint = ""
+            if "token" in packet.payload:
+                token_hint = self._public_invite_id(str(packet.payload["token"]))
+            await self._invite_error(
+                context,
+                "protocol/unsupported",
+                "Invite operations require relay protocol v3.",
+                token_hint,
+            )
+            return
+        try:
+            grant = self._invites.register(
+                str(packet.payload["token"]),
+                room_id=str(packet.payload["room"]),
+                ttl_seconds=float(packet.payload["ttl"]),
+                max_redemptions=int(packet.payload["uses"]),
+                creator_session=self._invite_session_id(context),
+            )
+        except ValueError as exc:
+            await self._invite_error(
+                context,
+                "invite/invalid",
+                f"Invite refused: {exc}.",
+                self._public_invite_id(str(packet.payload["token"])),
+            )
+            return
+        await self._send(
+            context,
+            Packet(
+                PacketType.INVITE_GRANTED,
+                {
+                    "invite": grant.invite_id,
+                    "expires_at": grant.expires_at.timestamp(),
+                    "uses": grant.max_redemptions,
+                },
+            ),
+        )
+        self._logger.info(
+            "invite registered — %s on %s (creator %s)",
+            grant.invite_id,
+            str(packet.payload["room"]),
+            self._invite_session_id(context),
+        )
+
+    async def _handle_invite_query(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        public_id = self._public_invite_id(str(packet.payload["token"]))
+        if context.protocol_version < INVITE_PROTOCOL_VERSION:
+            await self._invite_error(
+                context,
+                "protocol/unsupported",
+                "Invite operations require relay protocol v3.",
+                public_id,
+            )
+            return
+        status = self._invites.status(
+            str(packet.payload["token"]),
+            requester_session=self._invite_session_id(context),
+        )
+        if status is None:
+            await self._invite_error(
+                context,
+                "invite/unknown",
+                "The relay has no record of that invite.",
+                public_id,
+            )
+            return
+        await self._send(
+            context,
+            invite_state_packet(
+                status.invite_id,
+                status.state,
+                uses=status.redemptions,
+                max_uses=status.max_redemptions,
+                expires_in=status.remaining_seconds,
+                room_id=status.room_id,
+            ),
+        )
+
+    async def _handle_invite_revoke(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        public_id = self._public_invite_id(str(packet.payload["token"]))
+        if context.protocol_version < INVITE_PROTOCOL_VERSION:
+            await self._invite_error(
+                context,
+                "protocol/unsupported",
+                "Invite operations require relay protocol v3.",
+                public_id,
+            )
+            return
+        try:
+            status = self._invites.revoke(
+                str(packet.payload["token"]),
+                requester_session=self._invite_session_id(context),
+            )
+        except PermissionError:
+            await self._invite_error(
+                context,
+                "invite/not-creator",
+                "Only the inviting session may revoke this invite.",
+                public_id,
+            )
+            return
+        if status is None:
+            await self._invite_error(
+                context, "invite/unknown", "The relay has no record of that invite.", public_id
+            )
+            return
+        await self._send(
+            context,
+            invite_state_packet(
+                status.invite_id,
+                status.state,
+                uses=status.redemptions,
+                max_uses=status.max_redemptions,
+                expires_in=status.remaining_seconds,
+                room_id=status.room_id,
+            ),
+        )
+        self._logger.info("invite revoked — %s", status.invite_id)
+
+    async def _handle_redeem(self, client_id: int, context: _ClientContext, packet: Packet) -> None:
+        if context.protocol_version < INVITE_PROTOCOL_VERSION:
+            await self._invite_error(
+                context,
+                "protocol/unsupported",
+                "Invite operations require relay protocol v3.",
+                self._public_invite_id(str(packet.payload["token"])),
+            )
+            return
+        token = str(packet.payload["token"])
+        # Atomic consumption: check-and-consume happen with no awaits in
+        # between, so two simultaneous REDEEM packets can never both win.
+        result = self._invites.redeem(token, redeem_session=self._invite_session_id(context))
+        if result.verdict is not RedemptionVerdict.REDEEMED or result.room_id is None:
+            code = {
+                RedemptionVerdict.UNKNOWN: "invite/unknown",
+                RedemptionVerdict.EXPIRED: "invite/expired",
+                RedemptionVerdict.REVOKED: "invite/revoked",
+                RedemptionVerdict.ALREADY_USED: "invite/already-used",
+            }[result.verdict]
+            await self._invite_error(context, code, self._verdict_message(result), result.invite_id)
+            return
+        room_id = result.room_id
+        # Phase 2 — attach synchronously so concurrent redeems on sibling
+        # invites to the same room race-safe against the capacity check.
+        membership_error = self._attach_membership(client_id, context, room_id, "guest")
+        if membership_error is not None:
+            await self._invite_error(
+                context, "invite/room-full", membership_error, result.invite_id
+            )
+            return
+        await self._send(
+            context,
+            redeemed_packet(
+                result.invite_id,
+                room_id,
+                result.expires_at.timestamp() if result.expires_at else 0.0,
+            ),
+        )
+        channel = self._channels.get(room_id)
+        other_count = len(channel.members) - 1 if channel is not None else 0
+        await self._send(context, attached_packet(room_id, "guest", other_count))
+        await self._notify_peer_joined(client_id, room_id)
+        self._logger.info(
+            "invite redeemed — %s → %s (session %s)",
+            result.invite_id,
+            room_id,
+            self._invite_session_id(context),
+        )
+
+    @staticmethod
+    def _verdict_message(result: RedemptionResult) -> str:
+        return {
+            RedemptionVerdict.UNKNOWN: "The relay has no record of that invite.",
+            RedemptionVerdict.EXPIRED: "This invite has expired.",
+            RedemptionVerdict.REVOKED: "This invite was revoked by its creator.",
+            RedemptionVerdict.ALREADY_USED: "This invite has already been used.",
+            RedemptionVerdict.REDEEMED: "Redeemed.",
+        }[result.verdict]
+
     # ---------------------------------------------------- rendezvous routing
+
+    def _attach_membership(
+        self, client_id: int, context: _ClientContext, channel_id: str, role: str
+    ) -> str | None:
+        """Register channel membership synchronously; returns an error or None.
+
+        Shared by ATTACH and REDEEM: keeping the capacity check and the
+        membership write in one await-free call makes concurrent admissions
+        to the same two-slot channel race-free.
+        """
+
+        channel = self._channels.setdefault(channel_id, _Channel(channel_id))
+        if client_id in channel.members:
+            channel.members[client_id] = role  # re-attach refreshes the role
+        elif len(channel.members) >= CHANNEL_CAPACITY:
+            return f"Channel {channel_id} already has {CHANNEL_CAPACITY} participants."
+        else:
+            channel.members[client_id] = role
+        context.attachments[channel_id] = role
+        return None
 
     async def _handle_attach(self, client_id: int, context: _ClientContext, packet: Packet) -> None:
         channel_id = str(packet.payload["channel"])
         role = str(packet.payload["role"])
-        channel = self._channels.setdefault(channel_id, _Channel(channel_id))
-
-        if client_id in channel.members:
-            channel.members[client_id] = role  # re-attach refreshes the role
-        elif len(channel.members) >= CHANNEL_CAPACITY:
-            await self._channel_error(
-                context,
-                "relay/channel-full",
-                f"Channel {channel_id} already has {CHANNEL_CAPACITY} participants.",
-                channel_id,
-            )
+        membership_error = self._attach_membership(client_id, context, channel_id, role)
+        if membership_error is not None:
+            await self._channel_error(context, "relay/channel-full", membership_error, channel_id)
             return
-        else:
-            channel.members[client_id] = role
 
-        context.attachments[channel_id] = role
+        channel = self._channels[channel_id]
         other_count = len(channel.members) - 1
         await self._send(context, attached_packet(channel_id, role, other_count))
         self._logger.info(

@@ -12,6 +12,12 @@ Protocol v2 adds rendezvous routing: ATTACH/DETACH subscribe a client to a
 channel, FORWARD routes one opaque (end-to-end encrypted) payload to the
 channel counterparty, and PEER announces counterparty joins/leaves. The
 relay routes bytes it cannot read — channel bodies are end-to-end ciphertext.
+
+Protocol v3 adds one-time invites: INVITE_CREATE registers an invite with
+the relay's invite authority, REDEEM consumes one atomically (admitting the
+redeemer to the invite's room channel), INVITE_QUERY reports safe metadata,
+and INVITE_REVOKE cancels. The authority enforces expiry, single use,
+revocation, and session binding.
 """
 
 from __future__ import annotations
@@ -27,8 +33,12 @@ from typing import Any, NoReturn
 
 from ghostlink.constants.net import (
     CHANNEL_ROLES,
+    INVITE_MAX_REDEMPTIONS,
+    INVITE_MAX_TTL_SECONDS,
+    INVITE_MIN_TTL_SECONDS,
     MAX_FORWARD_BODY_LENGTH,
     MAX_FORWARD_PAYLOAD_BYTES,
+    MAX_INVITE_FIELD_LENGTH,
     MAX_MESSAGE_BYTES,
     PEER_EVENTS,
     PROTOCOL_VERSION,
@@ -48,7 +58,7 @@ MAX_PACKET_ID_LENGTH = 16
 
 
 class PacketType(str, Enum):
-    """Relay protocol packet kinds (protocol version 2)."""
+    """Relay protocol packet kinds (protocol version 3)."""
 
     HELLO = "HELLO"
     WELCOME = "WELCOME"
@@ -63,6 +73,14 @@ class PacketType(str, Enum):
     DETACH = "DETACH"
     FORWARD = "FORWARD"
     PEER = "PEER"
+    # One-time invite rendezvous (v3)
+    INVITE_CREATE = "INVITE_CREATE"
+    INVITE_GRANTED = "INVITE_GRANTED"
+    INVITE_QUERY = "INVITE_QUERY"
+    INVITE_STATE = "INVITE_STATE"
+    INVITE_REVOKE = "INVITE_REVOKE"
+    REDEEM = "REDEEM"
+    REDEEMED = "REDEEMED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +128,7 @@ def welcome_packet(
             "server": server_name,
             "server_time": time.time(),
             "heartbeat_interval": heartbeat_interval_seconds,
+            "protocol": PROTOCOL_VERSION,
         },
     )
 
@@ -161,6 +180,66 @@ def forward_packet(channel: str, body: str) -> Packet:
 
 def peer_packet(channel: str, event: str) -> Packet:
     return Packet(PacketType.PEER, {"channel": channel, "event": event})
+
+
+# ---------------------------------------------- one-time invites (v3)
+
+
+def invite_create_packet(token: str, room_id: str, ttl_seconds: float, uses: int) -> Packet:
+    return Packet(
+        PacketType.INVITE_CREATE,
+        {"token": token, "room": room_id, "ttl": ttl_seconds, "uses": uses},
+    )
+
+
+def invite_granted_packet(invite_id: str, expires_at: float, uses: int) -> Packet:
+    return Packet(
+        PacketType.INVITE_GRANTED,
+        {"invite": invite_id, "expires_at": expires_at, "uses": uses},
+    )
+
+
+def invite_query_packet(token: str) -> Packet:
+    return Packet(PacketType.INVITE_QUERY, {"token": token})
+
+
+def invite_state_packet(
+    invite_id: str,
+    state: str,
+    *,
+    uses: int,
+    max_uses: int,
+    expires_in: float,
+    room_id: str | None = None,
+) -> Packet:
+    payload: dict[str, Any] = {
+        "invite": invite_id,
+        "state": state,
+        "uses": uses,
+        "max_uses": max_uses,
+        "expires_in": max(0.0, expires_in),
+    }
+    if room_id is not None:
+        payload["room"] = room_id
+    return Packet(PacketType.INVITE_STATE, payload)
+
+
+def invite_revoke_packet(token: str) -> Packet:
+    return Packet(PacketType.INVITE_REVOKE, {"token": token})
+
+
+def redeem_packet(token: str) -> Packet:
+    return Packet(PacketType.REDEEM, {"token": token})
+
+
+def redeemed_packet(invite_id: str, room_id: str, expires_at: float) -> Packet:
+    return Packet(
+        PacketType.REDEEMED,
+        {"invite": invite_id, "room": room_id, "expires_at": expires_at},
+    )
+
+
+INVITE_STATES: frozenset[str] = frozenset({"active", "expired", "redeemed", "revoked"})
 
 
 # ------------------------------------------------------------------- validation
@@ -219,6 +298,11 @@ def validate_packet(packet_type: PacketType, payload: dict[str, Any]) -> None:
         _require_str(payload, "server", max_length=MAX_CLIENT_NAME_LENGTH)
         _require_number(payload, "server_time")
         _require_number(payload, "heartbeat_interval")
+        protocol = _require_int(payload, "protocol", minimum=1)
+        _require(
+            protocol in SUPPORTED_PROTOCOL_VERSIONS,
+            f"unsupported protocol version {protocol}",
+        )
     elif packet_type is PacketType.PING:
         _require_str(payload, "nonce", max_length=MAX_NONCE_LENGTH)
         _require_number(payload, "sent_at")
@@ -254,11 +338,47 @@ def validate_packet(packet_type: PacketType, payload: dict[str, Any]) -> None:
         _require_channel(payload)
         event = _require_str(payload, "event", max_length=8)
         _require(event in PEER_EVENTS, "'event' must be 'joined' or 'left'")
+    elif packet_type is PacketType.INVITE_CREATE:
+        _require_str(payload, "token", max_length=MAX_INVITE_FIELD_LENGTH)
+        _require_room_field(payload)
+        ttl = _require_number(payload, "ttl")
+        _require(
+            INVITE_MIN_TTL_SECONDS <= ttl <= INVITE_MAX_TTL_SECONDS,
+            f"'ttl' must be {INVITE_MIN_TTL_SECONDS}..{INVITE_MAX_TTL_SECONDS} seconds",
+        )
+        uses = _require_int(payload, "uses", minimum=1)
+        _require(uses <= INVITE_MAX_REDEMPTIONS, f"'uses' must be ≤ {INVITE_MAX_REDEMPTIONS}")
+    elif packet_type is PacketType.INVITE_GRANTED:
+        _require_str(payload, "invite", max_length=MAX_INVITE_FIELD_LENGTH)
+        _require_number(payload, "expires_at")
+        _require_int(payload, "uses", minimum=1)
+    elif packet_type is PacketType.INVITE_QUERY:
+        _require_str(payload, "token", max_length=MAX_INVITE_FIELD_LENGTH)
+    elif packet_type is PacketType.INVITE_STATE:
+        _require_str(payload, "invite", max_length=MAX_INVITE_FIELD_LENGTH)
+        state = _require_str(payload, "state", max_length=16)
+        _require(state in INVITE_STATES, f"'state' must be one of {sorted(INVITE_STATES)}")
+        _require_int(payload, "uses", minimum=0)
+        _require_int(payload, "max_uses", minimum=1)
+        _require_number(payload, "expires_in")
+        if "room" in payload:
+            _require_room_field(payload)
+    elif packet_type is PacketType.INVITE_REVOKE or packet_type is PacketType.REDEEM:
+        _require_str(payload, "token", max_length=MAX_INVITE_FIELD_LENGTH)
+    elif packet_type is PacketType.REDEEMED:
+        _require_str(payload, "invite", max_length=MAX_INVITE_FIELD_LENGTH)
+        _require_room_field(payload)
+        _require_number(payload, "expires_at")
 
 
 def _require_channel(payload: dict[str, Any]) -> None:
     channel = _require_str(payload, "channel", max_length=64)
     _require(is_valid_room_id(channel), "'channel' is not a valid room identifier")
+
+
+def _require_room_field(payload: dict[str, Any]) -> None:
+    room = _require_str(payload, "room", max_length=64)
+    _require(is_valid_room_id(room), "'room' is not a valid room identifier")
 
 
 def _require_forward_body(body: str) -> None:

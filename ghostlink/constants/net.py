@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-PROTOCOL_VERSION: int = 2
-SUPPORTED_PROTOCOL_VERSIONS: frozenset[int] = frozenset({1, 2})
+PROTOCOL_VERSION: int = 3
+SUPPORTED_PROTOCOL_VERSIONS: frozenset[int] = frozenset({1, 2, 3})
+# Clients must speak at least relay protocol 3 to drive invite operations.
+INVITE_PROTOCOL_VERSION: int = 3
 
 WEBSOCKET_GUID: str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WEBSOCKET_VERSION: str = "13"
@@ -32,6 +34,20 @@ INVITE_TOKEN_PREFIX: str = "gli_"
 
 DEFAULT_ROOM_LIFETIME_MINUTES: int = 60
 DEFAULT_INVITE_LIFETIME_MINUTES: int = 15
+
+# ------------------------------------------------- one-time invites (Phase 5)
+# join-link tokens use the room alphabet: 20 chars ≈ 103 bits of entropy.
+INVITE_LINK_SCHEME: str = "gl"
+INVITE_LINK_HOST: str = "join"
+INVITE_LINK_TOKEN_LENGTH: int = 20
+INVITE_ID_PREFIX: str = "gi_"
+INVITE_MIN_TTL_SECONDS: float = 1.0
+INVITE_MAX_TTL_SECONDS: float = 86_400.0
+INVITE_DEFAULT_TTL_SECONDS: int = 900
+INVITE_DEFAULT_MAX_REDEMPTIONS: int = 1
+INVITE_MAX_REDEMPTIONS: int = 16
+INVITE_RETENTION_HOURS: int = 24
+MAX_INVITE_FIELD_LENGTH: int = 96
 
 # ----------------------------------------------------------------- messaging
 # A FORWARD body carries one base64-encoded secure-channel frame.

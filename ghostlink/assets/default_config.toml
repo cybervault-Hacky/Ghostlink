@@ -1,0 +1,93 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  GhostLink — configuration
+#
+#  This file was generated automatically on first launch. Values are validated
+#  at startup; unknown keys and invalid values are rejected with guidance.
+#  Command-line flags always take precedence over the values below.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[ui]
+# Color theme. Run `ghostlink --help` to list every registered theme.
+theme = "phantom"
+
+# Interface language. Additional languages are introduced in later phases.
+language = "en"
+
+[notifications]
+# Master switch for in-app notification toasts.
+enabled = true
+
+[storage]
+# Directory GhostLink uses for state and logs. An empty string selects the
+# platform default:
+#   Linux : ~/.local/share/ghostlink
+#   Termux: $HOME/.local/share/ghostlink
+data_dir = ""
+
+[diagnostics]
+# Debug Mode: verbose file logging and developer-oriented console output.
+debug = false
+
+[relay]
+# Relay endpoint used for rendezvous and transport. Leave empty to run fully
+# local; point it at a reachable relay to enable network-backed commands.
+#   url = "ws://127.0.0.1:8787"      (local development relay)
+#   url = "wss://relay.example.org"  (TLS-protected relay)
+url = ""
+connect_timeout_seconds = 5.0
+handshake_timeout_seconds = 5.0
+heartbeat_interval_seconds = 10.0
+heartbeat_timeout_seconds = 5.0
+reconnect_attempts = 3
+reconnect_base_delay_seconds = 1.0
+
+[rooms]
+# Default room lifetime in minutes. 0 means rooms never expire.
+default_lifetime_minutes = 60
+
+[invites]
+# Default invite lifetime in minutes (invites always expire, minimum 1) and
+# whether invites are single-use by default.
+default_lifetime_minutes = 15
+one_time = true
+# Phase 5 join invites (gl://join/…): default lifetime in seconds (the relay
+# authority enforces it), the maximum `--expires` accepts, and how many
+# hours expired/revoked invite records are kept before being purged.
+default_expiry_seconds = 900
+max_expiry_seconds = 86400
+retention_hours = 24
+
+[chat]
+# Pseudonym shown to your chat peer. Empty picks a per-run default.
+display_name = ""
+# Send read receipts (✓✓ turns blue) and typing indicators.
+read_receipts = true
+typing_indicators = true
+# Message history retention: "disabled" (nothing is kept), "session"
+# (kept in memory until exit), or "encrypted" (passphrase-locked file).
+history_mode = "disabled"
+# Message timestamps: "24h" → [22:10], "12h" → [10:10 PM].
+timestamp_format = "24h"
+# Notice rendering: "banner", "compact", or "muted" (only errors are shown).
+notification_style = "banner"
+# Wrap long message lines to fit narrow terminal windows.
+message_wrapping = true
+
+[transfer]
+# Where received files land. Empty = "~/Download/GhostLink". The peer can
+# never choose a destination; filenames are always sanitized.
+download_dir = ""
+# Largest file a peer may offer, in megabytes (1..4096).
+max_file_size_mb = 100
+# Simultaneous active transfers (1..10); further offers queue.
+max_concurrent_transfers = 3
+# Chunk size in kilobytes (1..4). Every chunk travels sealed in one frame.
+chunk_size_kb = 4
+# Seconds to wait for a chunk acknowledgement before retrying (0.5..60).
+ack_timeout_seconds = 5.0
+# Retries per chunk before the transfer fails (1..20).
+retry_limit = 5
+# Abandoned transfers expire after this many minutes (1..1440).
+transfer_expiry_minutes = 60
+# Total encrypted temp storage for in-flight transfers, in MB (16..65536).
+temp_storage_limit_mb = 1024

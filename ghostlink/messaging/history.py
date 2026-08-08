@@ -184,6 +184,36 @@ class BaseHistory:
             )
         )
 
+    def record_group(
+        self,
+        *,
+        message_id: str,
+        group_id: str,
+        direction: str,
+        author: str,
+        text: str,
+        sent_at: float,
+        status: str,
+    ) -> None:
+        """Retain one group-chat message (Phase 6C).
+
+        Reuses the same retention modes/caps as one-to-one history; the
+        conversation slot carries the group id and display names are
+        decoration only (attribution in the UI is the link fingerprint).
+        """
+
+        self._append(
+            HistoryEntry(
+                message_id=message_id,
+                conversation_id=group_id,
+                direction=direction,
+                author=author,
+                text=text,
+                sent_at=sent_at,
+                status=status,
+            )
+        )
+
     def _append(self, entry: HistoryEntry) -> None:
         self._entries.append(entry)
         if len(self._entries) > MAX_HISTORY_ENTRIES:
@@ -256,6 +286,19 @@ class NullHistory(BaseHistory):
         status: str,
     ) -> None:
         del transfer_id, conversation_id, direction, peer, summary, status  # not retained
+
+    def record_group(
+        self,
+        *,
+        message_id: str,
+        group_id: str,
+        direction: str,
+        author: str,
+        text: str,
+        sent_at: float,
+        status: str,
+    ) -> None:
+        del message_id, group_id, direction, author, text, sent_at, status  # not retained
 
 
 class SessionHistory(BaseHistory):
@@ -376,6 +419,28 @@ class EncryptedHistory(BaseHistory):
             direction=direction,
             peer=peer,
             summary=summary,
+            status=status,
+        )
+        self._flush()
+
+    def record_group(
+        self,
+        *,
+        message_id: str,
+        group_id: str,
+        direction: str,
+        author: str,
+        text: str,
+        sent_at: float,
+        status: str,
+    ) -> None:
+        super().record_group(
+            message_id=message_id,
+            group_id=group_id,
+            direction=direction,
+            author=author,
+            text=text,
+            sent_at=sent_at,
             status=status,
         )
         self._flush()

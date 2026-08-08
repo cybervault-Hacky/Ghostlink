@@ -120,7 +120,7 @@ and production-quality before the next begins.
 - 200+ new tests including live sender→relay→receiver transfers, relay
   restarts with resume, corruption/tamper injection, and CLI-end-to-end runs
 
-## Phase 5 — Ephemeral Identity & One-Time Invites ✅ (current)
+## Phase 5 — Ephemeral Identity & One-Time Invites ✅
 
 - Ephemeral local identities: an Ed25519 keypair generated on your device,
   stored `0600`, never uploaded; a short handle (`GL-…`) and an optional
@@ -149,10 +149,152 @@ and production-quality before the next begins.
   against a real relay, concurrent-redemption races, revocation, peer
   fingerprint display, and log secret-leak audits
 
-## Phase 6 — Rich Communication
+## Phase 6A — Group Security Design ✅
+
+**STATUS: DESIGN COMPLETE** — security model documented and reviewed in
+[docs/GROUPS.md](GROUPS.md); implementation proceeded in Phase 6B.
+
+Direction: secure multi-peer communication (groups beyond the one-to-one
+channel), prioritized ahead of the other Phase 6 items. The full
+specification — threat model, trust model, membership authorization,
+epochs, pairwise-mesh encryption, envelope/AAD binding, replay and
+sequence rules, forward/backward secrecy analysis, relay visibility,
+resource limits, failure handling, future sender-key path, migration,
+testing strategy, implementation checklist, and open questions — lives in
+[docs/GROUPS.md](GROUPS.md).
+
+Selected design:
+
+- Private, invite-only groups of **up to 8 members** on the existing relay
+  (quadratic mesh arithmetic, Termux screens, and auditability drive the
+  cap — rationale documented in GROUPS.md §32)
+- Full membership lifecycle: create → invite → redeem → join → leave →
+  remove → dissolve, with unambiguous per-operation authorization, a
+  relay-authoritative roster, and owner-signed membership events
+- **Encryption model: pairwise mesh over the existing Phase 3 stack**
+  (X25519 + HKDF-SHA256 + ChaCha20-Poly1305, mandatory identity binding,
+  group/epoch-bound keys, sender-side fanout). A shared/copied group key
+  is explicitly rejected; sender keys are the documented Phase 7
+  candidate, not part of 6A
+- Group epochs: every roster mutation increments the epoch; keys are
+  epoch-bound; removed members lose future epochs, joiners gain no past
+- Relay protocol v4 (`GROUP_*`), additive and version-negotiated; the
+  relay routes opaque ciphertext and non-secret routing metadata only and
+  never receives plaintext, keys, or message ids
+- Termux-grade, explicit resource limits; a §5 threat model covering ten
+  attacker classes with no overstated claims; a 15-category loopback
+  test strategy mirroring the Phase 5 bar
+
+## Phase 6B — Secure Group Lifecycle ✅
+
+**STATUS: IMPLEMENTED** — the membership lifecycle foundation of
+docs/GROUPS.md. Group messaging/encryption landed in Phase 6C (below),
+built entirely on this foundation.
+
+- Groups (`gl-group-XXXX-XXXX-XXXX`, up to 8 members): owner creates with
+  an Ed25519 proof-of-possession over the relay-issued attestation
+  challenge; the relay mints the collision-free id; owner is member #1
+  at epoch 1
+- Relay-authoritative roster (`GroupAuthority`): the single source of
+  truth for membership and epochs; every authorization check happens in
+  one await-free critical section, so concurrent joins/leaves/removals
+  serialize deterministically with no lost updates, no duplicate members,
+  and no duplicate epochs
+- Epochs start at 1 and increment by exactly one per committed roster
+  mutation; clients can never pick, skip, roll back, or reuse an epoch;
+  local records reject stale/gapped events and mark suspect state for
+  re-sync
+- Signed membership events: join/removed/dissolved are signed by the
+  pinned owner key, `left` by the leaving member; admissions are
+  countersigned by the owner while online (`ghostlink group host`), so a
+  candidate can never self-admit; sign requests carry a 60-second
+  timeout, pending admissions 300 seconds
+- Group invites on the Phase 5 authority (`kind=group`): owner-only
+  minting, relay-side capacity checks before token consumption (a
+  full-group verdict never burns an invite), single atomic redemption
+  under concurrency, one-time semantics and expiry unchanged
+- Roster-pinning at redemption (§12.2): every member's public key ↔
+  fingerprint binding is verified before any state is trusted
+- Local records are metadata-only (fingerprints, handles, public keys,
+  epochs, signed event descriptors) in `groups.json` — atomic writes,
+  `0600`, corruption-safe typed errors, success-only join persistence,
+  retention purging of terminal records, and a defunct state for
+  post-restart relays (authority state is volatile by design, §28.4)
+- Relay protocol v4 (`GROUP_*` family) with version gating: v1–v3
+  clients are untouched and refused group access as
+  `protocol/unsupported`; no existing packet family changed meaning
+- CLI: `ghostlink group create|list|info|invite|join|leave|remove|
+  dissolve|sync|host` — a thin layer over the domain manager; all
+  security decisions live in the service layer and exit via typed errors
+  (exit code 8)
+- 168 new tests including seven concurrent joins to the 8-member cap,
+  9th-member refusal, concurrent invite redemption, forced signature
+  failures, restart/defunct, storage corruption, log/store secret-hygiene
+  audits, and full CLI end-to-end runs against a live relay
+
+## Phase 6C — Group Messaging + Pairwise-Mesh Encryption ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — end-to-end group messaging exactly as
+docs/GROUPS.md specifies: pairwise mesh, no sender keys (Phase 7).
+Every group message is encrypted separately for each authorized
+recipient; the relay routes opaque ciphertext envelopes only.
+
+- Pairwise links reuse the Phase 3 stack verbatim — X25519,
+  HKDF-SHA256 (transcript salt, `ghostlink/session/v1` info),
+  ChaCha20-Poly1305 with random 96-bit nonces — no new primitives, no
+  shared group key, no new ratchet
+- Handshake context `ghostlink/group/v1|{group}|{epoch}` with
+  identity-key binding in both directions (substituted `idpub` refuses
+  the link); deterministic initiator by smaller identity key, with a
+  demand *knock* so responder-role members can pull a pairing too
+- AEAD AAD binds `group-msg/v1 | group | epoch | sender | recipient`;
+  the sealed inner frame re-carries the same context, cross-checked
+  after decrypt — cross-group/epoch/sender/recipient ciphertext always
+  fails authentication, and 1:1-chat ciphertext can never open as group
+  traffic
+- Sender gates in the domain layer: only ACTIVE members in the current
+  epoch may send; removed/departed/unknown/stale senders are refused
+  before any ciphertext exists; fanout ≤ 7, never to a non-roster
+  member
+- Replay defense: `(sender_fp, message_id)` LRU (512/sender),
+  memory-scoped per-sender `gseq` cursors with bounded-gap flagging
+  (≤ 64) and suspect-drop beyond; duplicates re-ACK but never re-render
+- Epoch drain exactly per §16.5: current epoch, or previous epoch
+  inside a real 30 s window with the old link still alive — then
+  reject-and-log; removed members hold no new-epoch links; joiners
+  gain no history
+- Relay extension is minimal: `GROUP_FORWARD` is validated for framing,
+  routing, and size, ACL-checked (both endpoints ACTIVE on the
+  authoritative roster, epochs {e, e−1}), rate-limited (20/s per
+  group+sender), and forwarded **opaque** — no relay-side queue, no
+  plaintext, keys, message ids, or sequence numbers; offline members
+  yield `group/offline`, overload yields `group/rate`, both correlated
+  to the refused recipient
+- Offline members: bounded sender-side queue (8/job FIFO, drop-oldest
+  with explicit failed markings), fast failure on relay `group/offline`,
+  lazy re-pairing with force-refreshed keys on reconnect, and re-seal
+  to the *current* epoch before flush; relay restart ⇒ groups defunct
+- Delivery is per-recipient fanout: QUEUED/SENDING/SENT/DELIVERED/READ/
+  FAILED with `delivered k/m` always explicit — the UI never reports
+  full delivery for partial fanout; GACK per message id, GREAD
+  cumulative per gseq (both sealed on the same links)
+- Terminal group chat UI + `ghostlink group chat`:
+  banner with name/id, member count, epoch, mesh-link and encryption
+  status, latency; message blocks with attribution to the authenticated
+  fingerprint; delivery lines; security notices; gap warnings;
+  `/help /info /members /fingerprint /delivery /invite /leave /history
+  /export /quit`; history reuses the existing store (off / session /
+  encrypted modes, existing caps, no keys)
+- 118 new tests: cross-context AEAD matrices, replay/rollback/gap
+  tables, member removal and new-member isolation, offline bounds and
+  flush, reconnect re-keying with zeroization proofs, relay
+  flood/rate/abuse limits, malformed-envelope matrices, log/secret
+  hygiene, full eight-member loopback fanout, and the CLI/TUI surfaces
+  against a live relay
+
+## Phase 6D — Rich Communication
 
 - Friend system: adding, verifying safety numbers, blocking
-- Group rooms beyond the one-to-one channel
 - Message replies, edits, and reactions
 - Contact cards and room metadata panels
 - Settings screen becomes editable; notification center gains unread state

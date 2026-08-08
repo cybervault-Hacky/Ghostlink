@@ -8,6 +8,8 @@ from ghostlink.cli.arguments import CLIOptions
 from ghostlink.config.manager import ConfigOverrides, ConfigurationManager
 from ghostlink.core.environment import EnvironmentDetector
 from ghostlink.core.logging import get_logger, setup_logging
+from ghostlink.groups.lifecycle import LocalGroupManager
+from ghostlink.groups.registry import LocalGroupRegistry
 from ghostlink.identity.lifecycle import IdentityManager
 from ghostlink.identity.storage import IdentityStore
 from ghostlink.invites.lifecycle import SecureInviteManager
@@ -32,6 +34,7 @@ class CommandRuntime:
     rooms: RoomService
     identities: IdentityManager
     invites: SecureInviteManager
+    groups: LocalGroupManager
 
 
 def build_runtime(options: CLIOptions) -> CommandRuntime:
@@ -57,6 +60,7 @@ def build_runtime(options: CLIOptions) -> CommandRuntime:
     rooms = RoomService(storage, settings)
     identities = IdentityManager(IdentityStore(storage))
     invites = SecureInviteManager(LocalInviteRegistry(storage))
+    groups = LocalGroupManager(LocalGroupRegistry(storage), identities)
     get_logger("cli.commands").debug("command runtime built")
     return CommandRuntime(
         console=console,
@@ -66,6 +70,7 @@ def build_runtime(options: CLIOptions) -> CommandRuntime:
         rooms=rooms,
         identities=identities,
         invites=invites,
+        groups=groups,
     )
 
 

@@ -144,6 +144,8 @@ AppSettings (immutable for the whole run)
 | `ThemeNotFoundError` | 5 | Theme name not registered |
 | `TransportError` family | 6 | Relay unreachable, timeout, handshake or packet violation, relay error |
 | `MessagingError` family | 6 | Frame validation, secure-channel handshake, integrity (AEAD) failures, peer unavailable |
+| `InviteError` family | 7 | Unknown/expired/revoked/used invite, invite permission or state failures |
+| `GroupError` family | 8 | Unknown group, not-owner/not-member, group full, stale epoch, suspect state, join timeout |
 | `ServiceNotRegisteredError` | 1 | Container misuse (programming error) |
 | any other exception | 1 | Rendered as “Unexpected error”, traceback in log/Debug Mode |
 | `KeyboardInterrupt` outside menu | 130 | Ctrl+C |
@@ -444,3 +446,114 @@ volume) — GhostLink minimizes application-level identity but makes no
 anonymity or untraceability claims; a stolen terminal state directory can
 leak stored metadata (mitigated by `0600`, retention purges, and
 history-off defaults); denial of service by the relay or network.
+
+## 14. Groups (Phase 6B)
+
+Group membership adds a second in-memory authority next to the Phase 5
+`InviteAuthority`, plus a small metadata-only client store:
+
+- `ghostlink/groups/ids.py` — `gl-group-XXXX-XXXX-XXXX` identifiers
+  (same alphabet discipline as rooms, distinct prefix).
+- `ghostlink/groups/events.py` — canonical signed forms; Ed25519 only
+  (the Phase 5 identity primitive). `ghostlink/group-event/v1|group|epoch|
+  kind|subject|wall_ts` for roster events; separate create/attest forms
+  bind proof-of-possession to the relay-issued per-session `attest_nonce`
+  delivered in the existing `WELCOME` packet.
+- `ghostlink/groups/authority.py` — relay-side `GroupAuthority`:
+  race-free roster/epoch registry. Every check-and-commit is one
+  synchronous call with no `await` between check and write, so the single
+  event loop serializes all mutations deterministically. Mutations are
+  two-phase: enqueue → promote (epoch = current+1, canonical bytes and
+  wall timestamp pinned) → authorized signature verified → commit; one
+  outstanding signature per group. Owner signs join/removed/dissolved,
+  the leaver signs left. Capacity (`roster + candidates + pending joins
+  ≤ 8`) is checked atomically at invite redemption *before* the token is
+  consumed, so a full-group verdict never burns a redemption.
+- Transport protocol v4 (`GROUP_CREATE/GRANTED/ATTEST/ATTESTED/STATE/
+  ROSTER/LEAVE/REMOVE/DISSOLVE/SIGN_REQUEST/SIGN/EVENT`), symmetric
+  validation, additive and version-gated: clients below v4 get
+  `protocol/unsupported`; chat (v1–v3) traffic is untouched. `WELCOME`
+  carries the optional `attest_nonce`; `INVITE_*` gains a `kind` field
+  (`chat` default keeps byte-compatible payloads).
+- `ghostlink/groups/registry.py` + `models.py` — local `groups.json`
+  store via the same atomic-write `StorageManager`; metadata only
+  (fingerprints, public keys, epochs, event descriptors — asserted
+  metadata-only at save). `LocalGroupRecord` applies only
+  signature-verified events with strict +1 epochs; stale/duplicate
+  events are dropped, gapped events mark the record *suspect*, terminal
+  records (`left/removed/dissolved/defunct`) archive and purge after 24 h
+  of retention.
+- `ghostlink/groups/lifecycle.py` — `LocalGroupManager`, the client-side
+  engine the CLI calls: create (PoP), invite (owner-gated, headroom
+  checked locally *and* at the relay), join (redemption-pinned snapshot
+  per GROUPS.md §12.2, candidate attestation, owner-countersign await,
+  then re-attest + authoritative roster adoption — success-only
+  persistence), leave/remove/dissolve via committed events, re-sync after
+  reconnect (epoch rollback → suspect, never a silent regression), and
+  the signer callback that declines anything the local record does not
+  authorize at exactly the next epoch.
+- CLI: `ghostlink group create|list|info|invite|join|leave|remove|
+  dissolve|sync|host` — thin rendering over the manager; exit code 8 for
+  all group refusals. `group host` is the owner listener that
+  countersigns admissions (the design's §13.2 requirement that the owner
+  be online).
+
+State the relay keeps is volatile: a relay restart makes groups defunct
+locally (§28.4 of docs/GROUPS.md) — never silently resurrected. Group
+messaging/encryption is explicitly the next stage; nothing in 6B seals
+or routes group content.
+
+## 14A. Group messaging (Phase 6C)
+
+End-to-end group conversations per docs/GROUPS.md §17–§33, on the
+pairwise mesh (no sender keys — Phase 7 hardening candidate):
+
+- `ghostlink/groups/mesh.py` — `GroupMeshManager`: one identity-bound
+  pairwise link per (group, peer) at the current epoch. Handshakes
+  reuse the Phase 3 authenticated exchange with context
+  `ghostlink/group/v1|{group}|{epoch}`; both sides must present the
+  identity key the *roster* pins for them (`idpub`), and session proof
+  is HKDF over the handshake transcript — cross-group/epoch or key
+  substitution cannot complete a pairing. The smaller identity key is
+  the deterministic initiator (§17.2.3); a demand *knock* lets the
+  responder role pull a pairing (knocks force a re-pair, zeroizing the
+  superseded key, because a knocking peer lost its session-scoped key,
+  §27.2). Epoch leaps move superseded links into a real-time 30 s drain
+  window (§16.5) then zeroize them; close/attach zeroize everything.
+- `ghostlink/groups/frames.py` — sealed inner frames (`GMSG/GACK/
+  GREAD`), each re-carrying `{group, epoch, sender, recipient}` for the
+  post-decrypt cross-check (§18.2 step 3); `gmsg_` + 16 hex CSPRNG
+  message ids; per-sender `gseq` tracker (memory-scoped, gap ≤ 64
+  flagged, beyond dropped + suspect); `(sender_fp, message_id)` LRU
+  dedupe (512/sender); per-recipient delivery ledgers
+  (QUEUED/SENDING/SENT/DELIVERED/READ/FAILED) with `delivered k/m`
+  always explicit.
+- `ghostlink/groups/service.py` — `GroupMessagingService`: the domain
+  engine. Sending computes AAD
+  `ghostlink/group-msg/v1|{group}|{epoch}|{from}|{to}` and seals
+  independently per roster recipient (fanout ≤ 7, sender excluded,
+  never a non-roster member); the sender must be ACTIVE in the current
+  epoch. Receiving runs the §18.2 pipeline — envelope gates, AEAD open
+  (fail-closed), sealed-context equality, inner schema, dedupe, gseq
+  monotonicity, attribution to the authenticated fingerprint, GACK —
+  and never crashes on malformed input. Offline members get
+  `group/offline` from the relay (fast failure, stale-link teardown)
+  plus a bounded sender-side retry queue (8 FIFO drop-oldest with
+  explicit FAILED markings); reconnected peers are re-paired with fresh
+  keys and queued jobs re-seal to the current epoch (§27.2).
+- Relay (`ghostlink/transport/relay/server.py`): `GROUP_FORWARD` is
+  validated (framing, fingerprints, kind, per-kind body caps),
+  ACL-checked against the authoritative roster (sender attested ACTIVE,
+  recipient ACTIVE, epoch ∈ {e, e−1}), rate-limited (token bucket 20/s
+  + burst 20 per group+sender over all forwarding incl. kex), then
+  forwarded **opaque**. `group/offline` and `group/rate` errors carry a
+  member hint so the sender correlates per-recipient state. There is no
+  relay-side message queue.
+- `ghostlink/ui/group_chat.py` + `ghostlink group chat` — the terminal
+  conversation surface: banner (name/id, member count, epoch, mesh
+  links, encryption status, latency), attributed message blocks,
+  delivery lines, security/membership notices, gap warnings, and
+  `/help /info /members /fingerprint /delivery /invite /leave /history
+  /export /quit`. No key material is ever rendered. Group history
+  reuses the existing history backends (off / session / encrypted) with
+  `record_group` entries keyed by group id.

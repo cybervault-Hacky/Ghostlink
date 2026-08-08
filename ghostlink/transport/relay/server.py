@@ -3,7 +3,8 @@
 A real, minimal relay used for local development and the test suite. It
 accepts WebSocket clients, enforces the HELLO/WELCOME handshake, answers
 PING with PONG, acknowledges HEARTBEAT, tracks one session per client with
-inactivity expiry, and closes politely with DISCONNECT.
+inactivity expiry, closes politely with DISCONNECT, and hosts the invite
+authority (v3) and the group lifecycle authority (v4).
 
 Run it locally:
 
@@ -14,6 +15,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import collections
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -22,6 +25,12 @@ from typing import cast
 from ghostlink.constants.net import (
     CHANNEL_CAPACITY,
     DEFAULT_RELAY_PORT,
+    GROUP_EVENT_RATE_OPS,
+    GROUP_EVENT_RATE_WINDOW_SECONDS,
+    GROUP_FORWARD_RATE_BURST,
+    GROUP_FORWARD_RATE_PER_SECOND,
+    GROUP_MAX_ACTIVE_INVITES,
+    GROUP_PROTOCOL_VERSION,
     HEARTBEAT_INTERVAL_SECONDS,
     INVITE_PROTOCOL_VERSION,
     RELAY_SESSION_TTL_SECONDS,
@@ -29,12 +38,25 @@ from ghostlink.constants.net import (
     SESSION_SWEEP_INTERVAL_SECONDS,
 )
 from ghostlink.core.logging import get_logger
+from ghostlink.exceptions.groups import (
+    GroupConflictError,
+    GroupDissolvedError,
+    GroupEpochError,
+    GroupError,
+    GroupFullError,
+    GroupJoinTimeoutError,
+    GroupNotMemberError,
+    GroupPermissionError,
+    GroupUnknownError,
+    GroupValidationError,
+)
 from ghostlink.exceptions.transport import (
     ConnectionTimeoutError,
     HandshakeError,
     PacketValidationError,
     TransportError,
 )
+from ghostlink.groups.authority import CommittedOp, GroupAuthority
 from ghostlink.invites.authority import (
     InviteAuthority,
     RedemptionResult,
@@ -50,6 +72,11 @@ from ghostlink.transport.relay.protocol import (
     encode_packet,
     error_packet,
     forward_packet,
+    group_attested_packet,
+    group_event_packet,
+    group_granted_packet,
+    group_roster_packet,
+    group_sign_request_packet,
     heartbeat_packet,
     invite_state_packet,
     peer_packet,
@@ -64,9 +91,11 @@ from ghostlink.transport.websocket.protocol import (
     perform_server_handshake,
 )
 
-SERVER_PROTOCOL_VERSION = 3
+SERVER_PROTOCOL_VERSION = 4
 HELLO_TIMEOUT_SECONDS = 5.0
 HANDSHAKE_TIMEOUT_SECONDS = 5.0
+GROUP_SWEEP_INTERVAL_SECONDS = 5.0
+GROUP_SIGN_REOFFER_SECONDS = 15.0
 
 
 @dataclass(slots=True)
@@ -80,6 +109,7 @@ class _ClientContext:
     # channel -> role this connection is attached as (rendezvous routing)
     attachments: dict[str, str] = field(default_factory=dict)
     protocol_version: int = 1
+    attest_nonce: str = ""  # per-session group attestation challenge (v4)
 
     @property
     def conn(self) -> WebSocketConnection:
@@ -113,6 +143,8 @@ class RelayServer:
         session_ttl_seconds: float = RELAY_SESSION_TTL_SECONDS,
         heartbeat_interval_seconds: float = HEARTBEAT_INTERVAL_SECONDS,
         server_name: str = SERVER_NAME,
+        invite_authority: InviteAuthority | None = None,
+        group_authority: GroupAuthority | None = None,
     ) -> None:
         self._host = host
         self._requested_port = port
@@ -128,7 +160,15 @@ class RelayServer:
         )
         self._next_client_id = 0
         self._channels: dict[str, _Channel] = {}
-        self._invites = InviteAuthority()
+        self._invites = invite_authority if invite_authority is not None else InviteAuthority()
+        self._groups = group_authority if group_authority is not None else GroupAuthority()
+        self._contexts_by_session: dict[str, _ClientContext] = {}
+        self._last_sign_delivery: dict[str, str] = {}  # group_id -> "op:session"
+        self._group_sweeper: asyncio.Task[None] | None = None
+        # Phase 6C abuse brakes (§32): token bucket per (group, session) for
+        # GROUP_FORWARD, sliding window per session for membership ops.
+        self._forward_tokens: dict[tuple[str, str], tuple[float, float]] = {}
+        self._event_windows: dict[str, collections.deque[float]] = {}
 
     # ------------------------------------------------------------- invites
 
@@ -137,6 +177,12 @@ class RelayServer:
         """The relay-side invite authority (observability/tests)."""
 
         return self._invites
+
+    @property
+    def groups(self) -> GroupAuthority:
+        """The relay-side group authority (observability/tests)."""
+
+        return self._groups
 
     # ------------------------------------------------------------- properties
 
@@ -181,6 +227,7 @@ class RelayServer:
             self._on_connection, self._host, self._requested_port
         )
         self.sessions.start_sweeper()
+        self._group_sweeper = asyncio.create_task(self._sweep_groups())
         self._logger.info("relay listening on %s (ttl=%.0fs)", self.url, self._session_ttl)
 
     async def serve_forever(self) -> None:
@@ -194,6 +241,11 @@ class RelayServer:
         """Stop accepting, say goodbye to clients, and settle all tasks."""
 
         await self.sessions.stop_sweeper()
+        if self._group_sweeper is not None:
+            self._group_sweeper.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._group_sweeper
+            self._group_sweeper = None
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -301,12 +353,17 @@ class RelayServer:
         )
         protocol_raw = packet.payload.get("protocol", 1)
         context.protocol_version = protocol_raw if isinstance(protocol_raw, int) else 1
+        import secrets as _secrets
+
+        context.attest_nonce = _secrets.token_hex(16)
+        self._contexts_by_session[session.session_id] = context
         await self._send(
             context,
             welcome_packet(
                 session.session_id,
                 server_name=self._server_name,
                 heartbeat_interval_seconds=self._heartbeat_interval,
+                attest_nonce=context.attest_nonce,
             ),
         )
         self._logger.info("client attached — %s as %s", context.remote, session.session_id)
@@ -361,6 +418,22 @@ class RelayServer:
             await self._handle_invite_revoke(client_id, context, packet)
         elif packet.type is PacketType.REDEEM:
             await self._handle_redeem(client_id, context, packet)
+        elif packet.type is PacketType.GROUP_CREATE:
+            await self._handle_group_create(client_id, context, packet)
+        elif packet.type is PacketType.GROUP_ATTEST:
+            await self._handle_group_attest(client_id, context, packet)
+        elif packet.type is PacketType.GROUP_STATE:
+            await self._handle_group_state(client_id, context, packet)
+        elif packet.type is PacketType.GROUP_LEAVE:
+            await self._handle_group_leave(client_id, context, packet)
+        elif packet.type is PacketType.GROUP_REMOVE:
+            await self._handle_group_remove(client_id, context, packet)
+        elif packet.type is PacketType.GROUP_DISSOLVE:
+            await self._handle_group_dissolve(client_id, context, packet)
+        elif packet.type is PacketType.GROUP_SIGN:
+            await self._handle_group_sign(client_id, context, packet)
+        elif packet.type is PacketType.GROUP_FORWARD:
+            await self._handle_group_forward(client_id, context, packet)
         elif packet.type in (PacketType.HELLO, PacketType.WELCOME):
             await self._send(
                 context,
@@ -427,19 +500,59 @@ class RelayServer:
                 token_hint,
             )
             return
+        kind = str(packet.payload.get("kind", "chat"))
+        group_id = str(packet.payload.get("group", ""))
+        if kind == "group":
+            # Group invites: owner-only, capacity headroom, bounded invite
+            # fan-out — all enforced before the invite is even registered.
+            if context.protocol_version < GROUP_PROTOCOL_VERSION:
+                await self._invite_error(
+                    context,
+                    "protocol/unsupported",
+                    "Group invites require relay protocol v4.",
+                    self._public_invite_id(str(packet.payload["token"])),
+                )
+                return
+            try:
+                self._groups.allow_invite_mint(
+                    group_id, self._invite_session_id(context), int(packet.payload["uses"])
+                )
+                if self._invites.count_active_group_invites(group_id) >= GROUP_MAX_ACTIVE_INVITES:
+                    raise GroupConflictError(
+                        f"This group already has {GROUP_MAX_ACTIVE_INVITES} active invites.",
+                        hint="Revoke or let expire an old invite before minting another.",
+                    )
+            except GroupError as exc:
+                await self._invite_error(
+                    context,
+                    self._group_error_code(exc),
+                    exc.message,
+                    self._public_invite_id(str(packet.payload["token"])),
+                )
+                return
         try:
             grant = self._invites.register(
                 str(packet.payload["token"]),
-                room_id=str(packet.payload["room"]),
+                room_id=str(packet.payload.get("room", "")),
                 ttl_seconds=float(packet.payload["ttl"]),
                 max_redemptions=int(packet.payload["uses"]),
                 creator_session=self._invite_session_id(context),
+                kind=kind,
+                group_id=group_id,
             )
         except ValueError as exc:
             await self._invite_error(
                 context,
                 "invite/invalid",
                 f"Invite refused: {exc}.",
+                self._public_invite_id(str(packet.payload["token"])),
+            )
+            return
+        except GroupError as exc:
+            await self._invite_error(
+                context,
+                self._group_error_code(exc),
+                exc.message,
                 self._public_invite_id(str(packet.payload["token"])),
             )
             return
@@ -550,6 +663,13 @@ class RelayServer:
             )
             return
         token = str(packet.payload["token"])
+        # Group-kind branch: the capacity check and the invite consumption
+        # must settle in ONE await-free section. A lost capacity race rolls
+        # the pending-join slot back so the invite is never burned.
+        peek = self._invites.lookup(token)
+        if peek is not None and peek.kind == "group":
+            await self._handle_group_redeem(client_id, context, packet, peek.group_id)
+            return
         # Atomic consumption: check-and-consume happen with no awaits in
         # between, so two simultaneous REDEEM packets can never both win.
         result = self._invites.redeem(token, redeem_session=self._invite_session_id(context))
@@ -590,6 +710,66 @@ class RelayServer:
             self._invite_session_id(context),
         )
 
+    async def _handle_group_redeem(
+        self, client_id: int, context: _ClientContext, packet: Packet, group_id: str
+    ) -> None:
+        """Group-kind redemption: capacity reservation + atomic invite consume.
+
+        No room channel is attached — group membership is established by the
+        subsequent GROUP_ATTEST + owner countersign (docs/GROUPS.md §13).
+        """
+
+        token = str(packet.payload["token"])
+        session = self._invite_session_id(context)
+        invite_id = self._public_invite_id(token)
+        if context.protocol_version < GROUP_PROTOCOL_VERSION:
+            await self._invite_error(
+                context,
+                "protocol/unsupported",
+                "Group invites require relay protocol v4.",
+                invite_id,
+            )
+            return
+        # 1) Group-side admission gate (no invite consumption yet).
+        try:
+            snapshot = self._groups.begin_join_redemption(
+                group_id, redeem_session=session, invite_id=invite_id
+            )
+        except GroupError as exc:
+            await self._invite_error(context, self._group_error_code(exc), exc.message, invite_id)
+            return
+        # 2) Atomic invite consumption in the same await-free stretch.
+        result = self._invites.redeem(token, redeem_session=session)
+        if result.verdict is not RedemptionVerdict.REDEEMED:
+            self._groups.cancel_pending_join(group_id, session)
+            code = {
+                RedemptionVerdict.UNKNOWN: "invite/unknown",
+                RedemptionVerdict.EXPIRED: "invite/expired",
+                RedemptionVerdict.REVOKED: "invite/revoked",
+                RedemptionVerdict.ALREADY_USED: "invite/already-used",
+            }[result.verdict]
+            await self._invite_error(context, code, self._verdict_message(result), result.invite_id)
+            return
+        # 3) Redeemed: the joiner pins this roster snapshot (docs/GROUPS.md §12.2).
+        await self._send(
+            context,
+            redeemed_packet(
+                result.invite_id,
+                "",
+                result.expires_at.timestamp() if result.expires_at else 0.0,
+                kind="group",
+                group_id=snapshot.group_id,
+                group_name=snapshot.name,
+                owner_fingerprint=snapshot.owner_fingerprint,
+                owner_public_key_hex=snapshot.owner_public_key_hex,
+                members=snapshot.members_payload(),
+                epoch=snapshot.epoch,
+            ),
+        )
+        self._logger.info(
+            "group invite redeemed — %s → %s (session %s)", result.invite_id, group_id, session
+        )
+
     @staticmethod
     def _verdict_message(result: RedemptionResult) -> str:
         return {
@@ -599,6 +779,416 @@ class RelayServer:
             RedemptionVerdict.ALREADY_USED: "This invite has already been used.",
             RedemptionVerdict.REDEEMED: "Redeemed.",
         }[result.verdict]
+
+    # ---------------------------------------------------------- groups (v4)
+
+    _GROUP_ERROR_CODES: tuple[tuple[type[GroupError], str], ...] = (
+        (GroupJoinTimeoutError, "group/join-timeout"),
+        (GroupEpochError, "group/state"),
+        (GroupConflictError, "group/conflict"),
+        (GroupDissolvedError, "group/dissolved"),
+        (GroupFullError, "group/full"),
+        (GroupPermissionError, "group/not-owner"),
+        (GroupNotMemberError, "group/not-member"),
+        (GroupUnknownError, "group/unknown"),
+        (GroupValidationError, "group/invalid"),
+    )
+
+    def _group_error_code(self, exc: GroupError) -> str:
+        for error_type, code in self._GROUP_ERROR_CODES:
+            if isinstance(exc, error_type):
+                return code
+        return "group/invalid"
+
+    async def _group_error(
+        self, context: _ClientContext, code: str, message: str, group_id: str = ""
+    ) -> None:
+        """ERROR packet scoped to a group — carries the group id only."""
+
+        payload: dict[str, object] = {"code": code, "message": message}
+        if group_id:
+            payload["group"] = group_id
+        await self._send(context, Packet(PacketType.ERROR, payload))
+        self._logger.info("group op refused — %s (%s)", code, group_id or "unidentified")
+
+    async def _group_protocol_gate(self, context: _ClientContext, group_id: str) -> bool:
+        if context.protocol_version >= GROUP_PROTOCOL_VERSION:
+            return True
+        await self._group_error(
+            context,
+            "protocol/unsupported",
+            "Group operations require relay protocol v4.",
+            group_id,
+        )
+        return False
+
+    def _session_id(self, context: _ClientContext) -> str:
+        return context.session.session_id if context.session is not None else "none"
+
+    async def _send_to_session(self, session_id: str, packet: Packet) -> bool:
+        """Push one packet to a session-bound client (best effort)."""
+
+        context = self._contexts_by_session.get(session_id)
+        if context is None or context.connection is None or context.connection.closed:
+            return False
+        try:
+            await self._send(context, packet)
+        except (TransportError, ConnectionError, OSError) as exc:
+            self._logger.debug("push to session %s failed: %s", session_id, exc)
+            return False
+        return True
+
+    async def _handle_group_create(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        if context.protocol_version < GROUP_PROTOCOL_VERSION:
+            await self._group_error(
+                context, "protocol/unsupported", "Group operations require relay protocol v4."
+            )
+            return
+        try:
+            snapshot = self._groups.create_group(
+                session_id=self._session_id(context),
+                name=str(packet.payload["name"]),
+                public_key_hex=str(packet.payload["pubkey"]),
+                pop_signature_b64=str(packet.payload["pop"]),
+                attest_nonce=context.attest_nonce,
+                handle=str(packet.payload["handle"]),
+                display_name=str(packet.payload["display"]),
+            )
+        except GroupError as exc:
+            await self._group_error(context, self._group_error_code(exc), exc.message)
+            return
+        await self._send(context, group_granted_packet(snapshot.group_id, snapshot.epoch))
+
+    async def _handle_group_attest(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        group_id = str(packet.payload["group"])
+        if not await self._group_protocol_gate(context, group_id):
+            return
+        try:
+            outcome = self._groups.attest(
+                session_id=self._session_id(context),
+                group_id=group_id,
+                public_key_hex=str(packet.payload["pubkey"]),
+                signature_b64=str(packet.payload["sig"]),
+                attest_nonce=context.attest_nonce,
+                handle=str(packet.payload["handle"]),
+                display_name=str(packet.payload["display"]),
+            )
+        except GroupError as exc:
+            await self._group_error(context, self._group_error_code(exc), exc.message, group_id)
+            return
+        members = outcome.snapshot.members_payload() if outcome.snapshot is not None else None
+        events = (
+            [dict(event) for event in outcome.snapshot.events]
+            if outcome.snapshot is not None
+            else None
+        )
+        await self._send(
+            context,
+            group_attested_packet(
+                outcome.group_id,
+                outcome.role,
+                outcome.epoch,
+                members=members,
+                events=events,
+            ),
+        )
+        # A signer (owner/candidate) may now be reachable for pending ops.
+        await self._deliver_sign_task(group_id)
+
+    async def _handle_group_state(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        group_id = str(packet.payload["group"])
+        if not await self._group_protocol_gate(context, group_id):
+            return
+        try:
+            snapshot = self._groups.roster_view(group_id, self._session_id(context))
+        except GroupError as exc:
+            await self._group_error(context, self._group_error_code(exc), exc.message, group_id)
+            return
+        await self._send(
+            context,
+            group_roster_packet(
+                snapshot.group_id,
+                snapshot.epoch,
+                snapshot.state,
+                snapshot.members_payload(),
+                [dict(event) for event in snapshot.events],
+            ),
+        )
+
+    async def _group_event_rate_gate(self, context: _ClientContext, group_id: str) -> bool:
+        """§32 GROUP_EVENT_RATE brake on leave/remove/dissolve bursts."""
+
+        if self._event_rate_allowed(self._session_id(context)):
+            return True
+        await self._group_error(
+            context,
+            "group/rate",
+            "Too many membership operations — slow down (rate limit per §32).",
+            group_id,
+        )
+        return False
+
+    async def _handle_group_leave(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        group_id = str(packet.payload["group"])
+        if not await self._group_protocol_gate(context, group_id):
+            return
+        if not await self._group_event_rate_gate(context, group_id):
+            return
+        try:
+            self._groups.request_leave(group_id, self._session_id(context))
+        except GroupError as exc:
+            await self._group_error(context, self._group_error_code(exc), exc.message, group_id)
+            return
+        await self._deliver_sign_task(group_id)
+
+    async def _handle_group_remove(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        group_id = str(packet.payload["group"])
+        if not await self._group_protocol_gate(context, group_id):
+            return
+        if not await self._group_event_rate_gate(context, group_id):
+            return
+        try:
+            self._groups.request_remove(
+                group_id, self._session_id(context), str(packet.payload["subject"])
+            )
+        except GroupError as exc:
+            await self._group_error(context, self._group_error_code(exc), exc.message, group_id)
+            return
+        await self._deliver_sign_task(group_id)
+
+    async def _handle_group_dissolve(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        group_id = str(packet.payload["group"])
+        if not await self._group_protocol_gate(context, group_id):
+            return
+        if not await self._group_event_rate_gate(context, group_id):
+            return
+        try:
+            self._groups.request_dissolve(group_id, self._session_id(context))
+        except GroupError as exc:
+            await self._group_error(context, self._group_error_code(exc), exc.message, group_id)
+            return
+        await self._deliver_sign_task(group_id)
+
+    async def _handle_group_sign(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        group_id = str(packet.payload["group"])
+        if not await self._group_protocol_gate(context, group_id):
+            return
+        try:
+            committed = self._groups.submit_signature(
+                group_id,
+                self._session_id(context),
+                str(packet.payload["op"]),
+                str(packet.payload["sig"]),
+            )
+        except GroupError as exc:
+            await self._group_error(context, self._group_error_code(exc), exc.message, group_id)
+            return
+        await self._broadcast_group_event(committed)
+        self._last_sign_delivery.pop(group_id, None)
+        await self._deliver_sign_task(group_id)
+
+    async def _deliver_sign_task(self, group_id: str) -> None:
+        """Offer the queue-head signature request to its online signer."""
+
+        task = self._groups.next_sign_task(group_id)
+        if task is None or task.signer_session is None:
+            return
+        delivery_key = f"{task.op_id}:{task.signer_session}"
+        if self._last_sign_delivery.get(group_id) == delivery_key:
+            return  # already offered; the response (or the sweeper) settles it
+        delivered = await self._send_to_session(
+            task.signer_session,
+            group_sign_request_packet(
+                task.group_id,
+                task.op_id,
+                task.kind,
+                task.subject_fingerprint,
+                task.epoch,
+                task.message_b64,
+            ),
+        )
+        if delivered:
+            self._last_sign_delivery[group_id] = delivery_key
+
+    async def _broadcast_group_event(self, committed: CommittedOp) -> None:
+        event = committed.event
+        member_payload = committed.join_member.to_payload() if committed.join_member else None
+        packet = group_event_packet(
+            event.group_id,
+            event.epoch,
+            event.kind.value,
+            event.subject_fingerprint,
+            event.wall_ts.isoformat(),
+            event.signer_fingerprint,
+            base64.b64encode(event.signature).decode("ascii"),
+            member=member_payload,
+        )
+        for session_id in committed.notify_sessions:
+            await self._send_to_session(session_id, packet)
+
+    # ------------------------------------------------- group messaging (6C)
+
+    async def _group_forward_error(
+        self,
+        context: _ClientContext,
+        code: str,
+        message: str,
+        group_id: str,
+        member: str,
+    ) -> None:
+        """GROUP_FORWARD-scoped refusal; correlates via group + member.
+
+        Forward errors always name the addressed member so the sender's
+        per-recipient ledger can mark exactly that recipient — and so the
+        client never confuses them with lifecycle round-trip failures.
+        """
+
+        await self._send(
+            context,
+            Packet(
+                PacketType.ERROR,
+                {"code": code, "message": message, "group": group_id, "member": member},
+            ),
+        )
+        self._logger.info(
+            "group forward refused — %s (%s → %s)", code, group_id or "unidentified", member
+        )
+
+    def _forward_rate_allowed(self, group_id: str, session_id: str) -> bool:
+        """Token bucket: 20 envelopes/s (+burst) per (group, sender) — §32."""
+
+        now = asyncio.get_running_loop().time()
+        key = (group_id, session_id)
+        tokens, stamped = self._forward_tokens.get(key, (float(GROUP_FORWARD_RATE_BURST), now))
+        tokens = min(
+            float(GROUP_FORWARD_RATE_BURST),
+            tokens + (now - stamped) * GROUP_FORWARD_RATE_PER_SECOND,
+        )
+        if tokens < 1.0:
+            self._forward_tokens[key] = (tokens, now)
+            return False
+        self._forward_tokens[key] = (tokens - 1.0, now)
+        return True
+
+    def _event_rate_allowed(self, session_id: str) -> bool:
+        """Sliding window: 4 membership ops per 10 s per session — §32."""
+
+        now = asyncio.get_running_loop().time()
+        window = self._event_windows.setdefault(session_id, collections.deque())
+        while window and now - window[0] > GROUP_EVENT_RATE_WINDOW_SECONDS:
+            window.popleft()
+        if len(window) >= GROUP_EVENT_RATE_OPS:
+            return False
+        window.append(now)
+        return True
+
+    async def _handle_group_forward(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        """Route one opaque group envelope (§28): ACL + rate gates only.
+
+        The relay is never a group-message processor: it checks that both
+        endpoints are attested ACTIVE members (from == the sending
+        session's attested fingerprint), applies the §32 flood brake, and
+        forwards the untouched envelope. Offline recipients are NOT
+        queued relay-side (§29) — the sender learns `group/offline`.
+        """
+
+        group_id = str(packet.payload["group"])
+        to_fingerprint = str(packet.payload["to"])
+        from_fingerprint = str(packet.payload["from"])
+        if not await self._group_protocol_gate(context, group_id):
+            return
+        session_id = self._session_id(context)
+        try:
+            attested = self._groups.session_fingerprint(group_id, session_id)
+            if attested is None or attested != from_fingerprint:
+                raise GroupNotMemberError(
+                    "The sending session does not match the envelope sender.",
+                    hint="Attest first; the 'from' label is bound at routing time.",
+                )
+            target_session = self._groups.authorize_forward(
+                group_id, session_id, to_fingerprint, int(str(packet.payload["epoch"]))
+            )
+        except GroupError as exc:
+            await self._group_forward_error(
+                context, self._group_error_code(exc), exc.message, group_id, to_fingerprint
+            )
+            return
+        if not self._forward_rate_allowed(group_id, session_id):
+            await self._group_forward_error(
+                context,
+                "group/rate",
+                "Too many group envelopes — slow down (rate limit per §32).",
+                group_id,
+                to_fingerprint,
+            )
+            return
+        if target_session is None:
+            # No relay-side queue (§29): the sender retries within its
+            # bounded offline queue; nothing is stored here.
+            await self._group_forward_error(
+                context,
+                "group/offline",
+                "The addressed member is not currently connected.",
+                group_id,
+                to_fingerprint,
+            )
+            return
+        delivered = await self._send_to_session(target_session, packet)
+        if not delivered:
+            await self._group_forward_error(
+                context,
+                "group/offline",
+                "The addressed member could not be reached.",
+                group_id,
+                to_fingerprint,
+            )
+
+    async def _sweep_groups(self) -> None:
+        """Periodic group-authority maintenance (timeouts, tombstone purges)."""
+
+        try:
+            while True:
+                await asyncio.sleep(GROUP_SWEEP_INTERVAL_SECONDS)
+                for notice in self._groups.sweep():
+                    if notice.session_id is not None:
+                        await self._send_to_session(
+                            notice.session_id,
+                            Packet(
+                                PacketType.ERROR,
+                                {
+                                    "code": notice.code,
+                                    "message": notice.message,
+                                    "group": notice.group_id,
+                                },
+                            ),
+                        )
+                    self._last_sign_delivery.pop(notice.group_id, None)
+                    await self._deliver_sign_task(notice.group_id)
+                # Liveness: re-offer signature requests whose first delivery
+                # may have raced a client that attached its signer late.
+                for group_id in self._groups.group_ids():
+                    age = self._groups.sign_task_age(group_id)
+                    if age is not None and age > GROUP_SIGN_REOFFER_SECONDS:
+                        self._last_sign_delivery.pop(group_id, None)
+                        await self._deliver_sign_task(group_id)
+        except asyncio.CancelledError:
+            raise
 
     # ---------------------------------------------------- rendezvous routing
 
@@ -767,8 +1357,16 @@ class RelayServer:
             await self._leave_channel(client_id, channel_id)
         context.attachments.clear()
         if context.session is not None:
-            self.sessions.remove(context.session.session_id)
+            # Group lifecycle: drop session bindings (memberships remain on
+            # the roster; pending joins bound to the dead session expire).
+            session_id = context.session.session_id
+            self._groups.disbind_session(session_id)
+            self._contexts_by_session.pop(session_id, None)
+            self.sessions.remove(session_id)
             context.session = None
+            self._event_windows.pop(session_id, None)
+            for key in [key for key in self._forward_tokens if key[1] == session_id]:
+                del self._forward_tokens[key]
         if context.connection is not None and not context.connection.closed:
             await context.connection.close()
 

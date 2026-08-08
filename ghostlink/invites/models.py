@@ -25,6 +25,7 @@ from enum import Enum
 
 from ghostlink.exceptions.config import ConfigValidationError
 from ghostlink.exceptions.invites import InviteStateError
+from ghostlink.groups.ids import is_valid_group_id
 from ghostlink.invites.tokens import is_valid_invite_id
 from ghostlink.models.room import is_valid_room_id
 
@@ -87,7 +88,9 @@ class InviteRecord:
     __slots__ = (
         "created_at",
         "expires_at",
+        "group_id",
         "invite_id",
+        "kind",
         "max_redemptions",
         "protocol_version",
         "redemptions",
@@ -112,13 +115,22 @@ class InviteRecord:
         session_binding: str = "",
         relay_url: str = "",
         protocol_version: int = 1,
+        kind: str = "chat",
+        group_id: str = "",
     ) -> None:
         if not is_valid_invite_id(invite_id):
             raise ConfigValidationError(
                 f"Invite id '{invite_id}' is malformed.",
                 hint="Invite ids look like gi_<10 lowercase hex>.",
             )
-        if not is_valid_room_id(room_id):
+        if kind == "group":
+            if not is_valid_group_id(group_id):
+                raise ConfigValidationError(
+                    f"Invite group '{group_id}' is not a valid group id.",
+                    hint="Groups use the gl-group-XXXX-XXXX-XXXX format.",
+                )
+            room_id = ""
+        elif not is_valid_room_id(room_id):
             raise ConfigValidationError(
                 f"Invite room '{room_id}' is not a valid room id.",
                 hint="Rooms use the gl-room-XXXX-XXXX-XXXX format.",
@@ -157,6 +169,8 @@ class InviteRecord:
         self.session_binding = session_binding
         self.relay_url = relay_url
         self.protocol_version = protocol_version
+        self.kind = kind
+        self.group_id = group_id if kind == "group" else ""
 
     # ------------------------------------------------------------------ state
 
@@ -213,6 +227,8 @@ class InviteRecord:
             session_binding=self.session_binding,
             relay_url=self.relay_url,
             protocol_version=self.protocol_version,
+            kind=self.kind,
+            group_id=self.group_id,
         )
 
     # ----------------------------------------------------------- serialisation
@@ -233,6 +249,8 @@ class InviteRecord:
             "session_binding": self.session_binding,
             "relay_url": self.relay_url,
             "protocol_version": self.protocol_version,
+            "kind": self.kind,
+            "group_id": self.group_id,
         }
 
     @classmethod
@@ -275,6 +293,12 @@ class InviteRecord:
                 "A stored invite holds non-integer counters.",
                 hint="The invites store is corrupt; clear the secure_invites store to reset.",
             ) from exc
+        kind = str(data.get("kind", "chat"))
+        if kind not in ("chat", "group"):
+            raise ConfigValidationError(
+                "A stored invite holds an unknown kind.",
+                hint="The invites store is corrupt; clear the secure_invites store to reset.",
+            )
         return cls(
             invite_id=str(data["invite_id"]),
             room_id=str(data["room_id"]),
@@ -287,6 +311,8 @@ class InviteRecord:
             session_binding=str(data.get("session_binding", "")),
             relay_url=str(data.get("relay_url", "")),
             protocol_version=protocol_version,
+            kind=kind,
+            group_id=str(data.get("group_id", "")),
         )
 
 

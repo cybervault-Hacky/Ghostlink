@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-PROTOCOL_VERSION: int = 3
-SUPPORTED_PROTOCOL_VERSIONS: frozenset[int] = frozenset({1, 2, 3})
+PROTOCOL_VERSION: int = 4
+SUPPORTED_PROTOCOL_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4})
 # Clients must speak at least relay protocol 3 to drive invite operations.
 INVITE_PROTOCOL_VERSION: int = 3
+# Clients must speak at least relay protocol 4 to drive group operations.
+GROUP_PROTOCOL_VERSION: int = 4
 
 WEBSOCKET_GUID: str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WEBSOCKET_VERSION: str = "13"
@@ -56,3 +58,43 @@ MAX_FORWARD_BODY_LENGTH: int = 10_924  # ceil(8192 / 3) * 4 — exact b64 ceilin
 CHANNEL_ROLES: frozenset[str] = frozenset({"host", "guest"})
 CHANNEL_CAPACITY: int = 2
 PEER_EVENTS: frozenset[str] = frozenset({"joined", "left"})
+
+# ------------------------------------------------- secure groups (Phase 6B)
+# Lifecycle foundation per docs/GROUPS.md. Group messaging/encryption is a
+# later stage; these limits govern membership, epochs and roster state only.
+GROUP_ID_PREFIX: str = "gl-group"
+MAX_GROUP_MEMBERS: int = 8
+GROUP_MAX_GROUPS: int = 32
+GROUP_NAME_MAX_LEN: int = 48
+GROUP_DISPLAY_NAME_MAX_LEN: int = 24
+GROUP_MAX_ACTIVE_INVITES: int = 8
+GROUP_JOIN_PENDING_SECONDS: float = 300.0
+GROUP_SIGN_TIMEOUT_SECONDS: float = 60.0
+GROUP_EPOCH_DRAIN_SECONDS: float = 30.0
+GROUP_EVENTS_KEPT: int = 16
+GROUP_MAX_PENDING_OPS: int = 8
+GROUP_PUBKEY_HEX_LENGTH: int = 64
+GROUP_SIGNATURE_B64_MAX: int = 128
+GROUP_OP_ID_LENGTH: int = 16
+GROUP_RETENTION_HOURS: int = 24
+
+# ------------------------------------------------- group messaging (Phase 6C)
+# Pairwise-mesh E2E messaging per docs/GROUPS.md §17-§22: every limit below is
+# enforced in the domain/authority layer, never only in the UI (§32).
+GROUP_MSG_MAX_BYTES: int = 4096  # UTF-8 plaintext ceiling (§32)
+GROUP_FANOUT_MAX: int = MAX_GROUP_MEMBERS - 1  # envelopes per send (§32)
+GROUP_SEEN_IDS_PER_SENDER: int = 512  # (sender, message_id) dedupe LRU
+GROUP_GSEQ_MAX_GAP: int = 64  # bounded reorder tolerance (§22)
+GROUP_OFFLINE_QUEUE_PER_MEMBER: int = 8  # FIFO drop-oldest (§29)
+GROUP_FORWARD_BODY_MAX: int = 6144  # sealed frame b64 ceiling on the wire
+GROUP_KEX_BODY_MAX: int = 2048  # handshake payload ceiling
+GROUP_MESSAGE_ID_PREFIX: str = "gmsg_"
+GROUP_MESSAGE_ID_HEX: int = 16
+GROUP_AEAD_FAILURES_NOTICE: int = 3  # suspect-link UI threshold (§31)
+GROUP_FORWARD_RATE_PER_SECOND: float = 20.0  # relay flood brake (§32)
+GROUP_FORWARD_RATE_BURST: int = 20
+GROUP_EVENT_RATE_OPS: int = 4  # membership ops per window (§32)
+GROUP_EVENT_RATE_WINDOW_SECONDS: float = 10.0
+GROUP_KEX_TIMEOUT_SECONDS: float = 10.0
+GROUP_LEDGER_KEPT: int = 64  # delivery ledgers retained per group
+GROUP_SEQ_STATE_MAX: int = 8 * 4  # gseq cursors (defensive cap)

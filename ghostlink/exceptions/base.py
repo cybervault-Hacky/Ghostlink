@@ -17,6 +17,7 @@ class ExitCode(IntEnum):
     UI = 5
     NETWORK = 6
     INVITE = 7
+    GROUP = 8
     INTERRUPTED = 130
 
 

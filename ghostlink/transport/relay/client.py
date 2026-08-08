@@ -19,6 +19,17 @@ from typing import Any, ClassVar
 
 from ghostlink.constants.net import PROTOCOL_VERSION
 from ghostlink.core.logging import get_logger
+from ghostlink.exceptions.groups import (
+    GroupConflictError,
+    GroupDissolvedError,
+    GroupError,
+    GroupFullError,
+    GroupJoinTimeoutError,
+    GroupNotMemberError,
+    GroupPermissionError,
+    GroupUnknownError,
+    GroupValidationError,
+)
 from ghostlink.exceptions.invites import (
     InviteAlreadyUsedError,
     InviteError,
@@ -26,6 +37,7 @@ from ghostlink.exceptions.invites import (
     InvitePermissionError,
     InviteRevokedError,
     InviteUnknownError,
+    InviteValidationError,
 )
 from ghostlink.exceptions.transport import (
     ConnectionTimeoutError,
@@ -53,6 +65,13 @@ from ghostlink.transport.relay.protocol import (
     disconnect_packet,
     encode_packet,
     forward_packet,
+    group_attest_packet,
+    group_create_packet,
+    group_dissolve_packet,
+    group_leave_packet,
+    group_remove_packet,
+    group_sign_packet,
+    group_state_packet,
     heartbeat_packet,
     hello_packet,
     invite_create_packet,
@@ -82,6 +101,42 @@ class RelayInviteStatus:
     max_uses: int
     expires_in_seconds: float
     room_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GroupAttested:
+    """Answer to GROUP_ATTEST: our role plus (for members) the roster."""
+
+    group_id: str
+    role: str  # "owner" | "member" | "candidate"
+    epoch: int
+    members: tuple[dict[str, Any], ...]
+    events: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GroupRoster:
+    """Answer to GROUP_STATE: authoritative roster and signed event tail."""
+
+    group_id: str
+    epoch: int
+    state: str
+    members: tuple[dict[str, Any], ...]
+    events: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GroupRedemption:
+    """REDEEMED for a group-kind invite (docs/GROUPS.md §12.2)."""
+
+    invite_id: str
+    expires_at: datetime
+    group_id: str
+    name: str
+    owner_fingerprint: str
+    owner_public_key_hex: str
+    members: tuple[dict[str, Any], ...]
+    epoch: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,9 +189,15 @@ class RelayClient:
         self._pending_pings: dict[str, asyncio.Future[float]] = {}
         self._pending_attaches: dict[str, asyncio.Future[Packet]] = {}
         self._pending_invites: dict[str, asyncio.Future[Packet]] = {}
+        self._pending_groups: dict[str, asyncio.Future[Packet]] = {}
+        self._pending_group_create: asyncio.Future[Packet] | None = None
+        self._pending_group_events: dict[tuple[str, str, str], asyncio.Future[Packet]] = {}
         self._attachments: dict[str, str] = {}  # channel -> role
         self._on_forward: Callable[[str, str], None] | None = None
         self._on_peer: Callable[[str, str], None] | None = None
+        self._on_group_event: Callable[[Packet], None] | None = None
+        self._group_signer: Callable[[str, str, bytes], str | None] | None = None
+        self._attest_nonce: str | None = None
         self._error_packets: list[Packet] = []
         self._state_changes: list[StateChange] = []
 
@@ -225,6 +286,15 @@ class RelayClient:
         for pending in self._pending_invites.values():
             pending.cancel()
         self._pending_invites.clear()
+        for pending in self._pending_groups.values():
+            pending.cancel()
+        self._pending_groups.clear()
+        if self._pending_group_create is not None:
+            self._pending_group_create.cancel()
+            self._pending_group_create = None
+        for pending in self._pending_group_events.values():
+            pending.cancel()
+        self._pending_group_events.clear()
         previous_sid = self._session.session_id if self._session else "none"
         if self._manager.is_usable:
             try:
@@ -282,6 +352,8 @@ class RelayClient:
                 hint="The endpoint does not follow relay protocol v1.",
             )
         payload = packet.payload
+        nonce = payload.get("attest_nonce")
+        self._attest_nonce = str(nonce) if isinstance(nonce, str) else None
         self._session = Session.create(
             session_id=str(payload["session_id"]),
             metadata={
@@ -415,6 +487,8 @@ class RelayClient:
         room_id: str,
         ttl_seconds: float,
         max_redemptions: int,
+        kind: str = "chat",
+        group_id: str = "",
         timeout_seconds: float = 10.0,
     ) -> InviteGrant:
         """Register an invite with the relay authority; returns the grant."""
@@ -425,7 +499,14 @@ class RelayClient:
         invite_id = invite_id_for_token(normalized)
         packet = await self._invite_roundtrip(
             invite_id,
-            invite_create_packet(normalized, room_id, ttl_seconds, max_redemptions),
+            invite_create_packet(
+                normalized,
+                room_id,
+                ttl_seconds,
+                max_redemptions,
+                kind=kind,
+                group_id=group_id,
+            ),
             timeout_seconds,
         )
         if packet.type is not PacketType.INVITE_GRANTED:
@@ -485,12 +566,251 @@ class RelayClient:
         normalized = normalize_invite_token(token)
         invite_id = invite_id_for_token(normalized)
         packet = await self._invite_roundtrip(invite_id, redeem_packet(normalized), timeout_seconds)
+        if str(packet.payload.get("kind", "chat")) == "group":
+            raise InviteValidationError(
+                "That link joins a GhostLink group, not a one-to-one room.",
+                hint="Use ghostlink group join <link> for group invitations.",
+            )
         room_id = str(packet.payload["room"])
         expires_at = datetime.fromtimestamp(float(packet.payload["expires_at"]), tz=UTC)
         # The relay attached us as guest as part of the REDEEMED exchange.
         self._attachments[room_id] = "guest"
         self._logger.info("invite %s redeemed — joined %s as guest", invite_id, room_id)
         return room_id, expires_at
+
+    async def redeem_group_invite(
+        self, token: str, *, timeout_seconds: float = 10.0
+    ) -> GroupRedemption:
+        """Consume a group invite; returns the roster snapshot to pin (v4)."""
+
+        from ghostlink.invites.tokens import invite_id_for_token, normalize_invite_token
+
+        normalized = normalize_invite_token(token)
+        invite_id = invite_id_for_token(normalized)
+        packet = await self._invite_roundtrip(invite_id, redeem_packet(normalized), timeout_seconds)
+        if str(packet.payload.get("kind", "chat")) != "group":
+            raise GroupValidationError(
+                "That invite is a one-to-one chat invite, not a group invite.",
+                hint="Use ghostlink join <link> for one-to-one invitations.",
+            )
+        members = tuple(packet.payload.get("members", []))
+        self._logger.info(
+            "group invite %s redeemed — group=%s", invite_id, packet.payload.get("group")
+        )
+        return GroupRedemption(
+            invite_id=invite_id,
+            expires_at=datetime.fromtimestamp(float(packet.payload["expires_at"]), tz=UTC),
+            group_id=str(packet.payload["group"]),
+            name=str(packet.payload["name"]),
+            owner_fingerprint=str(packet.payload["owner"]),
+            owner_public_key_hex=str(packet.payload["owner_key"]),
+            members=members,
+            epoch=int(str(packet.payload["epoch"])),
+        )
+
+    # ------------------------------------------------------------- groups (v4)
+
+    @property
+    def attest_nonce(self) -> str | None:
+        """The relay-issued per-session attestation challenge, if any."""
+
+        return self._attest_nonce
+
+    def set_group_event_listener(self, listener: Callable[[Packet], None] | None) -> None:
+        """Route every inbound GROUP_EVENT packet to ``listener``."""
+
+        self._on_group_event = listener
+
+    def set_group_signer(self, signer: Callable[[str, str, bytes], str | None] | None) -> None:
+        """Register the signer for GROUP_SIGN_REQUEST packets.
+
+        The callback receives (group_id, op_id, canonical_bytes) and returns
+        a base64 Ed25519 signature — or None to decline signing.
+        """
+
+        self._group_signer = signer
+
+    async def _group_roundtrip(self, packet: Packet, timeout: float) -> Packet:
+        """Send one group packet and await its correlated response."""
+
+        if not self._manager.is_usable:
+            raise TransportError(
+                f"Cannot send {packet.type.value}: connection is {self._manager.state.value}.",
+                hint="Connect to the relay before issuing group operations.",
+            )
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Packet] = loop.create_future()
+        if packet.type is PacketType.GROUP_CREATE:
+            if self._pending_group_create is not None:
+                raise GroupConflictError(
+                    "Another group creation is already in flight.",
+                    hint="Wait for it to finish before creating another group.",
+                )
+            self._pending_group_create = future
+        else:
+            group = str(packet.payload["group"])
+            future_key = f"{packet.type.value}:{group}"
+            self._pending_groups[future_key] = future
+        try:
+            await self.send_packet(packet)
+            return await asyncio.wait_for(future, timeout=timeout)
+        except TimeoutError as exc:
+            raise ConnectionTimeoutError(
+                f"Relay did not answer the {packet.type.value} request in time.",
+                hint="The relay may be overloaded; check relay-status and retry.",
+            ) from exc
+        finally:
+            if packet.type is PacketType.GROUP_CREATE:
+                if self._pending_group_create is future:
+                    self._pending_group_create = None
+            else:
+                self._pending_groups.pop(f"{packet.type.value}:{packet.payload['group']}", None)
+
+    async def group_create(
+        self,
+        name: str,
+        *,
+        public_key_hex: str,
+        pop_signature_b64: str,
+        handle: str,
+        display_name: str,
+        timeout_seconds: float = 10.0,
+    ) -> tuple[str, int]:
+        """Create a group (owner PoP); returns (group_id, epoch=1)."""
+
+        packet = await self._group_roundtrip(
+            group_create_packet(name, public_key_hex, pop_signature_b64, handle, display_name),
+            timeout_seconds,
+        )
+        if packet.type is not PacketType.GROUP_GRANTED:
+            raise GroupError(
+                f"Unexpected relay answer to GROUP_CREATE: {packet.type.value}.",
+                hint="The relay may run an older protocol — group lifecycle needs v4.",
+            )
+        group_id = str(packet.payload["group"])
+        self._logger.info("group created — %s", group_id)
+        return group_id, int(str(packet.payload["epoch"]))
+
+    async def group_attest(
+        self,
+        group_id: str,
+        *,
+        public_key_hex: str,
+        signature_b64: str,
+        handle: str,
+        display_name: str,
+        timeout_seconds: float = 10.0,
+    ) -> GroupAttested:
+        """Bind this session to an identity within the group."""
+
+        packet = await self._group_roundtrip(
+            group_attest_packet(group_id, public_key_hex, signature_b64, handle, display_name),
+            timeout_seconds,
+        )
+        if packet.type is not PacketType.GROUP_ATTESTED:
+            raise GroupError(
+                f"Unexpected relay answer to GROUP_ATTEST: {packet.type.value}.",
+                hint="The relay may run an older protocol — group lifecycle needs v4.",
+            )
+        return GroupAttested(
+            group_id=str(packet.payload["group"]),
+            role=str(packet.payload["role"]),
+            epoch=int(str(packet.payload["epoch"])),
+            members=tuple(packet.payload.get("members", [])),
+            events=tuple(packet.payload.get("events", [])),
+        )
+
+    async def group_state(self, group_id: str, *, timeout_seconds: float = 10.0) -> GroupRoster:
+        """Fetch the authoritative roster and signed event tail (re-sync)."""
+
+        packet = await self._group_roundtrip(group_state_packet(group_id), timeout_seconds)
+        if packet.type is not PacketType.GROUP_ROSTER:
+            raise GroupError(
+                f"Unexpected relay answer to GROUP_STATE: {packet.type.value}.",
+                hint="The relay may run an older protocol — group lifecycle needs v4.",
+            )
+        return GroupRoster(
+            group_id=str(packet.payload["group"]),
+            epoch=int(str(packet.payload["epoch"])),
+            state=str(packet.payload["state"]),
+            members=tuple(packet.payload.get("members", [])),
+            events=tuple(packet.payload.get("events", [])),
+        )
+
+    async def wait_group_event(
+        self,
+        group_id: str,
+        kind: str,
+        subject_fingerprint: str,
+        *,
+        timeout_seconds: float,
+    ) -> Packet:
+        """Await one matching GROUP_EVENT (join/left/removed/dissolved)."""
+
+        key = (group_id, kind, subject_fingerprint)
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Packet] = loop.create_future()
+        self._pending_group_events[key] = future
+        try:
+            return await asyncio.wait_for(future, timeout=timeout_seconds)
+        except TimeoutError as exc:
+            raise GroupJoinTimeoutError(
+                f"No {kind} event for the group arrived in time.",
+                hint="The owner may be offline; membership operations need their countersign.",
+            ) from exc
+        finally:
+            self._pending_group_events.pop(key, None)
+
+    async def group_leave(
+        self,
+        group_id: str,
+        *,
+        subject_fingerprint: str,
+        timeout_seconds: float = 70.0,
+    ) -> Packet:
+        """Leave the group; resolves with the committed left event."""
+
+        waiter = asyncio.ensure_future(
+            self.wait_group_event(
+                group_id, "left", subject_fingerprint, timeout_seconds=timeout_seconds
+            )
+        )
+        await self.send_packet(group_leave_packet(group_id))
+        return await waiter
+
+    async def group_remove(
+        self,
+        group_id: str,
+        subject_fingerprint: str,
+        *,
+        timeout_seconds: float = 70.0,
+    ) -> Packet:
+        """Owner: remove a member; resolves with the committed removed event."""
+
+        waiter = asyncio.ensure_future(
+            self.wait_group_event(
+                group_id, "removed", subject_fingerprint, timeout_seconds=timeout_seconds
+            )
+        )
+        await self.send_packet(group_remove_packet(group_id, subject_fingerprint))
+        return await waiter
+
+    async def group_dissolve(
+        self,
+        group_id: str,
+        *,
+        owner_fingerprint: str,
+        timeout_seconds: float = 70.0,
+    ) -> Packet:
+        """Owner: dissolve the group; resolves with the dissolved event."""
+
+        waiter = asyncio.ensure_future(
+            self.wait_group_event(
+                group_id, "dissolved", owner_fingerprint, timeout_seconds=timeout_seconds
+            )
+        )
+        await self.send_packet(group_dissolve_packet(group_id))
+        return await waiter
 
     # ------------------------------------------------------------------- I/O
 
@@ -525,6 +845,16 @@ class RelayClient:
             PacketType.REDEEMED,
         ):
             self._resolve_invite(packet)
+        elif packet.type in (
+            PacketType.GROUP_GRANTED,
+            PacketType.GROUP_ATTESTED,
+            PacketType.GROUP_ROSTER,
+        ):
+            self._resolve_group(packet)
+        elif packet.type is PacketType.GROUP_EVENT:
+            self._route_group_event(packet)
+        elif packet.type is PacketType.GROUP_SIGN_REQUEST:
+            self._schedule(self._respond_group_sign(packet))
         elif packet.type is PacketType.ERROR:
             self._error_packets.append(packet)
             del self._error_packets[:-MAX_ERROR_PACKETS_KEPT]
@@ -535,6 +865,7 @@ class RelayClient:
             )
             self._reject_pending_attach(packet)
             self._reject_pending_invite(packet)
+            self._reject_pending_group(packet)
         elif packet.type is PacketType.DISCONNECT:
             self._logger.info("relay requested disconnect — %s", packet.payload.get("reason", ""))
 
@@ -580,8 +911,15 @@ class RelayClient:
             return
         code = str(packet.payload.get("code", "invite/error"))
         message = str(packet.payload.get("message", "Invite operation refused."))
-        error_type = self._INVITE_ERROR_MAP.get(code, InviteError)
+        # Group-kind invites surface group-domain refusals (capacity,
+        # ownership); keep them typed as group errors for the caller.
+        error_type: type[GroupError] | type[InviteError]
         hint = "Ask the host for a fresh invite."
+        if code.startswith("group/"):
+            error_type = self._GROUP_ERROR_MAP.get(code, GroupError)
+            hint = "See ghostlink group list."
+        else:
+            error_type = self._INVITE_ERROR_MAP.get(code, InviteError)
         future.set_exception(error_type(message, hint=hint))
         self._logger.info("invite %s refused — %s", invite, code)
 
@@ -600,6 +938,117 @@ class RelayClient:
                 )
             )
             self._logger.info("attach to %s refused — %s", channel, packet.payload.get("code"))
+
+    # ------------------------------------------------------------- groups (v4)
+
+    _GROUP_ERROR_MAP: ClassVar[dict[str, type[GroupError]]] = {
+        "group/unknown": GroupUnknownError,
+        "group/full": GroupFullError,
+        "group/not-owner": GroupPermissionError,
+        "group/not-member": GroupNotMemberError,
+        "group/dissolved": GroupDissolvedError,
+        "group/invalid": GroupValidationError,
+        "group/conflict": GroupConflictError,
+        "group/join-timeout": GroupJoinTimeoutError,
+        "group/signature": GroupPermissionError,
+        "group/state": GroupConflictError,
+    }
+
+    _GROUP_RESPONSE_REQUEST: ClassVar[dict[PacketType, str]] = {
+        PacketType.GROUP_ATTESTED: "GROUP_ATTEST",
+        PacketType.GROUP_ROSTER: "GROUP_STATE",
+    }
+
+    def _resolve_group(self, packet: Packet) -> None:
+        """Match a GROUP_GRANTED / GROUP_ATTESTED / GROUP_ROSTER to its waiter."""
+
+        if packet.type is PacketType.GROUP_GRANTED:
+            future = self._pending_group_create
+        else:
+            group = packet.payload.get("group")
+            request_type = self._GROUP_RESPONSE_REQUEST.get(packet.type)
+            if not isinstance(group, str) or request_type is None:
+                self._logger.debug("group response without a group id — dropped")
+                return
+            future = self._pending_groups.get(f"{request_type}:{group}")
+        if future is None or future.done():
+            self._logger.debug("unsolicited %s — dropped", packet.type.value)
+            return
+        future.set_result(packet)
+
+    def _reject_pending_group(self, packet: Packet) -> None:
+        """Fail pending group operations when the relay answers ERROR."""
+
+        code = str(packet.payload.get("code", "group/error"))
+        message = str(packet.payload.get("message", "Group operation refused."))
+        group = packet.payload.get("group")
+        error_type = self._GROUP_ERROR_MAP.get(code)
+        if error_type is None:
+            # protocol/unsupported or server-side errors on group operations.
+            if not (code.startswith("group/") or code == "protocol/unsupported"):
+                return
+            error_type = GroupError
+
+        def _fail(future: asyncio.Future[Packet] | None) -> None:
+            if future is not None and not future.done():
+                future.set_exception(error_type(message, hint="See ghostlink group list."))
+
+        if isinstance(group, str):
+            for key in (f"GROUP_ATTEST:{group}", f"GROUP_STATE:{group}"):
+                _fail(self._pending_groups.pop(key, None))
+            for event_key, future in list(self._pending_group_events.items()):
+                if event_key[0] == group:
+                    _fail(future)
+                    self._pending_group_events.pop(event_key, None)
+        _fail(self._pending_group_create)
+
+    def _route_group_event(self, packet: Packet) -> None:
+        """Deliver one GROUP_EVENT to waiters and the registered listener."""
+
+        group = str(packet.payload.get("group", ""))
+        kind = str(packet.payload.get("kind", ""))
+        subject = str(packet.payload.get("subject", ""))
+        key = (group, kind, subject)
+        future = self._pending_group_events.get(key)
+        if future is not None and not future.done():
+            future.set_result(packet)
+        listener = self._on_group_event
+        if listener is None:
+            return
+        try:
+            listener(packet)
+        except Exception as exc:  # a listener bug must not kill the reader loop
+            self._logger.debug("group event listener failed: %s", exc)
+
+    async def _respond_group_sign(self, packet: Packet) -> None:
+        """Answer one GROUP_SIGN_REQUEST using the registered signer."""
+
+        signer = self._group_signer
+        if signer is None:
+            self._logger.debug("GROUP_SIGN_REQUEST with no signer registered — ignored")
+            return
+        group = str(packet.payload.get("group", ""))
+        op = str(packet.payload.get("op", ""))
+        message_b64 = str(packet.payload.get("message", ""))
+        import base64 as _b64
+
+        try:
+            message = _b64.b64decode(message_b64.encode("ascii"), validate=True)
+        except Exception:
+            self._logger.info("GROUP_SIGN_REQUEST carried invalid base64 — ignored")
+            return
+        try:
+            signature_b64 = signer(group, op, message)
+        except Exception as exc:  # never let a signer bug kill the reader loop
+            self._logger.debug("group signer callback failed: %s", exc)
+            return
+        if not signature_b64:
+            self._logger.info("signer declined op %s for %s", op, group)
+            return
+        try:
+            await self.send_packet(group_sign_packet(group, op, signature_b64))
+        except TransportError as exc:
+            self._logger.debug("could not submit group signature: %s", exc)
 
     def _route_forward(self, packet: Packet) -> None:
         listener = self._on_forward

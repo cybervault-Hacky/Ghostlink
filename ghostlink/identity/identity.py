@@ -111,6 +111,16 @@ class LocalIdentity:
 
         return identity_id_for(self.public_key_bytes)
 
+    def sign(self, message: bytes) -> bytes:
+        """Sign ``message`` with the identity key (Ed25519).
+
+        Only the *signature* leaves this object — the private key itself
+        never does. Used by the Phase 6B group lifecycle for proof of
+        possession, session attestation, and membership-event countersigns.
+        """
+
+        return self._private_key.sign(message)
+
     def renamed(self, nickname: str) -> LocalIdentity:
         """Return a copy with a new nickname (the keypair is untouched)."""
 

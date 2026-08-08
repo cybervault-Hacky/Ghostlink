@@ -29,11 +29,19 @@ authority — monotonic-clock expiration, atomic single redemption,
 creator-only revocation, and binding of each invite to the session it
 creates. Peer fingerprints can be compared inside the chat for stronger
 authentication.
+
+Phase 6B (Secure Group Lifecycle) adds the group membership foundation:
+owner-created groups (gl-group-…) of up to 8 members, group invites on
+top of the Phase 5 invite authority, owner-countersigned admissions,
+self-signed leaves, owner-signed removals and dissolutions, strictly
+monotonic epochs, and verified event-driven roster sync — the relay
+authorizes everything and never sees a key. Group messaging/encryption
+is the next stage and is deliberately not implemented yet.
 """
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __all__ = ["__version__", "version_info"]
 
 _major, _minor, _patch = (int(part) for part in __version__.split("."))

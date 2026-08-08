@@ -59,12 +59,17 @@ class SecureInviteManager:
         max_redemptions: int = INVITE_DEFAULT_MAX_REDEMPTIONS,
         room_id: str | None = None,
         relay_url: str = "",
+        kind: str = "chat",
+        group_id: str = "",
     ) -> tuple[InviteRecord, str]:
         """Mint a fresh (CREATED) invite; returns the record and the link."""
 
         token = generate_invite_token()
         invite_id = invite_id_for_token(token)
-        bound_room = room_id if room_id is not None else generate_room_id()
+        if kind == "group":
+            bound_room = ""
+        else:
+            bound_room = room_id if room_id is not None else generate_room_id()
         record = InviteRecord(
             invite_id=invite_id,
             room_id=bound_room,
@@ -74,13 +79,17 @@ class SecureInviteManager:
             max_redemptions=max_redemptions,
             relay_url=relay_url,
             protocol_version=INVITE_PROTOCOL_VERSION,
+            kind=kind,
+            group_id=group_id,
         )
         self._tokens[invite_id] = token
         link = format_invite_link(token)
+        target = group_id if kind == "group" else bound_room
         _logger.info(
-            "invite minted — %s for %s (ttl=%ds uses=%d)",
+            "invite minted — %s for %s (kind=%s ttl=%ds uses=%d)",
             invite_id,
-            bound_room,
+            target,
+            kind,
             int(ttl_seconds),
             max_redemptions,
         )
@@ -107,6 +116,8 @@ class SecureInviteManager:
             room_id=record.room_id,
             ttl_seconds=max(1.0, (record.expires_at - record.created_at).total_seconds()),
             max_redemptions=record.max_redemptions,
+            kind=record.kind,
+            group_id=record.group_id,
         )
         record.transition(InviteState.ACTIVE)
         record.expires_at = grant.expires_at

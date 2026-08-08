@@ -6,10 +6,10 @@
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Termux%20%C2%B7%20Linux-22D3EE)](https://termux.dev/)
-[![Phase](https://img.shields.io/badge/Release-Phase%205%20%C2%B7%20Ephemeral%20Identity-A78BFA)](docs/ROADMAP.md)
+[![Phase](https://img.shields.io/badge/Release-Phase%206B%20%C2%B7%20Secure%20Groups-A78BFA)](docs/ROADMAP.md)
 [![License](https://img.shields.io/badge/License-MIT-34D399)](LICENSE)
 [![Style](https://img.shields.io/badge/Style-Ruff-261230?logo=astral&logoColor=white)](https://docs.astral.sh/ruff/)
-[![Tests](https://img.shields.io/badge/Tests-992%20passing-34D399)](docs/DEVELOPMENT.md)
+[![Tests](https://img.shields.io/badge/Tests-1161%20passing-34D399)](docs/DEVELOPMENT.md)
 
 *Private conversations. Zero compromise.*
 
@@ -27,16 +27,16 @@ designed primarily for **Termux on Android**, with first-class support for
 process, one beautiful TUI, and a codebase engineered for the secure
 networking phases ahead.
 
-> **Current release: Phase 5 — Ephemeral Identity & One-Time Invites.**
-> No accounts, no email, no phone number: every GhostLink user is a local,
-> ephemeral Ed25519 identity — a short handle like `GL-7K3M` plus a
-> human-verifiable fingerprint like `GLFP-7A92-31CF-88B4`. Two people meet
-> through a **secure one-time invite**: `ghostlink invite create` mints a
-> `gl://join/<token>` link that the *relay authority* enforces — it expires
-> on a monotonic clock, is consumed atomically by exactly one peer, and can
-> be revoked by its creator at any time. Inside the encrypted chat, `/fingerprint`
-> shows both identity fingerprints to compare out-of-band for stronger
-> authentication. See the [roadmap](docs/ROADMAP.md).
+> **Current release: Phase 6B — Secure Group Lifecycle.**
+> Owner-created groups of up to 8 members (`gl-group-…`), group invites on the
+> Phase 5 authority, owner-countersigned admissions, self-signed leaves,
+> owner-signed removals/dissolutions, and strictly monotonic epochs — the relay
+> authorizes every roster change and never sees a key. Two people still meet
+> through secure one-time invites (`gl://join/<token>`, enforced by the relay
+> authority), one-to-one chats are untouched, and the Phase 6A group security
+> design in [docs/GROUPS.md](docs/GROUPS.md) now has its verified membership
+> foundation. Group *messaging/encryption* is the next stage — intentionally
+> not part of this release. See the [roadmap](docs/ROADMAP.md).
 
 ## Screenshots
 
@@ -128,6 +128,37 @@ between two identity-bound sessions.
 - **Keys never touch disk** — session keys live in process memory and are
   overwritten before release; logs record ids, sizes and states only, never
   content.
+
+## Feature highlights (Phase 6B — Secure Group Lifecycle)
+
+- **Owner-created groups of up to 8 members** — `ghostlink group create`
+  proves possession of your identity key over the relay's attestation
+  challenge; the relay mints the collision-free `gl-group-…` id. The cap is
+  enforced by the relay authority, not the UI: roster + candidates + pending
+  joins can never exceed 8, and a full group never burns an invite.
+- **Relay-authoritative roster with signed events** — the relay decides
+  every membership verdict in one await-free critical section (concurrent
+  joins/leaves serialize deterministically), and every roster change commits
+  only with the right signature: owner-signed admissions/removals/
+  dissolutions, self-signed leaves. A candidate can never sign their own
+  way in; the owner countersigns while hosting (`ghostlink group host`).
+- **Strict epochs** — roster epochs start at 1 and increment by exactly one
+  per committed mutation. Clients cannot pick, skip, roll back, or reuse
+  epochs; local records drop stale events, refuse gaps (flagging the roster
+  suspect until re-sync), and verify every event signature before applying.
+- **Group invites on the proven authority** — `ghostlink group invite`
+  mints `gl://join/<token>` group links with the same guarantees as Phase 5:
+  monotonic expiry, atomic single redemption under concurrency, owner-only
+  minting, plus relay-side capacity checks before the token is consumed.
+- **Metadata-only local records** — rosters of fingerprints, handles,
+  public keys and signed event descriptors in `groups.json` (atomic writes,
+  `0600`, corruption-safe). No tokens, no private keys, no session keys —
+  there are no group encryption keys to store. Joins persist success-only;
+  post-restart relays read as *defunct*, never silently resurrected.
+- **CLI lifecycle** — `ghostlink group create|list|info|invite|join|leave|
+  remove|dissolve|sync|host`, thin wrappers over the domain manager with
+  typed errors (exit code 8). Relay protocol v4 adds the `GROUP_*` family
+  behind version negotiation; v1–v3 clients are untouched.
 
 ## Feature highlights (Phase 5 — Ephemeral Identity & One-Time Invites)
 
@@ -400,8 +431,8 @@ see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, bootstrap, async model, error taxonomy |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every key, location, and precedence rule |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Dev setup, quality gate, contribution patterns |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Phases 1–5 and what is explicitly out of scope |
-| [docs/GROUPS.md](docs/GROUPS.md) | Phase 6A group security design (DESIGN/REVIEW — no implementation yet) |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Phases 1–6B and what is explicitly out of scope |
+| [docs/GROUPS.md](docs/GROUPS.md) | Group security design (Phase 6A) + Phase 6B implementation notes |
 
 ## Project layout
 
@@ -420,6 +451,9 @@ ghostlink/                # the package
 │                         #   GLFP-… fingerprint, 0600 storage, lifecycle)
 ├── invites/              # Phase 5: one-time join invites — tokens, models,
 │                         #   relay authority, registry, redemption, panels
+├── groups/               # Phase 6B: group lifecycle — ids, events, models,
+│                         #   relay authority (roster/epochs), metadata
+│                         #   registry, client lifecycle manager
 ├── transfer/             # Phase 4: secure encrypted file transfer
 │   ├── manager.py        #   offers, send pump, resume, expiry, history
 │   ├── models.py         #   transfer lifecycle state machine + snapshots
@@ -431,7 +465,8 @@ ghostlink/                # the package
 ├── transport/            # Transport ABC, connection state machine, heartbeat,
 │   │                     # sessions with expiry + sweeper
 │   ├── websocket/        # own RFC 6455 framing + WebSocket transport
-│   └── relay/            # packet protocol v3 (channels + invite authority)
+│   └── relay/            # packet protocol v4 (channels + invite authority
+│                         #   + group authority)
 │                         # endpoint · client · server
 ├── ui/                   # console, themes, banner, menu, chat surface,
 │                         # components/, screens/, dashboards, charts, gradients
@@ -443,7 +478,7 @@ ghostlink/                # the package
 ├── constants/            # metadata & file/env names (single source of truth)
 ├── utils/                # XDG paths, text helpers
 └── assets/               # ASCII branding, packaged default config
-docs/ tests/ scripts/     # documentation · pytest suite (992 tests) · tooling
+docs/ tests/ scripts/     # documentation · pytest suite (1160 tests) · tooling
 ```
 
 ## Security posture in Phase 5

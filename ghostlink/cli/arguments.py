@@ -50,6 +50,10 @@ class CLIOptions:
     uses: int | None = None
     invite_room: str | None = None
     no_chat: bool = False
+    group_action: str | None = None
+    group_target: str | None = None
+    group_subject: str | None = None
+    group_name: str | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -256,6 +260,81 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the invite and countdown only — do not enter the chat",
     )
 
+    group = subparsers.add_parser(
+        "group", help="create and manage secure groups (membership lifecycle)"
+    )
+    group.add_argument(
+        "group_action",
+        nargs="?",
+        default="list",
+        choices=(
+            "create",
+            "list",
+            "info",
+            "invite",
+            "join",
+            "leave",
+            "remove",
+            "dissolve",
+            "sync",
+            "host",
+        ),
+        metavar="action",
+        help=(
+            "create a group, list yours (default), show info, mint an invite, "
+            "join via a link, leave, remove a member, dissolve, re-sync, or "
+            "host (owner countersigns admissions)"
+        ),
+    )
+    group.add_argument(
+        "group_target",
+        nargs="?",
+        default=None,
+        metavar="gl-group-…|gl://join/…",
+        help="the group id — or the group invite link when joining",
+    )
+    group.add_argument(
+        "group_subject",
+        nargs="?",
+        default=None,
+        metavar="GLFP-…",
+        help="member fingerprint — required by remove",
+    )
+    group.add_argument(
+        "--name",
+        dest="group_name",
+        default=None,
+        metavar="NAME",
+        help="group name for create (1..48 printable characters)",
+    )
+    group.add_argument(
+        "--expires",
+        default=None,
+        metavar="SECONDS|5m|1h",
+        help="group invite lifetime (default from configuration)",
+    )
+    group.add_argument(
+        "--uses",
+        type=int,
+        default=None,
+        metavar="N",
+        help="how many members the group invite may admit (default 1)",
+    )
+    group.add_argument(
+        "--relay",
+        dest="relay_url",
+        default=None,
+        metavar="URL",
+        help="relay endpoint (falls back to configuration)",
+    )
+    group.add_argument(
+        "--as",
+        dest="chat_name",
+        default=None,
+        metavar="NAME",
+        help="display name shown to other group members",
+    )
+
     relay_status = subparsers.add_parser(
         "relay-status", help="probe a relay and render the live status dashboard"
     )
@@ -328,4 +407,8 @@ def parse_args(argv: Sequence[str] | None = None) -> CLIOptions:
         uses=getattr(namespace, "uses", None),
         invite_room=getattr(namespace, "invite_room", None),
         no_chat=getattr(namespace, "no_chat", False),
+        group_action=getattr(namespace, "group_action", None),
+        group_target=getattr(namespace, "group_target", None),
+        group_subject=getattr(namespace, "group_subject", None),
+        group_name=getattr(namespace, "group_name", None),
     )

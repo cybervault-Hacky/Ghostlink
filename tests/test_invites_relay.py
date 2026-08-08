@@ -11,6 +11,7 @@ import logging
 
 import pytest
 
+from ghostlink.constants.net import GROUP_PROTOCOL_VERSION, PROTOCOL_VERSION
 from ghostlink.exceptions.invites import (
     InviteAlreadyUsedError,
     InviteError,
@@ -309,13 +310,17 @@ class TestLogHygiene:
 
 
 class TestRelayMetadata:
-    def test_welcome_advertises_protocol_v3(self) -> None:
+    def test_welcome_advertises_current_protocol(self) -> None:
         async def scenario() -> None:
             async with running_relay() as server:
                 client = await _client(server)
                 session = client.session
                 assert session is not None
-                assert session.metadata.get("protocol") == "3"
+                # v4 = v3 invite capability + group lifecycle capability.
+                assert session.metadata.get("protocol") == str(PROTOCOL_VERSION)
+                assert int(session.metadata["protocol"]) >= GROUP_PROTOCOL_VERSION
+                # The v4 WELCOME also carries the group attestation challenge.
+                assert client.attest_nonce
                 await client.disconnect()
 
         run(scenario())

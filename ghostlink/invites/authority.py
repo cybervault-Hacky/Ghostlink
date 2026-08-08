@@ -36,6 +36,7 @@ from ghostlink.constants.net import (
     INVITE_MAX_TTL_SECONDS,
     INVITE_MIN_TTL_SECONDS,
 )
+from ghostlink.groups.ids import is_valid_group_id
 from ghostlink.invites.tokens import invite_id_for_token, is_valid_invite_token
 from ghostlink.models.room import is_valid_room_id
 
@@ -85,6 +86,18 @@ class InviteStatus:
     remaining_seconds: float
     bound_session: str | None
     room_id: str | None = None  # creator-only view
+    kind: str = "chat"  # "chat" | "group" (group kind is creator-only detail)
+    group_id: str | None = None  # creator-only view, group-kind invites only
+
+
+@dataclass(frozen=True, slots=True)
+class InviteLookup:
+    """Non-consuming introspection result: what kind of invite is this?"""
+
+    invite_id: str
+    kind: str
+    group_id: str
+    redeemed: bool
 
 
 @dataclass(slots=True)
@@ -98,6 +111,8 @@ class _Entry:
     max_redemptions: int
     redemptions: int
     creator_session: str
+    kind: str = "chat"
+    group_id: str = ""
     bound_session: str | None = None
     revoked: bool = False
     last_redeemed_at_mono: float | None = None
@@ -132,11 +147,16 @@ class InviteAuthority:
 
     # ------------------------------------------------------------- validation
 
-    def _validate_creation(self, token: str, room_id: str, ttl: float, uses: int) -> str:
+    def _validate_creation(
+        self, token: str, room_id: str, ttl: float, uses: int, kind: str, group_id: str
+    ) -> str:
         normalized = token.strip().upper()
         if not is_valid_invite_token(normalized):
             raise ValueError("invite token is malformed")
-        if not is_valid_room_id(room_id):
+        if kind == "group":
+            if not is_valid_group_id(group_id):
+                raise ValueError("group id is malformed")
+        elif not is_valid_room_id(room_id):
             raise ValueError("room id is malformed")
         if not (INVITE_MIN_TTL_SECONDS <= float(ttl) <= INVITE_MAX_TTL_SECONDS):
             raise ValueError("ttl out of range")
@@ -154,10 +174,14 @@ class InviteAuthority:
         ttl_seconds: float,
         max_redemptions: int,
         creator_session: str,
+        kind: str = "chat",
+        group_id: str = "",
     ) -> InviteGrant:
         """Register one invite. Re-registering the same token fails closed."""
 
-        normalized = self._validate_creation(token, room_id, ttl_seconds, max_redemptions)
+        normalized = self._validate_creation(
+            token, room_id, ttl_seconds, max_redemptions, kind, group_id
+        )
         if len(creator_session) > MAX_CREATOR_SESSION_LENGTH:
             raise ValueError("creator session id too long")
         token_hash = _hash_token(normalized)
@@ -174,6 +198,8 @@ class InviteAuthority:
             max_redemptions=max_redemptions,
             redemptions=0,
             creator_session=creator_session,
+            kind=kind,
+            group_id=group_id if kind == "group" else "",
         )
         self._entries[token_hash] = entry
         return InviteGrant(
@@ -196,6 +222,39 @@ class InviteAuthority:
 
     def _expired(self, entry: _Entry) -> bool:
         return self._monotonic() >= entry.expires_monotonic
+
+    def lookup(self, token: str) -> InviteLookup | None:
+        """Non-consuming introspection: kind/binding of one invite.
+
+        Used by the relay to branch group-kind redemption *before* the
+        atomic consume — the group capacity check and the consumption must
+        happen in one await-free section (docs/GROUPS.md §12.3).
+        """
+
+        entry = self._lookup(token)
+        if entry is None:
+            return None
+        return InviteLookup(
+            invite_id=entry.invite_id,
+            kind=entry.kind,
+            group_id=entry.group_id,
+            redeemed=entry.redemptions >= entry.max_redemptions,
+        )
+
+    def count_active_group_invites(self, group_id: str) -> int:
+        """Active (unexpired, unrevoked, not exhausted) invites for one group."""
+
+        count = 0
+        for entry in self._entries.values():
+            if (
+                entry.kind == "group"
+                and entry.group_id == group_id
+                and not entry.revoked
+                and not self._expired(entry)
+                and entry.redemptions < entry.max_redemptions
+            ):
+                count += 1
+        return count
 
     def redeem(self, token: str, *, redeem_session: str) -> RedemptionResult:
         """Atomically consume one invite redemption — fail-closed on any miss.
@@ -269,6 +328,8 @@ class InviteAuthority:
             remaining_seconds=remaining,
             bound_session=entry.bound_session,
             room_id=entry.room_id if creator_view else None,
+            kind=entry.kind if creator_view else "chat",
+            group_id=(entry.group_id or None) if creator_view else None,
         )
 
     # ------------------------------------------------------------------ sweep

@@ -1438,3 +1438,112 @@ A reviewer must be able to answer **YES** to every item before §39 opens:
 *End of Phase 6A security & design specification. Implementation of any
 group functionality before this document is approved is a process
 violation, not a shortcut.*
+
+---
+
+## Appendix A — Phase 6B implementation notes
+
+*This appendix records where the implemented group lifecycle (Phase 6B)
+fills in details the design left open, and the few places an
+implementation constraint forced a concrete choice. It changes no
+security decision in §1–§40; where a defect was found during
+implementation it is documented with its fix.*
+
+**Scope status.** Implemented: group identity and creation (§10–§11),
+invite integration (§12), redemption-pinned roster snapshot (§12.2),
+attestation with relay-issued challenge (§13, §27), owner-countersigned
+admission (§13.2), leave/remove/dissolve (§14–§15), epoch management and
+signed events (§9.5, §16), relay-authoritative roster with atomic
+capacity (§8, §32), local metadata-only persistence and re-sync (§26,
+§27.3, §28.4), protocol v4 (`GROUP_*`), CLI foundation, resource limits,
+and the test battery of §38's lifecycle categories. **Not implemented
+(next stage):** group messaging, pairwise-mesh encryption, sender keys.
+The epoch-drain machinery exists only as state (`epoch_leap_at`
+timestamps recorded at each verified event); there is no message traffic
+to drain until Phase 6C.
+
+**A1. Attestation challenge channel.** §13 requires the attested
+statement to be bound to the *current session*. The relay issues a
+random `attest_nonce` per session in the existing `WELCOME` packet
+(optional field — older clients ignore unknown WELCOME fields). Clients
+sign `ghostlink/group-attest/v1|group_id|fingerprint|nonce`; group
+creation signs `ghostlink/group-create/v1|name|nonce`; membership events
+keep the §9.5 canonical form. A replayed attestation from a different
+session therefore cannot bind.
+
+**A2. Two-phase ops and the committed event's timestamp.** Mutations
+commit as *enqueue → promote (epoch = current+1, canonical bytes pinned)
+→ authorized signature → commit*. The implementation pins the event's
+`wall_ts` at promotion time so the broadcast event is byte-identical to
+what the signer signed (an early implementation re-stamped at commit,
+which broke recipient-side verification — caught and fixed before
+release, with regression tests). One outstanding signature request per
+group keeps the signed epoch equal to the committed epoch; a bad
+signature aborts the op and drops the candidate.
+
+**A3. Admission under concurrency.** A joining member validates the
+§12.2 bindings of the redemption snapshot, attests as candidate, and
+awaits the owner-signed join event. Because other admissions may commit
+between redemption and admission, the client does **not** apply its own
+join event onto the pinned snapshot directly; it re-attests (now an
+active member) and adopts the authoritative roster via the same
+signature-verified path used by re-sync, cross-checked against the
+delivered event (epoch must not regress). This preserves the §16
+strict +1 invariant for every observer without trusting the relay with
+verification authority.
+
+**A4. Owner listeners.** §13.2 requires the owner online to countersign
+admissions. `ghostlink group host <id>` rebinds the owner's session,
+re-syncs, and serves as the countersign endpoint, printing committed
+events as they arrive. Admission while the owner is offline simply waits
+(pending ≤ 300 s; signature wait ≤ 60 s, then the op aborts and the
+candidate slot frees) — documented pending-join behavior, not a new
+failure mode.
+
+**A5. Invite capacity at redemption.** Group invites validate ownership
+*and* headroom (roster + candidates + pending joins < 8) at
+`INVITE_CREATE`, and recheck headroom atomically at `INVITE_REDEEM`
+*before* the token is consumed — a full-group verdict never burns a
+redemption (§12.3 capacity race). Group invites are capped at 8 active
+per group (`GROUP_MAX_ACTIVE_INVITES`). Single-redemption atomicity,
+monotonic expiry, and creator-only revocation are inherited from the
+Phase 5 authority unmodified.
+
+**A6. Local record semantics.** Joins persist *success-only*: a refused
+or timed-out admission writes nothing; a successful one writes the
+fully-adopted roster atomically. Terminal states (`left`, `removed`,
+`dissolved`) archive locally and purge after 24 h. After a relay
+restart the group is *defunct* (§28.4): the local record is archived
+read-only, never silently resurrected. Stale or duplicate events are
+dropped; gapped events mark the record *suspect*, after which all local
+mutations refuse until a clean re-sync.
+
+**A7. Signature verification of history.** Live events are verified
+cryptographically before application (owner key for join/removed/
+dissolved, leaver's key — read from the local roster — for `left`).
+Roster-history rows adopted during re-sync verify with the same rules
+when the signer's key is known; a `left` event whose subject departed
+*before* the local device learned the roster is unverifiable in
+principle and is accepted as authority-relayed metadata (the relay is
+already authoritative for membership — forging a `left` gains it nothing
+it cannot do by processing the leave itself; owner-privileged actions
+always require owner signatures).
+
+**A8. Client wiring.** The client's signer callback signs *only* when
+the local record agrees the signer is authorized for that op at exactly
+the next epoch; anything else (unknown group, archived group, suspect
+state, wrong epoch, wrong kind, wrong subject) is declined without
+on-wire explanation. GROUP_STATE answers require an attested member
+session on the relay. The relay re-offers a promoted sign task when its
+first delivery may have raced a late-attaching signer (15 s), so owner
+workflows do not deadlock around reconnects.
+
+**A9. Exit code and limits surface.** Group errors exit with code 8
+(`GROUP`), distinct from invite (6) and network (5) failures. All §32
+limits are enforced in the domain/authority layer, never only in the UI:
+8 members (owner included), 32 locally tracked active groups, 8 pending
+ops per group, 16 retained events per roster, 300 s pending admission,
+60 s signature wait, 24 h retention.
+
+*End of Phase 6B implementation notes. Group messaging/encryption has
+NOT been implemented and remains the next implementation stage.*

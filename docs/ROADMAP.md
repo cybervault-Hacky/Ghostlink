@@ -120,7 +120,7 @@ and production-quality before the next begins.
 - 200+ new tests including live sender→relay→receiver transfers, relay
   restarts with resume, corruption/tamper injection, and CLI-end-to-end runs
 
-## Phase 5 — Ephemeral Identity & One-Time Invites ✅ (latest implemented)
+## Phase 5 — Ephemeral Identity & One-Time Invites ✅
 
 - Ephemeral local identities: an Ed25519 keypair generated on your device,
   stored `0600`, never uploaded; a short handle (`GL-…`) and an optional
@@ -149,11 +149,10 @@ and production-quality before the next begins.
   against a real relay, concurrent-redemption races, revocation, peer
   fingerprint display, and log secret-leak audits
 
-## Phase 6A — Group Security Design
+## Phase 6A — Group Security Design ✅
 
-**STATUS: DESIGN / REVIEW** — security model documented, **no
-implementation has started**. Group implementation begins only after the
-design is reviewed and approved.
+**STATUS: DESIGN COMPLETE** — security model documented and reviewed in
+[docs/GROUPS.md](GROUPS.md); implementation proceeded in Phase 6B.
 
 Direction: secure multi-peer communication (groups beyond the one-to-one
 channel), prioritized ahead of the other Phase 6 items. The full
@@ -164,7 +163,7 @@ resource limits, failure handling, future sender-key path, migration,
 testing strategy, implementation checklist, and open questions — lives in
 [docs/GROUPS.md](GROUPS.md).
 
-Selected design (pending review):
+Selected design:
 
 - Private, invite-only groups of **up to 8 members** on the existing relay
   (quadratic mesh arithmetic, Termux screens, and auditability drive the
@@ -186,7 +185,62 @@ Selected design (pending review):
   attacker classes with no overstated claims; a 15-category loopback
   test strategy mirroring the Phase 5 bar
 
-## Phase 6B — Rich Communication (after 6A)
+## Phase 6B — Secure Group Lifecycle ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — the membership lifecycle foundation of
+docs/GROUPS.md. Group *messaging/encryption is not part of this phase*;
+it is the next implementation stage (Phase 6C).
+
+- Groups (`gl-group-XXXX-XXXX-XXXX`, up to 8 members): owner creates with
+  an Ed25519 proof-of-possession over the relay-issued attestation
+  challenge; the relay mints the collision-free id; owner is member #1
+  at epoch 1
+- Relay-authoritative roster (`GroupAuthority`): the single source of
+  truth for membership and epochs; every authorization check happens in
+  one await-free critical section, so concurrent joins/leaves/removals
+  serialize deterministically with no lost updates, no duplicate members,
+  and no duplicate epochs
+- Epochs start at 1 and increment by exactly one per committed roster
+  mutation; clients can never pick, skip, roll back, or reuse an epoch;
+  local records reject stale/gapped events and mark suspect state for
+  re-sync
+- Signed membership events: join/removed/dissolved are signed by the
+  pinned owner key, `left` by the leaving member; admissions are
+  countersigned by the owner while online (`ghostlink group host`), so a
+  candidate can never self-admit; sign requests carry a 60-second
+  timeout, pending admissions 300 seconds
+- Group invites on the Phase 5 authority (`kind=group`): owner-only
+  minting, relay-side capacity checks before token consumption (a
+  full-group verdict never burns an invite), single atomic redemption
+  under concurrency, one-time semantics and expiry unchanged
+- Roster-pinning at redemption (§12.2): every member's public key ↔
+  fingerprint binding is verified before any state is trusted
+- Local records are metadata-only (fingerprints, handles, public keys,
+  epochs, signed event descriptors) in `groups.json` — atomic writes,
+  `0600`, corruption-safe typed errors, success-only join persistence,
+  retention purging of terminal records, and a defunct state for
+  post-restart relays (authority state is volatile by design, §28.4)
+- Relay protocol v4 (`GROUP_*` family) with version gating: v1–v3
+  clients are untouched and refused group access as
+  `protocol/unsupported`; no existing packet family changed meaning
+- CLI: `ghostlink group create|list|info|invite|join|leave|remove|
+  dissolve|sync|host` — a thin layer over the domain manager; all
+  security decisions live in the service layer and exit via typed errors
+  (exit code 8)
+- 168 new tests including seven concurrent joins to the 8-member cap,
+  9th-member refusal, concurrent invite redemption, forced signature
+  failures, restart/defunct, storage corruption, log/store secret-hygiene
+  audits, and full CLI end-to-end runs against a live relay
+
+## Phase 6C — Group Messaging & Encryption (next)
+
+- Pairwise-mesh encryption over the Phase 3 stack per docs/GROUPS.md:
+  epoch-bound keys, group/epoch-bound envelopes and AAD, sender-side
+  fanout, drain-window handling at roster transitions
+- Group chat UI on the verified membership foundation
+- Sender keys remain the documented Phase 7 candidate, not part of Phase 6
+
+## Phase 6D — Rich Communication
 
 - Friend system: adding, verifying safety numbers, blocking
 - Message replies, edits, and reactions

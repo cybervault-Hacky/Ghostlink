@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-PROTOCOL_VERSION: int = 3
-SUPPORTED_PROTOCOL_VERSIONS: frozenset[int] = frozenset({1, 2, 3})
+PROTOCOL_VERSION: int = 4
+SUPPORTED_PROTOCOL_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4})
 # Clients must speak at least relay protocol 3 to drive invite operations.
 INVITE_PROTOCOL_VERSION: int = 3
+# Clients must speak at least relay protocol 4 to drive group operations.
+GROUP_PROTOCOL_VERSION: int = 4
 
 WEBSOCKET_GUID: str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WEBSOCKET_VERSION: str = "13"
@@ -56,3 +58,22 @@ MAX_FORWARD_BODY_LENGTH: int = 10_924  # ceil(8192 / 3) * 4 — exact b64 ceilin
 CHANNEL_ROLES: frozenset[str] = frozenset({"host", "guest"})
 CHANNEL_CAPACITY: int = 2
 PEER_EVENTS: frozenset[str] = frozenset({"joined", "left"})
+
+# ------------------------------------------------- secure groups (Phase 6B)
+# Lifecycle foundation per docs/GROUPS.md. Group messaging/encryption is a
+# later stage; these limits govern membership, epochs and roster state only.
+GROUP_ID_PREFIX: str = "gl-group"
+MAX_GROUP_MEMBERS: int = 8
+GROUP_MAX_GROUPS: int = 32
+GROUP_NAME_MAX_LEN: int = 48
+GROUP_DISPLAY_NAME_MAX_LEN: int = 24
+GROUP_MAX_ACTIVE_INVITES: int = 8
+GROUP_JOIN_PENDING_SECONDS: float = 300.0
+GROUP_SIGN_TIMEOUT_SECONDS: float = 60.0
+GROUP_EPOCH_DRAIN_SECONDS: float = 30.0
+GROUP_EVENTS_KEPT: int = 16
+GROUP_MAX_PENDING_OPS: int = 8
+GROUP_PUBKEY_HEX_LENGTH: int = 64
+GROUP_SIGNATURE_B64_MAX: int = 128
+GROUP_OP_ID_LENGTH: int = 16
+GROUP_RETENTION_HOURS: int = 24

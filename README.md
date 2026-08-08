@@ -1,583 +1,760 @@
 <div align="center">
 
-# 👻 GhostLink
+# GHOSTLINK
 
-**A terminal-only encrypted messenger — built for Termux, at home on Linux.**
+**Terminal-native encrypted communication for Termux and Linux.**
+
+Private conversations. End-to-end encryption. No browser required.
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Platform-Termux%20%C2%B7%20Linux-22D3EE)](https://termux.dev/)
-[![Phase](https://img.shields.io/badge/Release-Phase%206B%20%C2%B7%20Secure%20Groups-A78BFA)](docs/ROADMAP.md)
+[![Platform](https://img.shields.io/badge/Platform-Termux%20%7C%20Linux-22D3EE)](https://termux.dev/)
+[![Release](https://img.shields.io/badge/Release-Phase%206C-A78BFA)](docs/ROADMAP.md)
+[![Tests](https://img.shields.io/badge/Tests-1283%20passing-34D399)](docs/DEVELOPMENT.md)
 [![License](https://img.shields.io/badge/License-MIT-34D399)](LICENSE)
-[![Style](https://img.shields.io/badge/Style-Ruff-261230?logo=astral&logoColor=white)](https://docs.astral.sh/ruff/)
-[![Tests](https://img.shields.io/badge/Tests-1161%20passing-34D399)](docs/DEVELOPMENT.md)
 
-*Private conversations. Zero compromise.*
-
-<img src="docs/assets/home.svg" alt="GhostLink home screen" width="820"/>
+<img src="docs/assets/home.svg" alt="GhostLink home screen" width="860"/>
 
 </div>
 
 ---
 
+## Contents
+
+[Design principle](#design-principle) · [What is GhostLink?](#what-is-ghostlink) ·
+[Architecture](#architecture-overview) · [Current release](#current-release-phase-6c) ·
+[Screenshots](#screenshots) · [Feature matrix](#feature-matrix) ·
+[Security model](#security-model) · [What the relay can see](#what-the-relay-can-see) ·
+[Identity & invites](#identity-and-invites) · [File transfer](#file-transfer) ·
+[Group messaging](#group-messaging) · [Installation](#installation-termux) ·
+[First run](#first-run) · [CLI reference](#cli-reference) ·
+[Chat commands](#terminal-chat-commands) · [Project structure](#project-structure) ·
+[Development](#development) · [Testing](#testing) · [Roadmap](#roadmap) ·
+[Security disclaimer](#security-disclaimer) · [Responsible use](#responsible-use) ·
+[License](#license)
+
+---
+
+## Design principle
+
+<div align="center">
+
+**The terminal is the interface.<br/>
+The cryptographic session is the security boundary.**
+
+</div>
+
+GhostLink has no GUI layer, no web client, and no background service. Every
+capability is reachable from a terminal, and every security property is
+defined by the cryptographic session between endpoints — not by trusting the
+infrastructure that routes traffic between them.
+
+---
+
 ## What is GhostLink?
 
-GhostLink is a privacy-first messenger that lives entirely in your terminal —
-designed primarily for **Termux on Android**, with first-class support for
-**desktop Linux**. No browser, no Electron, no background daemons: one Python
-process, one beautiful TUI, and a codebase engineered for the secure
-networking phases ahead.
+GhostLink is a **terminal-only encrypted communication platform** written in
+Python, designed primarily for **Termux on Android** with first-class support
+for **desktop Linux**. Everything runs as a single CLI/TUI process: launch
+it, talk, transfer, and exit. Nothing keeps running after you quit.
 
-> **Current release: Phase 6C — Group Messaging + Pairwise-Mesh Encryption.**
-> End-to-end encrypted group conversations for up to 8 members: every group
-> message is sealed **separately for each authorized recipient** over an
-> identity-bound, epoch-pinned pairwise link (the Phase 3 stack — X25519,
-> HKDF-SHA256, ChaCha20-Poly1305 — no new primitives, no shared group key).
-> The relay routes opaque `GROUP_FORWARD` envelopes and never sees plaintext,
-> keys, message ids, or sequence numbers. Sender keys are deliberately *not*
-> implemented — they are the documented Phase 7 hardening candidate. The
-> Phase 6B membership foundation is unchanged: owner-created groups, signed
-> roster events, strictly monotonic epochs. See the
-> [roadmap](docs/ROADMAP.md) and [docs/GROUPS.md](docs/GROUPS.md).
+GhostLink provides:
+
+- **Encrypted one-to-one conversations** with identity-bound sessions
+- **Ephemeral identities** — local Ed25519 keypairs, no accounts
+- **One-time invites** enforced by the relay authority
+- **Encrypted file transfer** with integrity verification and resume
+- **Encrypted group conversations** (up to 8 members) with pairwise-mesh encryption
+- **Terminal-native controls** — menus, chat commands, live dashboards
+- **Relay-based rendezvous** — a reference relay ships with the project
+
+GhostLink does **not** require — and deliberately is not:
+
+| Not required | Not part of the project |
+| --- | --- |
+| an Android APK | a GUI application |
+| Android Studio | a browser client |
+| Flutter | an Electron application |
+| a phone number | a web application |
+| an email address | a background daemon |
+| a permanent account | a phone/email-based messenger |
+
+---
+
+## Architecture overview
+
+Two endpoints run GhostLink; a relay routes opaque frames between them.
+Encryption happens **at the endpoints** — the relay receives ciphertext only.
+
+```mermaid
+flowchart LR
+    subgraph A["Endpoint A"]
+        direction TB
+        A1["User A terminal"] --> A2["GhostLink CLI/TUI"]
+        A2 --> A3["Encrypted session"]
+    end
+    subgraph B["Endpoint B"]
+        direction TB
+        B3["Encrypted session"] --> B2["GhostLink CLI/TUI"]
+        B2 --> B1["User B terminal"]
+    end
+    A3 -- "opaque ciphertext frames" --> R["Relay"]
+    R -- "opaque ciphertext frames" --> B3
+```
+
+For groups, the sender encrypts **once per recipient** (pairwise fanout) and
+the relay forwards each sealed payload independently:
+
+```mermaid
+flowchart LR
+    S["Sender<br/>(member A)"] -- "payload sealed for B" --> R["Relay"]
+    S -- "payload sealed for C" --> R
+    S -- "payload sealed for D" --> R
+    R --> B["Member B"]
+    R --> C["Member C"]
+    R --> D["Member D"]
+```
+
+Key properties:
+
+- The **relay routes traffic**; it does not receive plaintext, keys, message
+  ids, or sequence numbers.
+- **Encryption is performed at the endpoints** (X25519 + HKDF-SHA256 +
+  ChaCha20-Poly1305), and keys never leave them.
+- **Group messages use pairwise fanout**: each authorized recipient receives
+  an independently sealed ciphertext. Groups are capped at **8 members**, so
+  a message is encrypted at most 7 times.
+- The relay sees connection metadata, including IP addresses. **GhostLink
+  does not claim the relay hides IP addresses.**
+
+Layers, bootstrap, async model, and error taxonomy are documented in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the group security design
+lives in [docs/GROUPS.md](docs/GROUPS.md).
+
+---
+
+## Current release: Phase 6C
+
+**Phase 6C — Group Messaging + Pairwise-Mesh Encryption** is the latest
+implemented phase (version `0.7.0`).
+
+- Group messaging is implemented on top of the Phase 6B group lifecycle.
+- Every recipient receives an **independently sealed ciphertext** — there is
+  **no shared group key**.
+- Encryption reuses the existing Phase 3 primitives verbatim: **X25519** key
+  agreement, **HKDF-SHA256** derivation, **ChaCha20-Poly1305** AEAD. No new
+  primitives were introduced.
+- Pairwise group links are **epoch-bound** and identity-bound; membership is
+  controlled by **signed roster events**, and roster epochs increment on
+  every membership change.
+- The relay forwards opaque `GROUP_FORWARD` envelopes only — it validates
+  framing and roster ACLs, never content.
+- Groups are limited to **8 members** (fanout ≤ 7 encryptions per message).
+
+Sender-key encryption is **not implemented**. It remains a documented future
+hardening direction (see [docs/ROADMAP.md](docs/ROADMAP.md) and
+[docs/GROUPS.md](docs/GROUPS.md)), not a property of the current release.
+
+---
 
 ## Screenshots
 
-| The secure chat (real scripted session) | A file transfer (real scripted session) |
+Every image below is generated from the **live application** by
+`scripts/generate_screenshots.py` — real handshakes, real frames, real
+transfers over an in-process relay. Nothing is mocked or hand-drawn.
+
+### Terminal interface
+
+<div align="center">
+<img src="docs/assets/home.svg" alt="GhostLink home screen" width="860"/>
+</div>
+
+### Secure messaging
+
+| Encrypted chat (real scripted session) | Relay dashboard (real probe) |
 | :---: | :---: |
-| <img src="docs/assets/chat.svg" alt="GhostLink encrypted chat" width="400"/> | <img src="docs/assets/transfers.svg" alt="GhostLink encrypted file transfer" width="400"/> |
-| <img src="docs/assets/invites.svg" alt="A one-time invite redemption end to end" width="400"/> | <img src="docs/assets/relay.svg" alt="ghostlink relay-status dashboard" width="400"/> |
+| <img src="docs/assets/chat.svg" alt="GhostLink encrypted chat" width="420"/> | <img src="docs/assets/relay.svg" alt="GhostLink relay status dashboard" width="420"/> |
 
-All images are generated from the live application by
-`scripts/generate_screenshots.py` — what you see is what ships.
-`relay.svg` is rendered from a **real probe** against an in-process relay,
-`chat.svg` is a **real scripted conversation**, `transfers.svg` a **real
-scripted file transfer**, and `invites.svg` a **real invite redemption**
-between two identity-bound sessions.
+### Secure transfers
 
-## Feature highlights (Phase 1 — Foundation)
+| File transfer (real scripted transfer) | One-time invite (real redemption) |
+| :---: | :---: |
+| <img src="docs/assets/transfers.svg" alt="GhostLink encrypted file transfer" width="420"/> | <img src="docs/assets/invites.svg" alt="GhostLink one-time invite redemption" width="420"/> |
 
-- **Adaptive ASCII branding** — three logo variants chosen by measured
-  terminal width, colorised with per-character theme gradients.
-- **Automatic environment detection** — platform (Termux / Linux), Python
-  runtime, terminal geometry, TTY and color capability.
-- **Strict configuration** — TOML, generated on first launch, validated with
-  actionable errors; CLI flags outrank file values.
-- **Professional logging** — rotating log file with `0600`-class hygiene;
-  Rich console echo only in Debug Mode.
-- **Interactive menu** — arrow-key navigation on real terminals, automatic
-  numbered fallback when piped (CI-friendly).
-- **Reusable component library** — panels, tables, status badges, dialogs,
-  notification toasts, and progress primitives.
-- **Colour theme engine** — `phantom`, `emerald`, `ember`, and `mono` themes
-  on a semantic token system (`gl.*`).
-- **`ghostlink --doctor`** — read-only environment diagnostics with exit
-  codes suitable for scripts.
-- **Exception framework** — every failure renders as a clean panel with a
-  hint and a deterministic exit code; never a bare traceback.
+### Group messaging
 
-## Feature highlights (Phase 2 — Secure Networking)
+The group chat surface (`ghostlink group chat gl-group-…`) ships in Phase 6C.
+No screenshot of it is published yet — images in this README are only added
+when they can be generated from the real application.
 
-- **Own RFC 6455 WebSocket implementation** — handshakes, masking,
-  fragmentation, control-frame rules, and close semantics implemented
-  directly over `asyncio` streams. Nothing compiled, Termux-safe.
-- **Strictly validated relay protocol (v1)** — `HELLO`, `WELCOME`, `PING`,
-  `PONG`, `DISCONNECT`, `ERROR`, `HEARTBEAT` packets in a versioned JSON
-  envelope; every packet validated in **both** directions.
-- **Connection lifecycle state machine** — `connecting → connected →
-  reconnecting → disconnected → closed` with legal-transition enforcement,
-  connect/handshake deadlines, and a full history for diagnostics.
-- **Automatic reconnection** — exponential backoff with jitter, supervised
-  recovery after relay restarts, transport teardown without socket leaks.
-- **Heartbeat & latency measurement** — application keepalives plus
-  nonce-stamped pings produce real RTT samples, jitter, and a sparkline.
-- **Rooms & invites as durable models** — unambiguous room IDs
-  (`gl-room-XXXX-XXXX-XXXX`), one-time expiring invite tokens (`gli_…`),
-  persisted atomically under `state/`.
-- **Live dashboards** — `ghostlink relay-status` probes a relay and renders
-  connection, latency, heartbeat, and timeline panels from real data.
-- **A real reference relay** — ships with GhostLink:
-  `python -m ghostlink.transport.relay.server`.
+---
 
-## Feature highlights (Phase 3 — Secure Messaging)
+## Feature matrix
 
-- **Authenticated end-to-end encryption** — a two-message key exchange
-  (ephemeral X25519 + HKDF-SHA256 bound to the handshake transcript, with an
-  AEAD key-confirmation proof) derives a **fresh session key per
-  conversation**, and a new one after every reconnect. ChaCha20-Poly1305
-  seals each message; tampering fails loudly, never silently.
-- **Safety codes** — both peers see an identical transcript fingerprint to
-  compare out-of-band, ruling out relay-level MITM.
-- **Rendezvous channels (relay protocol v2)** — `ATTACH` / `DETACH` /
-  `FORWARD` / `PEER` over capacity-two rooms; the relay routes opaque
-  ciphertext bodies only and answers with channel-scoped errors.
-- **A real message lifecycle** — `queued → sending → sent → delivered →
-  read` (plus a loud `failed`), with delivery acknowledgements, coalesced
-  read receipts you can switch off, bounded resends, and
-  requeue-and-reseal after connection loss.
-- **Strict inbound hygiene** — every frame is schema-validated (types,
-  sizes, base64/hex, timestamps); ordering is enforced with duplicate
-  detection (duplicates are re-acked, never shown twice) and a
-  self-healing reorder buffer.
-- **Typing indicators** — throttled outbound, expiring inbound, entirely
-  content-free, and controlled by a setting.
-- **Optional history with three modes** — `disabled` (default) · `session`
-  (memory only, wiped on exit) · `encrypted` (passphrase → scrypt → AEAD at
-  rest, atomic `0600` writes, wrong passphrase = clear error).
-- **Premium terminal chat** — status / encryption / latency banner, wrapped
-  message blocks with delivery glyphs, typing and connection notices,
-  multi-line composer, arrow-key input history, graceful Ctrl+C, and local
-  commands: `/help /info /clear /history /export /exit`.
-- **Keys never touch disk** — session keys live in process memory and are
-  overwritten before release; logs record ids, sizes and states only, never
-  content.
+| Capability | Status |
+| --- | :---: |
+| Terminal-only UI | ✅ |
+| Termux support | ✅ |
+| Linux support | ✅ |
+| Encrypted one-to-one messaging | ✅ |
+| Ephemeral identities | ✅ |
+| One-time invites | ✅ |
+| Encrypted file transfer | ✅ |
+| Resumable transfers | ✅ |
+| Group lifecycle (create/join/leave/remove/dissolve) | ✅ |
+| Group messaging | ✅ |
+| Pairwise-mesh group encryption | ✅ |
+| Shared sender keys | Planned (documented hardening candidate) |
+| Browser client | Out of scope — terminal-only by design |
+| GUI / Electron application | Out of scope — terminal-only by design |
+| Android APK | Not part of the project |
+| Voice / video / screen sharing | Out of scope |
 
-## Feature highlights (Phase 6C — Group Messaging + Pairwise-Mesh Encryption)
+Statuses reflect the implemented code and the roadmap in
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
-- **Per-recipient end-to-end encryption** — a group message produces one
-  independently sealed ciphertext per authorized recipient (fanout ≤ 7),
-  over a pairwise link handshaken with context
-  `ghostlink/group/v1|{group}|{epoch}` and identity keys pinned by the
-  roster in both directions. Removed members hold no new-epoch links;
-  joiners gain no history.
-- **Cryptographic context binding** — AEAD binds
-  `{group, epoch, sender, recipient}` and the sealed frame re-carries the
-  same context for a post-decrypt cross-check: ciphertext moves across
-  groups, epochs, senders, or recipients never authenticate.
-  One-to-one-chat ciphertext can never open as group traffic.
-- **Explicit delivery, never overclaimed** — per-recipient states
-  (queued/sending/sent/delivered/read/failed) render `delivered k/m` with
-  pending handles; offline members are marked, held in a bounded retry
-  queue (8 messages, drop-oldest), and flushed with fresh keys after they
-  reconnect — re-sealed to the *current* epoch.
-- **Relay stays blind** — it validates framing, enforces the roster ACL
-  and a 20/s per-sender forward brake, then forwards opaque ciphertext.
-  In the design's own words (docs/GROUPS.md §28.5): "The relay routes
-  opaque ciphertext and sees connection/group metadata. It cannot read
-  messages or keys. It can observe IP addresses, timing, and traffic
-  volume, and can refuse or delay service." End-to-end content
-  confidentiality is not the same as network anonymity — GhostLink makes
-  no anonymity or untraceability claims.
-- **Terminal group chat** — `ghostlink group chat <gl-group-…>`: banner
-  with group, members, epoch, mesh and encryption status; attributed
-  messages; delivery lines and security notices; commands
-  `/help /info /members /fingerprint /delivery /invite /leave /history
-  /export /quit`. History reuses the existing store (off/session/
-  encrypted), never any keys.
+---
 
-## Feature highlights (Phase 6B — Secure Group Lifecycle)
+## Security model
 
-- **Owner-created groups of up to 8 members** — `ghostlink group create`
-  proves possession of your identity key over the relay's attestation
-  challenge; the relay mints the collision-free `gl-group-…` id. The cap is
-  enforced by the relay authority, not the UI: roster + candidates + pending
-  joins can never exceed 8, and a full group never burns an invite.
-- **Relay-authoritative roster with signed events** — the relay decides
-  every membership verdict in one await-free critical section (concurrent
-  joins/leaves serialize deterministically), and every roster change commits
-  only with the right signature: owner-signed admissions/removals/
-  dissolutions, self-signed leaves. A candidate can never sign their own
-  way in; the owner countersigns while hosting (`ghostlink group host`).
-- **Strict epochs** — roster epochs start at 1 and increment by exactly one
-  per committed mutation. Clients cannot pick, skip, roll back, or reuse
-  epochs; local records drop stale events, refuse gaps (flagging the roster
-  suspect until re-sync), and verify every event signature before applying.
-- **Group invites on the proven authority** — `ghostlink group invite`
-  mints `gl://join/<token>` group links with the same guarantees as Phase 5:
-  monotonic expiry, atomic single redemption under concurrency, owner-only
-  minting, plus relay-side capacity checks before the token is consumed.
-- **Metadata-only local records** — rosters of fingerprints, handles,
-  public keys and signed event descriptors in `groups.json` (atomic writes,
-  `0600`, corruption-safe). No tokens, no private keys, no session keys —
-  there are no group encryption keys to store. Joins persist success-only;
-  post-restart relays read as *defunct*, never silently resurrected.
-- **CLI lifecycle** — `ghostlink group create|list|info|invite|join|leave|
-  remove|dissolve|sync|host`, thin wrappers over the domain manager with
-  typed errors (exit code 8). Relay protocol v4 adds the `GROUP_*` lifecycle
-  family and `GROUP_FORWARD` opaque routing, behind version negotiation;
-  v1–v3 clients are untouched.
+**Primitives (Phase 3).** Key agreement uses ephemeral **X25519** bound to
+the handshake transcript; session keys are derived with **HKDF-SHA256**;
+every message, chunk, and group payload is sealed with
+**ChaCha20-Poly1305**. A fresh session key is derived per conversation and
+again after every reconnect. Keys live in process memory only and are
+overwritten before release — they never touch disk.
 
-## Feature highlights (Phase 5 — Ephemeral Identity & One-Time Invites)
+**Identity (Phase 5).** Each installation holds a local ephemeral **Ed25519**
+identity keypair. Public identity keys are bound into session handshakes and
+group rosters; a substituted key fails the session loudly.
 
-- **Ephemeral local identities** — a fresh Ed25519 keypair lives on your
-  device only (written `0600`, private key never displayed, never in a
-  link, never in a log). You get a short handle (`GL-7K3M`) and an
-  optional nickname — nothing else. No email, no phone, no real name, no
-  permanent account, no social profile.
-- **Verification fingerprints** — each identity has a human fingerprint,
-  `GLFP-XXXX-XXXX-XXXX`, derived from the public key only. Identity keys
-  are bound into the handshake transcript (tampering by anyone — relay
-  included — fails the session loudly), and `/fingerprint` inside the
-  chat shows both sides to compare over a trusted out-of-band channel for
-  stronger authentication.
-- **One-time join invites** — `ghostlink invite create --expires 10m`
-  mints a 20-character, ~103-bit CSPRNG token (never derived from
-  timestamps or counters) and prints a terminal card with
-  `gl://join/<token>`. The token is never re-displayed — `invite list`
-  and `invite info` show metadata only.
-- **Relay-authoritative enforcement** — the relay holds the authoritative
-  invite state: expiration on a monotonic clock (immune to local clock
-  tampering and timezone drift), an atomic check-and-consume so two peers
-  redeeming the *same* invite simultaneously yields exactly one winner,
-  creator-only revocation, and fail-closed handling of unknown, expired,
-  revoked, or already-used tokens.
-- **Session binding** — the invite that created a session is bound to
-  that session's id on both sides; a redeemed invite can never start an
-  unrelated second session.
-- **Terminal-native lifecycle** — `identity show|fingerprint|nickname`,
-  `invite create|list|info|revoke`, `join gl://join/<token>`, plus
-  `/identity`, `/fingerprint`, `/invite` inside the chat. Invites are
-  terminal artefacts: typing the link into a browser does nothing (and
-  GhostLink never pretends it does). Terminal records of expired/revoked
-  invites are purged on a retention policy.
+**Group encryption (Phase 6C).** For a group of N members, the sender creates
+**independently authenticated ciphertext for each authorized recipient** over
+pairwise links. Groups hold at most **8 members**, so the maximum fanout is
+**7 recipient encryptions per sender message**.
 
-## Feature highlights (Phase 4 — Secure File Transfer)
+Every sealed group payload is cryptographically bound to its context:
 
-- **Peer-approved offers** — `/send photo.jpg` seals a manifest (name,
-  size, chunk geometry, SHA-256 — never your local path) and waits; the
-  receiver sees an incoming-file panel and answers `[Y]/[N]`. No bytes move
-  before approval.
-- **Per-transfer encryption** — every transfer derives its own
-  HKDF-SHA256 sub-key from the live session key; each chunk is
-  ChaCha20-Poly1305-sealed with `transfer_id|chunk_number` as associated
-  data. Tampered, truncated, replayed, or mis-numbered chunks are detected
-  and rejected — never silently accepted. The relay sees only ciphertext.
-- **Sliding-window pump with real ACKs** — bounded in-flight chunks,
-  per-chunk acknowledgements, bounded retries, timeouts and backpressure —
-  friendly to Termux on modest hardware.
-- **Resumable by design** — pause/resume mid-flight; on connection loss
-  both sides auto-pause, and after reconnection the receiver's verified-
-  chunk bitmap drives the resume: verified chunks are never retransmitted,
-  everything is re-sealed under fresh keys.
-- **Verify, then publish** — the completed file is SHA-256-checked before
-  it becomes visible: success → atomic rename into the download directory
-  (`~/Download/GhostLink` by default, `0600` permissions); mismatch →
-  FAILED, the partial temp is deleted, and both sides are told loudly.
-- **Hostile-name immunity** — remote filenames are sanitized (every
-  separator style + unicode lookalikes, control characters, device names,
-  length caps); no traversal, no absolute paths, no silent overwrites
-  (`name (2).ext` on collision), and the peer can never pick a destination.
-- **Live terminal UX** — throttled `bar · % · bytes · speed · ETA`
-  progress lines that survive 40-column Termux windows, `/transfers` for a
-  live table, `/transfer <id>` for details, and `/accept /reject /pause
-  /resume /cancel` with unique id prefixes.
-- **Bounded resources** — configurable caps for file size, concurrency,
-  chunk size, expiry, retries, and temp quota; offers and transfers expire;
-  orphaned temp files are cleaned on startup; history records transfer
-  *metadata only* (never contents, never keys).
+- **Group binding** — ciphertext is tied to the group id.
+- **Epoch binding** — ciphertext is tied to the roster epoch; old-epoch
+  traffic drains within a bounded window, then fails.
+- **Sender binding** — payloads authenticate the sending identity.
+- **Recipient binding** — a payload sealed for one member cannot
+  authenticate for another.
+- **AEAD authentication** — tampering, truncation, and forgery fail
+  decryption; failures are never silent.
+- **Replay protection** — message-id LRU deduplication plus bounded
+  sequence cursors; duplicates are re-acknowledged, never re-delivered.
+- **Roster authorization** — only active members of the current epoch may
+  send; membership changes commit only with valid signatures.
 
-## Installation
+**What the security model does not provide.** GhostLink makes no claims of
+anonymity, untraceability, IP hiding, or protection against traffic
+analysis. It does not protect you from a compromised endpoint, and it does
+not make you invisible to network observers.
 
-### Termux (Android)
+> **The relay is not an anonymity network.**
+
+---
+
+## What the relay can see
+
+GhostLink is explicit about the relay's visibility. Content confidentiality
+is end-to-end; connection metadata is not hidden.
+
+| The relay **can** observe | The relay **cannot** read |
+| --- | --- |
+| Connection metadata (who connects, when) | Plaintext messages |
+| IP addresses of connecting clients | Session keys |
+| Timing of traffic | Private identity keys |
+| Traffic volume | File contents |
+| Group / session metadata (ids, epochs, membership events) | Decrypted group messages |
+| Connection state (whether a peer is connected) | Any cryptographic secret |
+
+The relay can also refuse or delay service. From
+[docs/GROUPS.md](docs/GROUPS.md) §28.5: *"The relay routes opaque ciphertext
+and sees connection/group metadata. It cannot read messages or keys. It can
+observe IP addresses, timing, and traffic volume, and can refuse or delay
+service."* If relay metadata matters to you, run your own relay and use
+`wss://` — network-level visibility is out of scope for GhostLink's design.
+
+---
+
+## Identity and invites
+
+**Identity is local and ephemeral.**
+
+- A fresh **Ed25519 keypair** is generated on your device (stored `0600`);
+  the private key is never displayed, never logged, and never leaves the
+  device.
+- You get a short handle (e.g. `GL-7K3M`) and an optional nickname — nothing
+  else. **No email, no phone number, no account.**
+- Each identity has a verification fingerprint
+  (`GLFP-XXXX-XXXX-XXXX`) derived from the public key. Compare fingerprints
+  with your peer over a trusted out-of-band channel (`/fingerprint` inside
+  the chat) for stronger authentication.
+
+**Invites are one-time, relay-enforced tokens.**
+
+- `ghostlink invite create` mints a CSPRNG token and prints a
+  `gl://join/<token>` link; tokens are never re-displayed
+  (`invite list` / `invite info` show metadata only).
+- Expiration runs on the relay's monotonic clock.
+- Redemption is **atomic**: two peers racing for the same invite produce
+  exactly one winner.
+- The creator can **revoke** an invite at any time; the relay fails closed on
+  unknown, expired, revoked, or already-used tokens.
+
+Invite links are **terminal artifacts**. They are not browser URLs — typing
+one into a browser does nothing, and GhostLink never pretends otherwise.
+
+---
+
+## File transfer
+
+Files travel through the same encrypted session, with their own safeguards:
+
+- **Peer approval first** — a sealed manifest (name, size, chunk geometry,
+  SHA-256 — never your local path) is offered; no bytes move before the
+  receiver accepts.
+- **Per-transfer encryption** — each transfer derives its own HKDF sub-key
+  from the session key; every chunk is AEAD-sealed with
+  `transfer_id|chunk_number` as associated data.
+- **Integrity verification** — the completed file is SHA-256-checked against
+  the manifest **before publication**; on mismatch the partial file is
+  deleted and both sides are informed.
+- **Pause / resume / cancel** — mid-flight, by either side.
+- **Connection-loss recovery** — the receiver's verified-chunk bitmap drives
+  the resume; verified chunks are never retransmitted.
+- **Hostile filename protection** — remote names are sanitized (separators,
+  unicode lookalikes, device names, length); no traversal, no absolute
+  paths, no silent overwrites.
+- **Bounded resources** — caps on file size, concurrency, chunk size,
+  retries, expiry, and temporary storage quota.
+
+Verified files land atomically in `~/Download/GhostLink` by default.
+
+---
+
+## Group messaging
+
+Groups are private, invite-only, capped at **8 members** (the cap is enforced
+by the relay authority, not the UI). The workflow:
+
+1. The **owner creates** the group (`ghostlink group create`), proving
+   possession of their identity key; the relay mints the `gl-group-…` id.
+2. **Members join** through an authorized group invitation
+   (`gl://join/…`, owner-minted).
+3. **Signed roster events** establish membership — owner-signed
+   admissions/removals/dissolutions, self-signed leaves; a candidate can
+   never sign their own way in.
+4. The **epoch increments** on every committed membership change; clients
+   cannot pick, skip, or roll back epochs.
+5. The **sender encrypts per recipient** — one sealed payload per authorized
+   member, over identity-bound pairwise links.
+6. The **relay forwards opaque payloads** after framing/ACL checks.
+7. Each **recipient decrypts only their own payload**, cross-checking group,
+   epoch, sender, and recipient bindings.
+8. **Removed members cannot participate in future epochs** — they hold no
+   new-epoch links, and joiners gain no history.
+
+Delivery is reported per recipient (`delivered k/m`); the interface never
+claims full delivery for a partial fanout. Open the group chat with:
 
 ```bash
-pkg update && pkg install -y python git
+ghostlink group chat gl-group-XXXX-XXXX-XXXX
+```
+
+---
+
+## Installation: Termux
+
+GhostLink requires **Python 3.12 or newer** (Python 3.11 is not supported).
+
+```bash
+pkg update
+pkg install -y python git
+
 git clone https://github.com/cybervault-Hacky/Ghostlink.git
 cd Ghostlink
+
+python --version          # must report 3.12+
 pip install -r requirements.txt
+```
+
+Or run the idempotent bootstrap, which performs the same steps:
+
+```bash
+bash scripts/termux_setup.sh
+```
+
+Launch:
+
+```bash
 python ghostlink.py
 ```
 
-Or use the idempotent bootstrap: `bash scripts/termux_setup.sh`
+Runtime dependencies are minimal: `rich` and `simple-term-menu` for the
+interface, `cryptography` for the audited X25519 / ChaCha20-Poly1305 /
+Ed25519 primitives. Nothing is rooted, and nothing keeps running after exit.
 
-### Linux
+---
+
+## Installation: Linux
+
+Use your distribution's Python as long as it is **3.12 or newer**; check
+first:
+
+```bash
+python3 --version         # must report 3.12+
+```
+
+Then clone and install:
 
 ```bash
 git clone https://github.com/cybervault-Hacky/Ghostlink.git
 cd Ghostlink
-python3 -m pip install -r requirements.txt
-python3 ghostlink.py
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### Install as a command
+Launch:
 
 ```bash
-pip install .          # provides the `ghostlink` command
+python ghostlink.py
+```
+
+Optionally install GhostLink as a command:
+
+```bash
+pip install .             # provides the `ghostlink` command
 ghostlink
 ```
 
-GhostLink requires **Python 3.12+**. Runtime dependencies are minimal —
-`rich` and `simple-term-menu` for the interface, `cryptography` for the
-audited AEAD/KDF primitives. Nothing to root, nothing left running.
+---
 
-## Usage
+## First run
 
-```
-ghostlink                    Launch the interactive menu
+A complete first conversation, step by step:
 
-ghostlink host --relay ws://127.0.0.1:8787
-                             Create a room, then host the encrypted chat
-ghostlink host --name Lounge --lifetime 30 --as Nova
-ghostlink join gl-room-… --relay ws://127.0.0.1:8787
-                             Join a room's encrypted chat
-ghostlink join gl://join/… --relay ws://127.0.0.1:8787
-                             Redeem a one-time invite, then chat
-ghostlink identity           Show your local identity (handle, fingerprint)
-ghostlink identity nickname ShadowUser
-                             Set the nickname your peers see
-ghostlink invite create --expires 10m --relay ws://127.0.0.1:8787
-                             Mint a one-time invite, then host the chat
-ghostlink invite create --expires 2s --no-chat --relay …
-                             Print the invite card, wait, show EXPIRED
-ghostlink invite list        Your invites: state, expiry (`--data-dir` aware)
-ghostlink invite info gi_…   Safe metadata for one invite (never the token)
-ghostlink invite revoke gi_… Revoke an invite (relay-authoritative)
-ghostlink relay-status       Probe the configured relay (live dashboard)
-ghostlink relay-status --relay ws://127.0.0.1:8787 --pings 6
-ghostlink session            Session overview: history, rooms, invites
-ghostlink doctor             Read-only environment diagnostics
+1. **Start a relay** (or use one you trust):
 
-ghostlink --theme ember      Launch with a different theme
-ghostlink --debug            Debug Mode: verbose logs + console echo
-ghostlink --data-dir DIR     Redirect state and logs for this run
-ghostlink --config FILE      Use an alternate configuration file
-ghostlink --no-color         Plain output (also honours NO_COLOR)
-ghostlink --version          Print the version banner
-```
+   ```bash
+   python -m ghostlink.transport.relay.server --port 8787
+   ```
 
-**A two-minute conversation.** Terminal one runs a relay and hosts;
-terminal two joins:
+2. **Create and host a room** in a second terminal:
 
-```bash
-# terminal 1
-python -m ghostlink.transport.relay.server --port 8787
-ghostlink host --relay ws://127.0.0.1:8787 --as Nova
-#    → displays the room id, e.g. gl-room-ABCD-EFGH-JKMN, then opens the chat
+   ```bash
+   ghostlink host --relay ws://127.0.0.1:8787 --as Nova
+   ```
 
-# terminal 2
-ghostlink join gl-room-ABCD-EFGH-JKMN --relay ws://127.0.0.1:8787 --as Ravi
-```
+   This prints the room id (e.g. `gl-room-ABCD-EFGH-JKMN`) and opens the
+   chat. Alternatively mint a one-time invite:
+   `ghostlink invite create --expires 10m --relay ws://127.0.0.1:8787`.
 
-Both sides see the safety code — compare it out-of-band once, then type
-away. Inside the chat: `\` at line end continues a message,
-<b>↑</b> recalls input history, and `/help` lists everything — messaging
-(`/info /clear /history /export /exit`), identity
-(`/identity /fingerprint /invite`), plus file transfer
-(`/send /transfers /transfer /accept /reject /pause /resume /cancel`).
+3. **Share the room id or invite link** with your peer through a trusted
+   channel. Links are terminal artifacts — say them, message them, don't
+   post them publicly.
 
-**Meeting via a one-time invite** works like this:
+4. **The peer joins**:
 
-```bash
-# terminal 1 (relay already running)
-ghostlink invite create --expires 10m --relay ws://127.0.0.1:8787
-#    → prints the invite card:
-#      ╔══════════════════════════════════╗
-#      ║      SECURE GHOSTLINK INVITE      ║
-#      ║  Invite: gl://join/8F7K2MQ3…      ║
-#      ║  Expires: 10 minutes              ║
-#      ║  Uses: 1                          ║
-#      ╚══════════════════════════════════╝
-#      Waiting for peer… (opens the chat as host)
+   ```bash
+   ghostlink join gl-room-ABCD-EFGH-JKMN --relay ws://127.0.0.1:8787 --as Ravi
+   # or, with an invite:
+   ghostlink join gl://join/… --relay ws://127.0.0.1:8787
+   ```
 
-# terminal 2
-ghostlink join gl://join/8F7K2MQ3W2J4X6B9DZP4 --relay ws://127.0.0.1:8787
-#    → ✓ Invite accepted — joining the room as guest
-```
+5. **Verify before you trust.** Both sides see the same safety code after the
+   handshake — compare it out-of-band once. For stronger authentication,
+   compare identity fingerprints with `/fingerprint`.
 
-The relay consumes the invite the instant it is redeemed — a second join
-with the same link prints `INVITE ALREADY USED` and exits with code `7`,
-whether the attempts arrive seconds apart or at the same moment. When the
-deadline passes, the joiner sees `INVITE EXPIRED` (also exit `7`); the
-creator can end it early at any time with `ghostlink invite revoke gi_…`.
+6. **Chat.** Type messages; `/help` lists every command.
 
-**Sending a file** works like this:
+7. **Transfer files if needed** — `/send <file>` offers an encrypted
+  transfer; the peer approves it before any bytes move.
 
-```
-> /send report.pdf
-── 📎 report.pdf — Encrypted transfer ready. Waiting for peer approval…
-── 📎 report.pdf — Peer accepted.
-   [████████████████░░░░] 82% 14.9 / 18.0 MB Speed: 2.8 MB/s ETA: 1.3s
-── 📎 Transfer completed ✓
-```
-
-The peer sees an *Incoming File* panel, answers `Y` (or `/accept <id>`),
-watches the same live bar, and the verified file lands atomically in
-`~/Download/GhostLink/`.
+8. **Create a group if needed** — `ghostlink group create --name <name>`,
+   then `ghostlink group invite` and `ghostlink group chat`.
 
 Menu navigation: **↑/↓** or **j/k** to move, **Enter** to select, **q** to
-quit. When input is piped, the menu becomes a numbered prompt automatically.
-Create Room and Join Room in the menu run the same real flows as the CLI —
-with a relay configured, they drop straight into the conversation.
+quit. When input is piped, the menu automatically becomes a numbered prompt.
 
-Run a local development relay in a second terminal:
+---
+
+## CLI reference
+
+Every command below is defined by the argument parser in
+`ghostlink/cli/arguments.py`.
+
+| Command | Description |
+| --- | --- |
+| `ghostlink` | Launch the interactive menu |
+| `ghostlink host` | Create a room and a first invite, then display both; with `--relay` opens the encrypted chat |
+| `ghostlink join <gl-room-…\|gl://join/…>` | Join a room or redeem an invite, then chat |
+| `ghostlink identity` | Show your local identity (handle, fingerprint, nickname) |
+| `ghostlink identity fingerprint` | Print only the identity fingerprint |
+| `ghostlink identity nickname <name>` | Set the nickname your peers see |
+| `ghostlink invite create` | Mint a one-time `gl://join/…` invite |
+| `ghostlink invite list` | List your invites (metadata only — never tokens) |
+| `ghostlink invite info <gi_…>` | Inspect one invite (metadata only) |
+| `ghostlink invite revoke <gi_…>` | Revoke an invite (relay-authoritative) |
+| `ghostlink group create --name <name>` | Create a group (up to 8 members) |
+| `ghostlink group list` | List your groups (default group action) |
+| `ghostlink group info <gl-group-…>` | Show roster, epoch, and signed events |
+| `ghostlink group invite <gl-group-…>` | Mint a group invite link (owner only) |
+| `ghostlink group join <gl://join/…>` | Join a group via invite |
+| `ghostlink group leave <gl-group-…>` | Leave a group permanently |
+| `ghostlink group remove <gl-group-…> <GLFP-…>` | Remove a member (owner only) |
+| `ghostlink group dissolve <gl-group-…>` | Dissolve a group (owner only) |
+| `ghostlink group sync <gl-group-…>` | Re-sync the roster from the relay |
+| `ghostlink group host <gl-group-…>` | Stay online and countersign admissions (owner) |
+| `ghostlink group chat <gl-group-…>` | Open the encrypted group conversation |
+| `ghostlink relay-status` | Probe the relay and render the live status dashboard |
+| `ghostlink session` | Session dashboard: history, rooms, invites |
+| `ghostlink doctor` | Read-only environment diagnostics |
+
+Common options (where applicable): `--relay URL`, `--as NAME`,
+`--expires DURATION` (`900`, `30s`, `5m`, `1h`), `--uses N`,
+`--name NAME`, `--no-chat`.
+
+Global flags:
+
+| Flag | Effect |
+| --- | --- |
+| `--version` | Print the version banner and exit |
+| `--config FILE` | Use an alternate configuration file |
+| `--data-dir DIR` | Redirect state and logs for this run |
+| `--theme NAME` | Color theme: `phantom` (default), `emerald`, `ember`, `mono` |
+| `--debug` | Debug Mode: verbose logging and tracebacks |
+| `--no-color` | Plain output (also honours `NO_COLOR`) |
+| `--doctor` | Run diagnostics and exit (same as the `doctor` command) |
+
+---
+
+## Terminal chat commands
+
+Verified against the chat surfaces in `ghostlink/ui/chat.py` and
+`ghostlink/ui/group_chat.py`.
+
+**One-to-one chat**
+
+| Command | Description |
+| --- | --- |
+| `/help` | Show the command list |
+| `/info` | Session, encryption, and delivery statistics |
+| `/identity` | Your local identity — nickname, handle, fingerprint |
+| `/fingerprint` | Peer verification fingerprints (compare out-of-band) |
+| `/invite [list\|revoke <id>]` | Invite status for this chat, or manage invites |
+| `/clear` | Clear the screen and redraw the banner |
+| `/history` | Show messages retained this session |
+| `/export [file]` | Write retained history to a plaintext file |
+| `/send <file>` | Offer a file — encrypted, peer approves first |
+| `/transfers` | List every transfer with live progress and state |
+| `/transfer <id>` | Transfer details: progress, integrity, destination |
+| `/accept [id]` | Accept the latest (or given) incoming offer — `Y` works too |
+| `/reject [id]` | Decline an incoming offer — `N` works too |
+| `/pause <id>` | Pause an in-flight transfer |
+| `/resume <id>` | Resume a paused transfer (verified chunks are kept) |
+| `/cancel <id>` | Cancel a transfer; ids may be unique prefixes |
+| `/exit`, `/quit` | Close the session and leave |
+
+A trailing `\` continues a multi-line message; **↑** recalls input history.
+
+**Group chat**
+
+| Command | Description |
+| --- | --- |
+| `/help` | Show the command list |
+| `/info` | Group, epoch, encryption, and delivery statistics |
+| `/members` | Roster with per-member pairwise-link state |
+| `/fingerprint` | Member verification fingerprints (compare out-of-band) |
+| `/delivery` | Recent per-recipient delivery states |
+| `/invite` | Mint a group invite link (owner only) |
+| `/leave` | Leave this group permanently |
+| `/history` | Show messages retained this session |
+| `/export [file]` | Write retained history to a plaintext file |
+| `/quit`, `/exit` | Close the group chat |
+
+---
+
+## Project structure
+
+```
+Ghostlink/
+├── ghostlink.py            # direct-launch entry point
+├── ghostlink/              # the package
+│   ├── assets/             # ASCII branding + packaged default configuration
+│   ├── cli/                # argument parsing, subcommands, entry point
+│   ├── config/             # TOML loading, strict validation, manager
+│   ├── constants/          # metadata, file/env names — single source of truth
+│   ├── core/               # environment detection, logging, bootstrap, app loop
+│   ├── exceptions/         # GhostLinkError hierarchy + panel renderer
+│   ├── groups/             # Phase 6B/6C: roster authority, signed events, epochs,
+│   │                       #   pairwise-mesh links, sealed frames, group messaging
+│   ├── identity/           # Phase 5: ephemeral Ed25519 identity (GL-…, GLFP-…)
+│   ├── invites/            # Phase 5: one-time invites — tokens, relay authority,
+│   │                       #   registry, redemption, terminal panels
+│   ├── messaging/          # Phase 3: key exchange, AEAD frames, delivery lifecycle,
+│   │                       #   chat session orchestration, history, receipts, typing
+│   ├── models/             # frozen data models (environment, room, invite, settings)
+│   ├── services/           # DI container, session lifecycle, rooms & invites
+│   ├── storage/            # atomic JSON + in-memory backends, storage manager
+│   ├── transfer/           # Phase 4: encrypted file transfer — manifests, chunking,
+│   │                       #   integrity, resume, sanitized storage, progress
+│   ├── transport/          # Transport ABC, connection state machine, heartbeat,
+│   │                       #   RFC 6455 WebSocket, relay protocol v4 (client/server)
+│   ├── ui/                 # console, themes, menu, chat surfaces, components,
+│   │                       #   screens, dashboards, charts
+│   └── utils/              # XDG paths, text helpers
+├── docs/                   # ARCHITECTURE · CONFIGURATION · DEVELOPMENT · GROUPS · ROADMAP
+├── scripts/                # dev_check.sh · generate_screenshots.py · termux_setup.sh · run.sh
+└── tests/                  # pytest suite — 1283 passing tests
+```
+
+---
+
+## Development
+
+GhostLink targets **Python 3.12+**. Developer setup:
 
 ```bash
-python -m ghostlink.transport.relay.server --host 127.0.0.1 --port 8787
+git clone https://github.com/cybervault-Hacky/Ghostlink.git
+cd Ghostlink
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"        # pytest, ruff, mypy
 ```
 
-## Configuration
+The full quality gate is `scripts/dev_check.sh`, which runs — in order —
+byte-compilation (`compileall`), **Ruff** lint, **Ruff** format
+verification, **mypy --strict**, the **pytest** suite, and `--version` /
+`--doctor` smoke checks:
 
-Created on first launch at `~/.config/ghostlink/config.toml`:
-
-```toml
-[ui]
-theme = "phantom"        # phantom | emerald | ember | mono
-language = "en"
-
-[notifications]
-enabled = true
-
-[storage]
-data_dir = ""            # empty = ~/.local/share/ghostlink
-
-[diagnostics]
-debug = false
-
-[relay]
-url = ""                 # ws://127.0.0.1:8787 or wss://relay.example.org
-heartbeat_interval_seconds = 10.0
-reconnect_attempts = 3
-
-[rooms]
-default_lifetime_minutes = 60
-
-[invites]
-default_lifetime_minutes = 15   # Phase 2 room invites
-one_time = true
-default_expiry_seconds = 900    # gl://join/… invites (relay-enforced)
-max_expiry_seconds = 86400      # ceiling for --expires (60..604800)
-retention_hours = 24            # keep expired/revoked records this long
-
-[chat]
-display_name = ""        # pseudonym for your peer (empty = per-run default)
-read_receipts = true     # send ✓✓ read receipts
-typing_indicators = true # send typing start/stop signals
-history_mode = "disabled"  # disabled | session | encrypted
-timestamp_format = "24h"   # 24h → [22:10] · 12h → [10:10 PM]
-notification_style = "banner"  # banner | compact | muted
-message_wrapping = true    # wrap long messages to the window width
-
-[transfer]
-download_dir = ""          # empty = ~/Download/GhostLink
-max_file_size_mb = 100     # largest offer you accept, MiB (1..4096)
-max_concurrent_transfers = 3
-chunk_size_kb = 4          # KiB per sealed chunk (1..4)
-ack_timeout_seconds = 5.0  # per-chunk ack wait before resend (0.5..60)
-retry_limit = 5            # retries per chunk / offer (1..20)
-transfer_expiry_minutes = 60
-temp_storage_limit_mb = 1024
+```bash
+scripts/dev_check.sh
 ```
 
-Unknown keys and invalid values abort launch with precise, hinted errors —
-see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+Individual checks:
 
-## Documentation
+```bash
+pytest tests/                  # test suite
+ruff check ghostlink tests ghostlink.py
+ruff format --check ghostlink tests ghostlink.py
+mypy --config-file pyproject.toml
+python -m compileall -q ghostlink tests ghostlink.py
+```
+
+Regenerate the documentation screenshots from the live application:
+
+```bash
+python scripts/generate_screenshots.py
+```
 
 | Document | Contents |
 | --- | --- |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, bootstrap, async model, error taxonomy |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every key, location, and precedence rule |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every configuration key and precedence rule |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Dev setup, quality gate, contribution patterns |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Phases 1–6C and what is explicitly out of scope |
-| [docs/GROUPS.md](docs/GROUPS.md) | Group security design (Phase 6A) + Phase 6B/6C implementation notes |
+| [docs/GROUPS.md](docs/GROUPS.md) | Group security design and implementation notes |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Phase plan and explicit non-goals |
 
-## Project layout
+---
 
-```
-ghostlink/                # the package
-├── core/                 # environment, logging, bootstrap, application loop
-├── cli/                  # argument parsing, commands/ (host, join, …), entrypoint
-├── messaging/            # Phase 3: secure one-to-one messaging
-│   ├── protocol/         #   key exchange + AEAD primitives (memory-only keys)
-│   ├── packets/          #   validated secure-channel frames (chat + FILE_*)
-│   ├── models/           #   message model + delivery lifecycle
-│   ├── queue/            #   outbox pump queue + inbox ordering/dedup
-│   ├── session/          #   ChatSession orchestrator + events (identity-bound)
-│   └── history.py · receipts.py · typing.py
-├── identity/             # Phase 5: ephemeral Ed25519 identity (GL-… handle,
-│                         #   GLFP-… fingerprint, 0600 storage, lifecycle)
-├── invites/              # Phase 5: one-time join invites — tokens, models,
-│                         #   relay authority, registry, redemption, panels
-├── groups/               # Phase 6B/6C: group lifecycle — ids, events, models,
-│                         #   relay authority (roster/epochs), metadata registry,
-│                         #   client lifecycle manager; pairwise-mesh links,
-│                         #   sealed frames, and the group messaging service
-├── transfer/             # Phase 4: secure encrypted file transfer
-│   ├── manager.py        #   offers, send pump, resume, expiry, history
-│   ├── models.py         #   transfer lifecycle state machine + snapshots
-│   ├── manifest.py       #   sealed, cross-validated file metadata
-│   ├── chunking.py       #   streaming chunk I/O + resume bitmaps
-│   ├── integrity.py      #   per-transfer HKDF keys + AEAD chunks + SHA-256
-│   ├── storage.py        #   sanitized destinations + temp hygiene + quota
-│   ├── packets.py · cleanup.py · progress.py
-├── transport/            # Transport ABC, connection state machine, heartbeat,
-│   │                     # sessions with expiry + sweeper
-│   ├── websocket/        # own RFC 6455 framing + WebSocket transport
-│   └── relay/            # packet protocol v4 (channels + invite authority
-│                         #   + group authority)
-│                         # endpoint · client · server
-├── ui/                   # console, themes, banner, menu, chat surface,
-│                         # components/, screens/, dashboards, charts, gradients
-├── config/               # TOML loader, validation, manager
-├── storage/              # backend contract, atomic JSON, memory, manager
-├── services/             # DI container, session lifecycle, rooms & invites
-├── models/               # frozen data models (environment, room, invite, …)
-├── exceptions/           # GhostLinkError hierarchy + renderer (network exit 6)
-├── constants/            # metadata & file/env names (single source of truth)
-├── utils/                # XDG paths, text helpers
-└── assets/               # ASCII branding, packaged default config
-docs/ tests/ scripts/     # documentation · pytest suite (1160 tests) · tooling
+## Testing
+
+The suite currently reports **1283 passed, 1 skipped** (verified
+2026-08-08). Run it with:
+
+```bash
+pytest tests/
 ```
 
-## Security posture in Phase 5
+Coverage spans the whole stack, including:
 
-- **End-to-end encryption is on for every chat and every file** — ephemeral
-  X25519 ECDH + HKDF-SHA256 derives a fresh session key per conversation
-  (fresh again on every reconnect); ChaCha20-Poly1305 authenticates each
-  message and each chunk. The relay forwards ciphertext it cannot read.
-- **Files get per-transfer keys** — HKDF sub-keys of the live session key,
-  domain-separated by transfer id; chunk ciphertexts are bound to
-  `transfer_id|chunk_number` as AEAD associated data, so tampering,
-  truncation, replay and reordering are detected, never accepted.
-- **MITM check is human** — an AEAD key-confirmation proof catches protocol
-  mismatch automatically; the shared **safety code** and each side's
-  **identity fingerprint** (`GLFP-…`, bound into the handshake transcript)
-  catch a malicious relay when compared out-of-band. Fingerprint
-  comparison strengthens *authentication* — it is not an anonymity
-  mechanism (see *Privacy limitations* below).
-- **Invites are authority-enforced, not convention-enforced** — expiry
-  runs on the relay's monotonic clock, single redemption is an atomic
-  state transition with no await between check and consume, revocation is
-  creator-only, and every edge case (1s TTLs, redemption exactly at the
-  deadline, replayed tokens) fails closed. Invite tokens are ~103 bits of
-  CSPRNG output — unguessable, non-sequential, never timestamp-derived;
-  logs and `invite list` only ever show the public `gi_…` id.
-- **Verify before publish** — received files are SHA-256-verified against
-  the sealed manifest and appear in the download directory only after
-  passing, via atomic rename (never a visible partial file).
-- **Names are hostile input** — remote filenames are sanitized before they
-  touch any path; destinations always resolve inside the GhostLink download
-  directory, collision-proof, and no peer can ever choose one.
-- **Keys never touch disk** — session and transfer keys live only in
-  process memory and are overwritten before release; history is off by
-  default, records transfer *metadata only* (name, size, direction, status,
-  id), and encrypted-history mode keeps it behind a passphrase
-  (scrypt → AEAD, atomic `0600` writes). The identity's private key is
-  stored `0600` on your device only — never displayed, never in a link,
-  never in chat, never in a log.
-- **Privacy limitations, stated plainly** — GhostLink minimizes
-  *application-level* identity and metadata: no accounts, no email, no
-  phone, no real name, no server-side profiles. It does **not** make you
-  untraceable or anonymous: whoever runs your relay (and your network
-  provider) can see connection metadata, including IP addresses. If that
-  matters to you, run your own relay and use `wss://`; network-level
-  visibility is out of scope for GhostLink's design.
-- **Logs are content-free** — ids, sizes, chunk numbers, and states only;
-  plaintext, ciphertext, filenames and keys are never logged.
-- **Transport still matters** — choose `wss://` relay URLs for anything
-  beyond local development; E2E protects content either way.
-- Rooms and invites are stored atomically with owner-only (`0600`)
-  permissions; invite tokens hold 192 bits of entropy.
-- Session IDs, packet IDs, nonces, message IDs, and transfer IDs come from
-  `secrets`; keys and salts from the `cryptography` package.
-- Nothing is collected, beaconed, or phoned home — the only endpoint ever
-  contacted is a relay **you** configured or passed on the command line.
+- **Crypto** — key exchange, HKDF derivation, AEAD sealing, context binding
+- **Messaging** — session lifecycle, delivery states, ordering, receipts, typing
+- **Transport** — RFC 6455 framing, loopback, connection state machine, heartbeats
+- **Relay** — server, client, endpoint, routing, protocol versions
+- **Invites** — tokens, expiration, atomic redemption, relay authority, e2e
+- **Identity** — keypairs, fingerprints, nicknames, chat binding
+- **Transfers** — manifests, chunking, integrity, resume, storage hygiene
+- **Groups** — ids, events, frames, authority, registry, mesh, lifecycle,
+  relay e2e, messaging e2e
+- **CLI** — argument parsing and end-to-end command runs against a live relay
+- **Security hygiene** — secret-leak audits of logs and local stores
+- **Integration** — full two-party conversations, invite redemptions, file
+  transfers, and eight-member group fanout over a real in-process relay
 
-## Contributing
+---
 
-1. Fork, then branch from `main`.
-2. `pip install -e ".[dev]"` and keep `scripts/dev_check.sh` green.
-3. Follow the patterns in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md):
-   typed signatures, `GhostLinkError` for failures, components for UI.
+## Roadmap
+
+GhostLink ships in deliberate, self-contained phases.
+
+| Phase | Scope | Status |
+| --- | --- | --- |
+| 1 | Foundation — UI, configuration, environment, logging, diagnostics | ✅ Implemented |
+| 2 | Secure networking — WebSocket transport, relay, rooms, invites, heartbeats | ✅ Implemented |
+| 3 | Secure messaging — E2E encryption, identity-bound sessions, receipts | ✅ Implemented |
+| 4 | Secure file transfer — chunking, integrity, resume, hostile-name safety | ✅ Implemented |
+| 5 | Ephemeral identity & one-time invites | ✅ Implemented |
+| 6A | Group security design ([docs/GROUPS.md](docs/GROUPS.md)) | ✅ Design complete |
+| 6B | Group lifecycle — membership, signed roster events, epochs | ✅ Implemented |
+| 6C | Group messaging + pairwise-mesh encryption | ✅ Implemented (current) |
+| 6D | Rich communication — replies/edits/reactions, friend system, editable settings | Planned |
+| 7 | Hardening & polish — security review, offline queue design, localization | Planned |
+
+The Phase 6A design documents sender keys as the Phase 7 hardening
+candidate; they are not part of any implemented phase.
+
+[docs/ROADMAP.md](docs/ROADMAP.md) is the authoritative roadmap, including
+what is explicitly out of scope (GUI/web clients, federated public rooms,
+voice/video).
+
+---
+
+## Security disclaimer
+
+GhostLink is a security-focused open-source project. It is **not** a
+guarantee of anonymity or perfect security, and it should not be treated as
+one.
+
+Real-world security depends on factors outside the protocol:
+
+- **Endpoint integrity** — a compromised device exposes everything the app
+  can access.
+- **Correct configuration** — for example, `wss://` relays beyond local
+  development.
+- **Trusted verification** — safety codes and fingerprints only help when
+  compared over a genuine out-of-band channel.
+- **A secure operating environment** — OS, terminal, and storage hygiene.
+- **Relay availability and honesty** — the relay can refuse or delay
+  service; relay-authoritative state (invites, rosters) is volatile by
+  design.
+- **Implementation correctness** — bugs happen; the codebase is open for
+  review and improvement.
+
+GhostLink minimizes application-level identity (no accounts, no email, no
+phone) and keeps keys off disk, but it makes no anonymity or
+untraceability claims. Evaluate it against your own threat model.
+
+---
+
+## Responsible use
+
+GhostLink is intended for **legitimate private communication, research,
+development, and authorized security experimentation**.
+
+Users are responsible for complying with the laws and regulations that apply
+to them and for obtaining any permissions required in their environment.
+This project does not provide guidance for abuse, and encryption does not
+make any conduct lawful.
+
+---
 
 ## License
 
-[MIT](LICENSE) © 2026 cybervault-Hacky
+GhostLink is released under the [MIT License](LICENSE).
+
+© 2026 cybervault-Hacky

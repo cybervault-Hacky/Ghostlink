@@ -401,7 +401,7 @@ see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every key, location, and precedence rule |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Dev setup, quality gate, contribution patterns |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases 1–5 and what is explicitly out of scope |
-| [docs/GROUPS.md](docs/GROUPS.md) | Phase 6a secure-groups design (pre-implementation, pending review) |
+| [docs/GROUPS.md](docs/GROUPS.md) | Phase 6A group security design (DESIGN/REVIEW — no implementation yet) |
 
 ## Project layout
 

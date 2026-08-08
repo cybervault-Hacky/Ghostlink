@@ -120,7 +120,7 @@ and production-quality before the next begins.
 - 200+ new tests including live sender→relay→receiver transfers, relay
   restarts with resume, corruption/tamper injection, and CLI-end-to-end runs
 
-## Phase 5 — Ephemeral Identity & One-Time Invites ✅ (current)
+## Phase 5 — Ephemeral Identity & One-Time Invites ✅ (latest implemented)
 
 - Ephemeral local identities: an Ed25519 keypair generated on your device,
   stored `0600`, never uploaded; a short handle (`GL-…`) and an optional
@@ -149,30 +149,44 @@ and production-quality before the next begins.
   against a real relay, concurrent-redemption races, revocation, peer
   fingerprint display, and log secret-leak audits
 
-## Phase 6a — Secure Groups 🚧 (design complete — implementation pending review)
+## Phase 6A — Group Security Design
 
-Secure multi-peer communication (groups beyond the one-to-one channel),
-prioritized ahead of the other Phase 6 items:
+**STATUS: DESIGN / REVIEW** — security model documented, **no
+implementation has started**. Group implementation begins only after the
+design is reviewed and approved.
 
-- Private, invite-only groups of up to 8 members on the existing relay
-- Full membership lifecycle: create → invite → join → leave → remove →
-  dissolve, under a single authorized owner, with a relay-authoritative
-  roster and owner-signed membership events
-- **Group encryption model: mesh of pairwise Phase 3 sessions** — no
-  shared/copied group key (explicitly rejected); each member pair keeps an
-  X25519 + HKDF + ChaCha20-Poly1305 session with mandatory identity-key
-  binding, group/epoch-bound key context, sender fanout, and an epoch leap
-  on every membership change so removed members lose access
-- Relay protocol v4 (`GROUP_*`), additive and version-negotiated
-- Termux-grade resource limits and the Phase 5 bar of live-relay tests
-- Sender-key encryption is the documented Phase 7 upgrade path, sketched
-  but **not** part of 6a
+Direction: secure multi-peer communication (groups beyond the one-to-one
+channel), prioritized ahead of the other Phase 6 items. The full
+specification — threat model, trust model, membership authorization,
+epochs, pairwise-mesh encryption, envelope/AAD binding, replay and
+sequence rules, forward/backward secrecy analysis, relay visibility,
+resource limits, failure handling, future sender-key path, migration,
+testing strategy, implementation checklist, and open questions — lives in
+[docs/GROUPS.md](GROUPS.md).
 
-The full security model, authorization rules, wire protocol, limits, and
-test plan live in [docs/GROUPS.md](GROUPS.md) — implementation starts only
-after that design is approved.
+Selected design (pending review):
 
-## Phase 6b — Rich Communication
+- Private, invite-only groups of **up to 8 members** on the existing relay
+  (quadratic mesh arithmetic, Termux screens, and auditability drive the
+  cap — rationale documented in GROUPS.md §32)
+- Full membership lifecycle: create → invite → redeem → join → leave →
+  remove → dissolve, with unambiguous per-operation authorization, a
+  relay-authoritative roster, and owner-signed membership events
+- **Encryption model: pairwise mesh over the existing Phase 3 stack**
+  (X25519 + HKDF-SHA256 + ChaCha20-Poly1305, mandatory identity binding,
+  group/epoch-bound keys, sender-side fanout). A shared/copied group key
+  is explicitly rejected; sender keys are the documented Phase 7
+  candidate, not part of 6A
+- Group epochs: every roster mutation increments the epoch; keys are
+  epoch-bound; removed members lose future epochs, joiners gain no past
+- Relay protocol v4 (`GROUP_*`), additive and version-negotiated; the
+  relay routes opaque ciphertext and non-secret routing metadata only and
+  never receives plaintext, keys, or message ids
+- Termux-grade, explicit resource limits; a §5 threat model covering ten
+  attacker classes with no overstated claims; a 15-category loopback
+  test strategy mirroring the Phase 5 bar
+
+## Phase 6B — Rich Communication (after 6A)
 
 - Friend system: adding, verifying safety numbers, blocking
 - Message replies, edits, and reactions

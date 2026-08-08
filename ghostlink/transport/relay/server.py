@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import collections
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -24,6 +25,10 @@ from typing import cast
 from ghostlink.constants.net import (
     CHANNEL_CAPACITY,
     DEFAULT_RELAY_PORT,
+    GROUP_EVENT_RATE_OPS,
+    GROUP_EVENT_RATE_WINDOW_SECONDS,
+    GROUP_FORWARD_RATE_BURST,
+    GROUP_FORWARD_RATE_PER_SECOND,
     GROUP_MAX_ACTIVE_INVITES,
     GROUP_PROTOCOL_VERSION,
     HEARTBEAT_INTERVAL_SECONDS,
@@ -160,6 +165,10 @@ class RelayServer:
         self._contexts_by_session: dict[str, _ClientContext] = {}
         self._last_sign_delivery: dict[str, str] = {}  # group_id -> "op:session"
         self._group_sweeper: asyncio.Task[None] | None = None
+        # Phase 6C abuse brakes (§32): token bucket per (group, session) for
+        # GROUP_FORWARD, sliding window per session for membership ops.
+        self._forward_tokens: dict[tuple[str, str], tuple[float, float]] = {}
+        self._event_windows: dict[str, collections.deque[float]] = {}
 
     # ------------------------------------------------------------- invites
 
@@ -423,6 +432,8 @@ class RelayServer:
             await self._handle_group_dissolve(client_id, context, packet)
         elif packet.type is PacketType.GROUP_SIGN:
             await self._handle_group_sign(client_id, context, packet)
+        elif packet.type is PacketType.GROUP_FORWARD:
+            await self._handle_group_forward(client_id, context, packet)
         elif packet.type in (PacketType.HELLO, PacketType.WELCOME):
             await self._send(
                 context,
@@ -910,11 +921,26 @@ class RelayServer:
             ),
         )
 
+    async def _group_event_rate_gate(self, context: _ClientContext, group_id: str) -> bool:
+        """§32 GROUP_EVENT_RATE brake on leave/remove/dissolve bursts."""
+
+        if self._event_rate_allowed(self._session_id(context)):
+            return True
+        await self._group_error(
+            context,
+            "group/rate",
+            "Too many membership operations — slow down (rate limit per §32).",
+            group_id,
+        )
+        return False
+
     async def _handle_group_leave(
         self, client_id: int, context: _ClientContext, packet: Packet
     ) -> None:
         group_id = str(packet.payload["group"])
         if not await self._group_protocol_gate(context, group_id):
+            return
+        if not await self._group_event_rate_gate(context, group_id):
             return
         try:
             self._groups.request_leave(group_id, self._session_id(context))
@@ -928,6 +954,8 @@ class RelayServer:
     ) -> None:
         group_id = str(packet.payload["group"])
         if not await self._group_protocol_gate(context, group_id):
+            return
+        if not await self._group_event_rate_gate(context, group_id):
             return
         try:
             self._groups.request_remove(
@@ -943,6 +971,8 @@ class RelayServer:
     ) -> None:
         group_id = str(packet.payload["group"])
         if not await self._group_protocol_gate(context, group_id):
+            return
+        if not await self._group_event_rate_gate(context, group_id):
             return
         try:
             self._groups.request_dissolve(group_id, self._session_id(context))
@@ -1009,6 +1039,125 @@ class RelayServer:
         )
         for session_id in committed.notify_sessions:
             await self._send_to_session(session_id, packet)
+
+    # ------------------------------------------------- group messaging (6C)
+
+    async def _group_forward_error(
+        self,
+        context: _ClientContext,
+        code: str,
+        message: str,
+        group_id: str,
+        member: str,
+    ) -> None:
+        """GROUP_FORWARD-scoped refusal; correlates via group + member.
+
+        Forward errors always name the addressed member so the sender's
+        per-recipient ledger can mark exactly that recipient — and so the
+        client never confuses them with lifecycle round-trip failures.
+        """
+
+        await self._send(
+            context,
+            Packet(
+                PacketType.ERROR,
+                {"code": code, "message": message, "group": group_id, "member": member},
+            ),
+        )
+        self._logger.info(
+            "group forward refused — %s (%s → %s)", code, group_id or "unidentified", member
+        )
+
+    def _forward_rate_allowed(self, group_id: str, session_id: str) -> bool:
+        """Token bucket: 20 envelopes/s (+burst) per (group, sender) — §32."""
+
+        now = asyncio.get_running_loop().time()
+        key = (group_id, session_id)
+        tokens, stamped = self._forward_tokens.get(key, (float(GROUP_FORWARD_RATE_BURST), now))
+        tokens = min(
+            float(GROUP_FORWARD_RATE_BURST),
+            tokens + (now - stamped) * GROUP_FORWARD_RATE_PER_SECOND,
+        )
+        if tokens < 1.0:
+            self._forward_tokens[key] = (tokens, now)
+            return False
+        self._forward_tokens[key] = (tokens - 1.0, now)
+        return True
+
+    def _event_rate_allowed(self, session_id: str) -> bool:
+        """Sliding window: 4 membership ops per 10 s per session — §32."""
+
+        now = asyncio.get_running_loop().time()
+        window = self._event_windows.setdefault(session_id, collections.deque())
+        while window and now - window[0] > GROUP_EVENT_RATE_WINDOW_SECONDS:
+            window.popleft()
+        if len(window) >= GROUP_EVENT_RATE_OPS:
+            return False
+        window.append(now)
+        return True
+
+    async def _handle_group_forward(
+        self, client_id: int, context: _ClientContext, packet: Packet
+    ) -> None:
+        """Route one opaque group envelope (§28): ACL + rate gates only.
+
+        The relay is never a group-message processor: it checks that both
+        endpoints are attested ACTIVE members (from == the sending
+        session's attested fingerprint), applies the §32 flood brake, and
+        forwards the untouched envelope. Offline recipients are NOT
+        queued relay-side (§29) — the sender learns `group/offline`.
+        """
+
+        group_id = str(packet.payload["group"])
+        to_fingerprint = str(packet.payload["to"])
+        from_fingerprint = str(packet.payload["from"])
+        if not await self._group_protocol_gate(context, group_id):
+            return
+        session_id = self._session_id(context)
+        try:
+            attested = self._groups.session_fingerprint(group_id, session_id)
+            if attested is None or attested != from_fingerprint:
+                raise GroupNotMemberError(
+                    "The sending session does not match the envelope sender.",
+                    hint="Attest first; the 'from' label is bound at routing time.",
+                )
+            target_session = self._groups.authorize_forward(
+                group_id, session_id, to_fingerprint, int(str(packet.payload["epoch"]))
+            )
+        except GroupError as exc:
+            await self._group_forward_error(
+                context, self._group_error_code(exc), exc.message, group_id, to_fingerprint
+            )
+            return
+        if not self._forward_rate_allowed(group_id, session_id):
+            await self._group_forward_error(
+                context,
+                "group/rate",
+                "Too many group envelopes — slow down (rate limit per §32).",
+                group_id,
+                to_fingerprint,
+            )
+            return
+        if target_session is None:
+            # No relay-side queue (§29): the sender retries within its
+            # bounded offline queue; nothing is stored here.
+            await self._group_forward_error(
+                context,
+                "group/offline",
+                "The addressed member is not currently connected.",
+                group_id,
+                to_fingerprint,
+            )
+            return
+        delivered = await self._send_to_session(target_session, packet)
+        if not delivered:
+            await self._group_forward_error(
+                context,
+                "group/offline",
+                "The addressed member could not be reached.",
+                group_id,
+                to_fingerprint,
+            )
 
     async def _sweep_groups(self) -> None:
         """Periodic group-authority maintenance (timeouts, tombstone purges)."""
@@ -1210,10 +1359,14 @@ class RelayServer:
         if context.session is not None:
             # Group lifecycle: drop session bindings (memberships remain on
             # the roster; pending joins bound to the dead session expire).
-            self._groups.disbind_session(context.session.session_id)
-            self._contexts_by_session.pop(context.session.session_id, None)
-            self.sessions.remove(context.session.session_id)
+            session_id = context.session.session_id
+            self._groups.disbind_session(session_id)
+            self._contexts_by_session.pop(session_id, None)
+            self.sessions.remove(session_id)
             context.session = None
+            self._event_windows.pop(session_id, None)
+            for key in [key for key in self._forward_tokens if key[1] == session_id]:
+                del self._forward_tokens[key]
         if context.connection is not None and not context.connection.closed:
             await context.connection.close()
 

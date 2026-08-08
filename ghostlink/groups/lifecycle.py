@@ -94,6 +94,7 @@ class LocalGroupManager:
         self._attached_client: RelayClient | None = None
         self._apply_errors: dict[str, GroupError] = {}
         self._notice_listeners: list[Callable[[str, str], None]] = []
+        self._state_listeners: list[Callable[[LocalGroupRecord, GroupEvent], None]] = []
 
     # ---------------------------------------------------------------- wiring
 
@@ -121,6 +122,23 @@ class LocalGroupManager:
                 listener(group_id, notice)
             except Exception:  # pragma: no cover - listener isolation
                 _logger.debug("group notice listener failed", exc_info=True)
+
+    def add_state_listener(self, listener: Callable[[LocalGroupRecord, GroupEvent], None]) -> None:
+        """Register ``listener(record, event)`` for committed events (6C).
+
+        Fires after a verified event has been applied and persisted — the
+        messaging service uses it to leap mesh epochs and tear down links
+        to departed members (docs/GROUPS.md §16.5, §23).
+        """
+
+        self._state_listeners.append(listener)
+
+    def _emit_state(self, record: LocalGroupRecord, event: GroupEvent) -> None:
+        for listener in self._state_listeners:
+            try:
+                listener(record, event)
+            except Exception:  # pragma: no cover - listener isolation
+                _logger.debug("group state listener failed", exc_info=True)
 
     # ---------------------------------------------------------------- reads
 
@@ -446,6 +464,7 @@ class LocalGroupManager:
         self._registry.save(record)
         _logger.info("group %s — %s (epoch %d)", group_id, notice, record.epoch)
         self._emit_notice(group_id, notice)
+        self._emit_state(record, event)
 
     def _flag_suspect(self, record: LocalGroupRecord, error: GroupError) -> None:
         record.mark_suspect()

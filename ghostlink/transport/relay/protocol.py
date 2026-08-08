@@ -22,11 +22,13 @@ revocation, and session binding.
 Protocol v4 adds secure-group lifecycle (Phase 6B): GROUP_CREATE (owner
 proof-of-possession), GROUP_ATTEST (identity↔session binding), GROUP_STATE
 re-sync, GROUP_LEAVE / GROUP_REMOVE / GROUP_DISSOLVE (two-phase signed
-commits via GROUP_SIGN_REQUEST / GROUP_SIGN), and GROUP_EVENT broadcasts of
-owner/member-signed roster mutations. Group invites reuse the v3 invite
-packets with kind=group; the authority enforces roster capacity atomically
-at redemption. No group message content exists in v4 — that is the next
-stage; everything here is non-secret lifecycle metadata.
+commits via GROUP_SIGN_REQUEST / GROUP_SIGN), GROUP_EVENT broadcasts of
+owner/member-signed roster mutations, and — Phase 6C — GROUP_FORWARD:
+addressed routing of opaque end-to-end group envelopes (pairwise-mesh
+sealed frames and the handshake payloads that build the links). The relay
+validates framing/authorization/size only; bodies are ciphertext it cannot
+read. Group invites reuse the v3 invite packets with kind=group; the
+authority enforces roster capacity atomically at redemption.
 """
 
 from __future__ import annotations
@@ -44,6 +46,8 @@ from ghostlink.constants.net import (
     CHANNEL_ROLES,
     GROUP_DISPLAY_NAME_MAX_LEN,
     GROUP_EVENTS_KEPT,
+    GROUP_FORWARD_BODY_MAX,
+    GROUP_KEX_BODY_MAX,
     GROUP_NAME_MAX_LEN,
     GROUP_OP_ID_LENGTH,
     GROUP_PUBKEY_HEX_LENGTH,
@@ -63,6 +67,7 @@ from ghostlink.constants.net import (
 from ghostlink.core.logging import get_logger
 from ghostlink.exceptions.transport import PacketValidationError
 from ghostlink.groups.events import EVENT_KINDS
+from ghostlink.groups.frames import GROUP_FORWARD_KINDS, KIND_MSG
 from ghostlink.groups.ids import is_valid_group_id
 from ghostlink.identity.fingerprint import is_valid_fingerprint
 from ghostlink.models.room import is_valid_room_id
@@ -74,6 +79,9 @@ MAX_REASON_LENGTH = 256
 MAX_ERROR_MESSAGE_LENGTH = 256
 MAX_NONCE_LENGTH = 64
 MAX_PACKET_ID_LENGTH = 16
+
+# base64 ceiling for a GROUP_FORWARD body (6144 raw → 8192 b64 + slack).
+_GROUP_FORWARD_BODY_B64_MAX = 8240
 
 INVITE_KINDS: frozenset[str] = frozenset({"chat", "group"})
 GROUP_ROLES: frozenset[str] = frozenset({"owner", "member"})
@@ -118,6 +126,7 @@ class PacketType(str, Enum):
     GROUP_SIGN_REQUEST = "GROUP_SIGN_REQUEST"
     GROUP_SIGN = "GROUP_SIGN"
     GROUP_EVENT = "GROUP_EVENT"
+    GROUP_FORWARD = "GROUP_FORWARD"
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,6 +480,35 @@ def group_event_packet(
     return Packet(PacketType.GROUP_EVENT, payload)
 
 
+def group_forward_packet(
+    group_id: str,
+    epoch: int,
+    from_fingerprint: str,
+    to_fingerprint: str,
+    *,
+    kind: str,
+    body_b64: str,
+) -> Packet:
+    """One addressed, opaque group envelope (Phase 6C — §19, §28.3).
+
+    ``kind`` is a small routing-class hint only (``msg`` = sealed inner
+    frame; ``kex`` = pairwise-link handshake payload); ``body_b64`` is
+    always ciphertext/public handshake material the relay cannot read.
+    """
+
+    return Packet(
+        PacketType.GROUP_FORWARD,
+        {
+            "group": group_id,
+            "epoch": epoch,
+            "from": from_fingerprint,
+            "to": to_fingerprint,
+            "kind": kind,
+            "body": body_b64,
+        },
+    )
+
+
 # ------------------------------------------------------------------- validation
 
 
@@ -697,6 +735,7 @@ GROUP_PACKET_TYPES: frozenset[PacketType] = frozenset(
         PacketType.GROUP_SIGN_REQUEST,
         PacketType.GROUP_SIGN,
         PacketType.GROUP_EVENT,
+        PacketType.GROUP_FORWARD,
     }
 )
 
@@ -770,6 +809,23 @@ def _validate_group_packet(packet_type: PacketType, payload: dict[str, Any]) -> 
         _require_str(payload, "sig", max_length=GROUP_SIGNATURE_B64_MAX)
         if "member" in payload:
             _require_member_payload(payload["member"])
+    elif packet_type is PacketType.GROUP_FORWARD:
+        # Phase 6C addressed opaque envelope (§19): the relay validates
+        # routing metadata and byte ceilings only; the body is ciphertext
+        # (or public handshake material) it must never inspect beyond size.
+        _require_int(payload, "epoch", minimum=1)
+        _require_fingerprint_field(payload, "from")
+        _require_fingerprint_field(payload, "to")
+        kind = _require_str(payload, "kind", max_length=8)
+        _require(
+            kind in GROUP_FORWARD_KINDS,
+            f"'kind' must be one of {sorted(GROUP_FORWARD_KINDS)}",
+        )
+        body = _require_str(payload, "body", max_length=_GROUP_FORWARD_BODY_B64_MAX)
+        _require_b64(
+            body,
+            GROUP_FORWARD_BODY_MAX if kind == KIND_MSG else GROUP_KEX_BODY_MAX,
+        )
 
 
 def _require_room_field(payload: dict[str, Any]) -> None:

@@ -35,13 +35,21 @@ owner-created groups (gl-group-…) of up to 8 members, group invites on
 top of the Phase 5 invite authority, owner-countersigned admissions,
 self-signed leaves, owner-signed removals and dissolutions, strictly
 monotonic epochs, and verified event-driven roster sync — the relay
-authorizes everything and never sees a key. Group messaging/encryption
-is the next stage and is deliberately not implemented yet.
+authorizes everything and never sees a key.
+
+Phase 6C (Group Messaging + Pairwise-Mesh Encryption) adds end-to-end
+group conversations on that foundation: every group message is sealed
+separately for each authorized recipient over an identity-bound,
+epoch-pinned pairwise link (Phase 3 X25519 + HKDF-SHA256 +
+ChaCha20-Poly1305, no new primitives). The relay routes opaque
+GROUP_FORWARD envelopes and never sees plaintext, keys, message ids, or
+sequence numbers. Sender keys are deliberately not implemented; they are
+the documented Phase 7 hardening candidate.
 """
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 __all__ = ["__version__", "version_info"]
 
 _major, _minor, _patch = (int(part) for part in __version__.split("."))

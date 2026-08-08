@@ -310,6 +310,45 @@ class GroupAuthority:
             member.session_id for member in group.members.values() if member.session_id is not None
         )
 
+    def authorize_forward(
+        self, group_id: str, from_session_id: str, to_fingerprint: str, epoch: int
+    ) -> str | None:
+        """ACL for GROUP_FORWARD (Phase 6C — docs/GROUPS.md §28.2/§28.3).
+
+        Returns the recipient's bound session id, or ``None`` when the
+        addressed member is offline (no relay-side queue — §29). Raises
+        typed group errors for every refusal: unknown/dissolved group,
+        sender not an attested ACTIVE member, recipient not on the roster,
+        self-addressed envelopes, or an epoch outside the §16.5 window
+        (current, or current-1 while the drain could still be open).
+
+        The relay routes bytes it cannot read; this method checks only
+        routing metadata — never message contents.
+        """
+
+        group = self._require(group_id)
+        self._require_active_group(group)
+        sender = self._require_member_session(group, from_session_id)
+        to_fingerprint = to_fingerprint.strip().upper()
+        if to_fingerprint == sender.fingerprint:
+            raise GroupValidationError(
+                "A group envelope may not be addressed to its own sender.",
+                hint="Senders fan out to the *other* roster members only.",
+            )
+        if epoch < group.epoch - 1 or epoch > group.epoch:
+            raise GroupStateError(
+                f"Envelope epoch {epoch} is outside the acceptable window "
+                f"({group.epoch - 1}..{group.epoch}).",
+                hint="Only the current epoch and its 30 s drain predecessor live.",
+            )
+        member = group.members.get(to_fingerprint)
+        if member is None or member.status is not MemberStatus.ACTIVE:
+            raise GroupNotMemberError(
+                "The addressed identity is not an ACTIVE member of this group.",
+                hint="Roster membership is enforced at routing time.",
+            )
+        return member.session_id
+
     # ------------------------------------------------------------ group create
 
     def create_group(

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ghostlink"
-version = "0.6.0"
+version = "0.7.0"
 # Keep in sync with ghostlink/__init__.py::__version__ — enforced by
 # tests/test_packaging.py (the root ghostlink.py launcher shadows the package
 # for build-time attr imports, so a static version is used here).

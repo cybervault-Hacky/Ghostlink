@@ -502,3 +502,58 @@ State the relay keeps is volatile: a relay restart makes groups defunct
 locally (§28.4 of docs/GROUPS.md) — never silently resurrected. Group
 messaging/encryption is explicitly the next stage; nothing in 6B seals
 or routes group content.
+
+## 14A. Group messaging (Phase 6C)
+
+End-to-end group conversations per docs/GROUPS.md §17–§33, on the
+pairwise mesh (no sender keys — Phase 7 hardening candidate):
+
+- `ghostlink/groups/mesh.py` — `GroupMeshManager`: one identity-bound
+  pairwise link per (group, peer) at the current epoch. Handshakes
+  reuse the Phase 3 authenticated exchange with context
+  `ghostlink/group/v1|{group}|{epoch}`; both sides must present the
+  identity key the *roster* pins for them (`idpub`), and session proof
+  is HKDF over the handshake transcript — cross-group/epoch or key
+  substitution cannot complete a pairing. The smaller identity key is
+  the deterministic initiator (§17.2.3); a demand *knock* lets the
+  responder role pull a pairing (knocks force a re-pair, zeroizing the
+  superseded key, because a knocking peer lost its session-scoped key,
+  §27.2). Epoch leaps move superseded links into a real-time 30 s drain
+  window (§16.5) then zeroize them; close/attach zeroize everything.
+- `ghostlink/groups/frames.py` — sealed inner frames (`GMSG/GACK/
+  GREAD`), each re-carrying `{group, epoch, sender, recipient}` for the
+  post-decrypt cross-check (§18.2 step 3); `gmsg_` + 16 hex CSPRNG
+  message ids; per-sender `gseq` tracker (memory-scoped, gap ≤ 64
+  flagged, beyond dropped + suspect); `(sender_fp, message_id)` LRU
+  dedupe (512/sender); per-recipient delivery ledgers
+  (QUEUED/SENDING/SENT/DELIVERED/READ/FAILED) with `delivered k/m`
+  always explicit.
+- `ghostlink/groups/service.py` — `GroupMessagingService`: the domain
+  engine. Sending computes AAD
+  `ghostlink/group-msg/v1|{group}|{epoch}|{from}|{to}` and seals
+  independently per roster recipient (fanout ≤ 7, sender excluded,
+  never a non-roster member); the sender must be ACTIVE in the current
+  epoch. Receiving runs the §18.2 pipeline — envelope gates, AEAD open
+  (fail-closed), sealed-context equality, inner schema, dedupe, gseq
+  monotonicity, attribution to the authenticated fingerprint, GACK —
+  and never crashes on malformed input. Offline members get
+  `group/offline` from the relay (fast failure, stale-link teardown)
+  plus a bounded sender-side retry queue (8 FIFO drop-oldest with
+  explicit FAILED markings); reconnected peers are re-paired with fresh
+  keys and queued jobs re-seal to the current epoch (§27.2).
+- Relay (`ghostlink/transport/relay/server.py`): `GROUP_FORWARD` is
+  validated (framing, fingerprints, kind, per-kind body caps),
+  ACL-checked against the authoritative roster (sender attested ACTIVE,
+  recipient ACTIVE, epoch ∈ {e, e−1}), rate-limited (token bucket 20/s
+  + burst 20 per group+sender over all forwarding incl. kex), then
+  forwarded **opaque**. `group/offline` and `group/rate` errors carry a
+  member hint so the sender correlates per-recipient state. There is no
+  relay-side message queue.
+- `ghostlink/ui/group_chat.py` + `ghostlink group chat` — the terminal
+  conversation surface: banner (name/id, member count, epoch, mesh
+  links, encryption status, latency), attributed message blocks,
+  delivery lines, security/membership notices, gap warnings, and
+  `/help /info /members /fingerprint /delivery /invite /leave /history
+  /export /quit`. No key material is ever rendered. Group history
+  reuses the existing history backends (off / session / encrypted) with
+  `record_group` entries keyed by group id.

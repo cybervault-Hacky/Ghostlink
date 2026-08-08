@@ -1,10 +1,13 @@
-"""Secure groups (Phase 6B) — membership lifecycle foundation.
+"""Secure groups — lifecycle (Phase 6B) and pairwise-mesh messaging (Phase 6C).
 
 Implements the Phase 6A design (docs/GROUPS.md): group identity, the
 relay-authoritative roster and epoch model, owner-signed membership
 events, Phase 5 invite integration, local metadata persistence, and the
-client-side lifecycle manager. Group *messaging/encryption* is the next
-stage and is deliberately absent here.
+client-side lifecycle manager. Phase 6C adds end-to-end group messaging
+over the pairwise mesh (per-recipient sealing with Phase 3 session
+links, replay/gseq gates, epoch drains, bounded offline queues, and
+fanout-honest delivery ledgers) in the ``frames``, ``mesh`` and
+``service`` submodules.
 """
 
 from ghostlink.groups.authority import (
@@ -37,6 +40,11 @@ from ghostlink.groups.models import (
     validate_group_name,
 )
 from ghostlink.groups.registry import LocalGroupRegistry
+
+# NOTE: the Phase 6C messaging surface (mesh, frames, service) is imported
+# from its submodules (ghostlink.groups.mesh/.frames/.service) — exporting
+# it here would pull the messaging stack into every relay-protocol import
+# and create an import cycle.
 
 __all__ = [
     "AttestOutcome",

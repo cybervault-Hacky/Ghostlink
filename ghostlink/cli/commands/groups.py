@@ -28,9 +28,11 @@ from ghostlink.exceptions.base import ExitCode
 from ghostlink.exceptions.groups import GroupValidationError
 from ghostlink.groups.ids import is_valid_group_id, normalize_group_id
 from ghostlink.groups.models import LocalGroupRecord, LocalGroupState
+from ghostlink.groups.service import GroupMessagingService
 from ghostlink.invites.expiration import parse_duration_seconds
 from ghostlink.transport.relay.client import RelayClient
 from ghostlink.transport.relay.endpoint import RelayEndpoint
+from ghostlink.ui.group_chat import run_group_chat_session
 
 _logger = get_logger("cli.group")
 
@@ -52,6 +54,8 @@ def run_group(options: CLIOptions) -> int:
         return asyncio.run(_run_join(runtime, options))
     if action in ("leave", "remove", "dissolve", "sync", "host"):
         return asyncio.run(_run_membership(runtime, options, action))
+    if action == "chat":
+        return asyncio.run(_run_chat(runtime, options))
     raise ValueError(f"Unknown group action {action!r}")  # argparse guards
 
 
@@ -446,6 +450,50 @@ async def _run_host(runtime: CommandRuntime, client: RelayClient, group_id: str)
     with contextlib.suppress(asyncio.CancelledError):
         await asyncio.Event().wait()  # until Ctrl+C cancels us
     return int(ExitCode.OK)
+
+
+# ------------------------------------------------------------------- chat
+
+
+async def _run_chat(runtime: CommandRuntime, options: CLIOptions) -> int:
+    """Open the end-to-end group conversation (Phase 6C).
+
+    Attestation + authoritative re-sync happen first (§27.3); the chat
+    itself lives in the UI layer while every security decision stays in
+    the messaging service.
+    """
+
+    group_id = _require_group_id(options.group_target)
+    record0 = runtime.groups.require(group_id)
+    record0.require_active()
+    service = GroupMessagingService(
+        runtime.groups,
+        runtime.identities,
+        read_receipts=bool(runtime.settings.chat.read_receipts),
+    )
+    client = _connect(runtime, options, name="ghostlink-group-member")
+    try:
+        await client.connect()
+        await service.attach(client)
+        record = await service.sync(group_id, display_name=options.chat_name or "")
+        _logger.info(
+            "group chat opened — %s at epoch %d (%d members)",
+            group_id,
+            record.epoch,
+            record.member_count(),
+        )
+        return await run_group_chat_session(
+            runtime.console,
+            settings=runtime.settings,
+            state_dir=runtime.config.state_dir,
+            service=service,
+            group_id=group_id,
+            invite_manager=runtime.invites,
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await service.close()
+        await client.aclose()
 
 
 __all__ = ["run_group"]

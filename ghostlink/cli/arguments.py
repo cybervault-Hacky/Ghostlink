@@ -278,12 +278,14 @@ def build_parser() -> argparse.ArgumentParser:
             "dissolve",
             "sync",
             "host",
+            "chat",
         ),
         metavar="action",
         help=(
             "create a group, list yours (default), show info, mint an invite, "
-            "join via a link, leave, remove a member, dissolve, re-sync, or "
-            "host (owner countersigns admissions)"
+            "join via a link, leave, remove a member, dissolve, re-sync, "
+            "host (owner countersigns admissions), or chat (open the secure "
+            "group conversation)"
         ),
     )
     group.add_argument(

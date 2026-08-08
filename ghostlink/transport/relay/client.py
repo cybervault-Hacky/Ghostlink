@@ -26,7 +26,9 @@ from ghostlink.exceptions.groups import (
     GroupFullError,
     GroupJoinTimeoutError,
     GroupNotMemberError,
+    GroupOfflineError,
     GroupPermissionError,
+    GroupRateLimitError,
     GroupUnknownError,
     GroupValidationError,
 )
@@ -68,6 +70,7 @@ from ghostlink.transport.relay.protocol import (
     group_attest_packet,
     group_create_packet,
     group_dissolve_packet,
+    group_forward_packet,
     group_leave_packet,
     group_remove_packet,
     group_sign_packet,
@@ -196,6 +199,8 @@ class RelayClient:
         self._on_forward: Callable[[str, str], None] | None = None
         self._on_peer: Callable[[str, str], None] | None = None
         self._on_group_event: Callable[[Packet], None] | None = None
+        self._on_group_forward: Callable[[Packet], None] | None = None
+        self._on_group_forward_error: Callable[[str, str, str, str], None] | None = None
         self._group_signer: Callable[[str, str, bytes], str | None] | None = None
         self._attest_nonce: str | None = None
         self._error_packets: list[Packet] = []
@@ -812,6 +817,57 @@ class RelayClient:
         await self.send_packet(group_dissolve_packet(group_id))
         return await waiter
 
+    # ------------------------------------------------- group messaging (6C)
+
+    def set_group_forward_listener(self, listener: Callable[[Packet], None] | None) -> None:
+        """Route every inbound GROUP_FORWARD envelope to ``listener``.
+
+        Envelopes are opaque: the listener receives the validated packet
+        (group, epoch, from, to, kind, body) and owns all security gates.
+        """
+
+        self._on_group_forward = listener
+
+    def set_group_forward_error_listener(
+        self, listener: Callable[[str, str, str, str], None] | None
+    ) -> None:
+        """Route GROUP_FORWARD-scoped ERRORs to ``listener``.
+
+        The callback receives (group_id, member_fingerprint, code, message)
+        — forward refusals always name the addressed member, separating
+        them from lifecycle round-trip failures.
+        """
+
+        self._on_group_forward_error = listener
+
+    async def group_forward(
+        self,
+        group_id: str,
+        epoch: int,
+        *,
+        from_fingerprint: str,
+        to_fingerprint: str,
+        kind: str,
+        body_b64: str,
+    ) -> None:
+        """Push one opaque group envelope; refusals arrive asynchronously."""
+
+        if not self._manager.is_usable:
+            raise TransportError(
+                f"Cannot send GROUP_FORWARD: connection is {self._manager.state.value}.",
+                hint="Connect to the relay before sending group messages.",
+            )
+        await self.send_packet(
+            group_forward_packet(
+                group_id,
+                epoch,
+                from_fingerprint,
+                to_fingerprint,
+                kind=kind,
+                body_b64=body_b64,
+            )
+        )
+
     # ------------------------------------------------------------------- I/O
 
     def _handle_bytes(self, data: bytes) -> None:
@@ -853,6 +909,8 @@ class RelayClient:
             self._resolve_group(packet)
         elif packet.type is PacketType.GROUP_EVENT:
             self._route_group_event(packet)
+        elif packet.type is PacketType.GROUP_FORWARD:
+            self._route_group_forward(packet)
         elif packet.type is PacketType.GROUP_SIGN_REQUEST:
             self._schedule(self._respond_group_sign(packet))
         elif packet.type is PacketType.ERROR:
@@ -863,9 +921,11 @@ class RelayClient:
                 packet.payload.get("code"),
                 packet.payload.get("message"),
             )
-            self._reject_pending_attach(packet)
-            self._reject_pending_invite(packet)
-            self._reject_pending_group(packet)
+            # Member-scoped forward refusals never fail lifecycle round-trips.
+            if not self._route_group_forward_error(packet):
+                self._reject_pending_attach(packet)
+                self._reject_pending_invite(packet)
+                self._reject_pending_group(packet)
         elif packet.type is PacketType.DISCONNECT:
             self._logger.info("relay requested disconnect — %s", packet.payload.get("reason", ""))
 
@@ -952,6 +1012,8 @@ class RelayClient:
         "group/join-timeout": GroupJoinTimeoutError,
         "group/signature": GroupPermissionError,
         "group/state": GroupConflictError,
+        "group/offline": GroupOfflineError,
+        "group/rate": GroupRateLimitError,
     }
 
     _GROUP_RESPONSE_REQUEST: ClassVar[dict[PacketType, str]] = {
@@ -1019,6 +1081,36 @@ class RelayClient:
             listener(packet)
         except Exception as exc:  # a listener bug must not kill the reader loop
             self._logger.debug("group event listener failed: %s", exc)
+
+    def _route_group_forward(self, packet: Packet) -> None:
+        """Deliver one inbound GROUP_FORWARD to the messaging listener."""
+
+        listener = self._on_group_forward
+        if listener is None:
+            self._logger.debug("GROUP_FORWARD with no listener registered — dropped")
+            return
+        try:
+            listener(packet)
+        except Exception as exc:  # a listener bug must not kill the reader loop
+            self._logger.debug("group forward listener failed: %s", exc)
+
+    def _route_group_forward_error(self, packet: Packet) -> bool:
+        """Route member-scoped GROUP_FORWARD refusals; True when handled."""
+
+        code = str(packet.payload.get("code", ""))
+        member = packet.payload.get("member")
+        group = packet.payload.get("group")
+        if not (code.startswith("group/") and isinstance(member, str) and isinstance(group, str)):
+            return False
+        listener = self._on_group_forward_error
+        if listener is None:
+            self._logger.debug("unhandled group forward error — %s (%s)", code, member)
+            return True
+        try:
+            listener(group, member, code, str(packet.payload.get("message", "")))
+        except Exception as exc:  # a listener bug must not kill the reader loop
+            self._logger.debug("group forward error listener failed: %s", exc)
+        return True
 
     async def _respond_group_sign(self, packet: Packet) -> None:
         """Answer one GROUP_SIGN_REQUEST using the registered signer."""

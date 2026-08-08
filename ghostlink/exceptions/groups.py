@@ -85,3 +85,21 @@ class GroupDefunctError(GroupError):
     """The relay lost the group record (e.g. relay restart)."""
 
     error_title: ClassVar[str] = "Group no longer hosted"
+
+
+class GroupMessageError(GroupError):
+    """A group message failed validation, encryption, or delivery."""
+
+    error_title: ClassVar[str] = "Group message error"
+
+
+class GroupOfflineError(GroupMessageError):
+    """The addressed member is not currently reachable."""
+
+    error_title: ClassVar[str] = "Group member offline"
+
+
+class GroupRateLimitError(GroupError):
+    """The relay rate limiter refused the operation (fail loud)."""
+
+    error_title: ClassVar[str] = "Group rate limited"

@@ -1456,11 +1456,9 @@ admission (§13.2), leave/remove/dissolve (§14–§15), epoch management and
 signed events (§9.5, §16), relay-authoritative roster with atomic
 capacity (§8, §32), local metadata-only persistence and re-sync (§26,
 §27.3, §28.4), protocol v4 (`GROUP_*`), CLI foundation, resource limits,
-and the test battery of §38's lifecycle categories. **Not implemented
-(next stage):** group messaging, pairwise-mesh encryption, sender keys.
-The epoch-drain machinery exists only as state (`epoch_leap_at`
-timestamps recorded at each verified event); there is no message traffic
-to drain until Phase 6C.
+and the test battery of §38's lifecycle categories. **Not implemented in
+this phase:** group messaging and pairwise-mesh encryption — delivered
+in Phase 6C (Appendix B) — and sender keys (§36, Phase 7 candidate).
 
 **A1. Attestation challenge channel.** §13 requires the attested
 statement to be bound to the *current session*. The relay issues a
@@ -1545,5 +1543,142 @@ limits are enforced in the domain/authority layer, never only in the UI:
 ops per group, 16 retained events per roster, 300 s pending admission,
 60 s signature wait, 24 h retention.
 
-*End of Phase 6B implementation notes. Group messaging/encryption has
-NOT been implemented and remains the next implementation stage.*
+*End of Phase 6B implementation notes.*
+
+## Appendix B — Phase 6C implementation notes
+
+*This appendix records how the implemented pairwise-mesh group
+messaging fills in details the design left open, the wire-level shapes
+that §19's envelope classes map to, and the defects found and fixed
+during implementation. It changes no security decision in §1–§40.*
+
+**Scope status.** Implemented: pairwise links (§17), sealed inner frames
+and opaque `GROUP_FORWARD` envelopes (§18–§20), replay protection (§21),
+sequence handling (§22), member-removal and new-member isolation (§15,
+§25), epochs and the drain window (§16), reconnection and fresh links
+(§27), the relay's minimal opaque routing (§28), bounded offline
+handling (§29), duplicates (§30), malformed-input robustness (§31),
+every limit in §32, the §33 failure table, delivery fanout with
+GACK/GREAD (§18.4–§18.5), the group chat terminal UI, and 118 tests
+covering §38.7–§38.12. **NOT implemented:** sender keys or any shared
+group key — those remain Phase 7 hardening exactly as §36 reserves.
+
+**B1. The `GROUP_FORWARD` envelope, concretely.** The envelope carries
+exactly the §19 classes: `group`, `epoch` (routing), `from`, `to`
+(fingerprint-authenticated routing), `kind`, and `body` (opaque bytes,
+base64). The `kind` field is one of two public labels: `kex` (link
+management bodies — JSON on the wire) or `msg` (sealed inner frames —
+ciphertext only). Bodies are size-capped per kind before any decode
+(msg ≤ 6144 raw bytes, kex ≤ 2048) so a hostile envelope can cost at
+most a bounded decode. The relay validates framing, fingerprints, epoch
+≥ 1, and the kind label; everything else is opaque to it.
+
+**B2. KEX bodies and the demand *knock*.** §17.2.3 makes the smaller
+identity key the deterministic initiator. A responder-role member that
+needs a link therefore cannot start the handshake; it emits a kex body
+`{"s":"knock"}` — a demand signal only, carrying no key material. The
+initiator-side peer answers with `{"s":"hello", "p": <hello payload>}`;
+`{"s":"reply", "p": <reply payload>}` completes pairing. A knock that
+arrives at the *responder* role, or any scheme outside the three, is
+dropped. A knock is also the §27.2 re-pair signal: the side answering a
+knock re-handshakes even if a link is currently live (a knocking peer
+lost its session-scoped key), zeroizing the superseded key. Hellos and
+replies always require the presented identity key (`idpub`) to equal the
+key the roster pins for that fingerprint, in both directions; the
+transcript-bound proof means a substituted key, a wrong group, or a
+wrong epoch can never complete a pairing (§17.2.1, §16.3).
+
+**B3. Sealed context duplication (§18.2 step 3).** The sealed inner
+frame re-carries `{group, epoch, sender, recipient}` in addition to the
+AAD that already binds them. After `open_sealed` the recipient compares
+the sealed context against the envelope/AAD context exactly; any
+mismatch (a relay or peer re-labeling routing fields) is a reject, not a
+delivery. This is what makes the three-class envelope honest: routing
+metadata in the clear, the same context authenticated inside, and
+content sealed.
+
+**B4. No public per-link frame sequence.** §22 warns not to conflate the
+per-link frame `seq` (1:1 chat machinery) with `gseq`. `GROUP_FORWARD`
+is a fire-and-forget datagram: there is intentionally no public frame
+counter, no public ACK id, and no relay-visible ordering channel.
+Duplicate suppression and ordering use only sealed material — the
+`(sender_fp, message_id)` LRU and per-sender `gseq` cursors — so the
+relay cannot correlate frames beyond the routing it already must see.
+GACK per `message_id` and the cumulative GREAD cursor per sender `gseq`
+are likewise sealed; they share the same pairwise link and epoch as the
+frames they cover.
+
+**B5. Memory-scoped counters and replay state.** The sender's
+next-`gseq` counter, every replay cursor, the seen-id LRU, read cursors,
+delivery ledgers, offline queues, and drain deadlines are all
+service-lifetime state (§18.1 "persisted for the session", §21.5 no
+persistence requirements). A service restart resets the sender's `gseq`;
+re-keying invalidates stale ciphertext, so receivers never need durable
+replay state either. On relay reconnect the *same* service object
+re-attaches and zeroizes every link key; counters continue. Nothing here
+is written to disk — `groups.json` stays metadata-only.
+
+**B6. Drain-on-first-observation.** A mesh tracks each group's observed
+epoch. Every epoch observation — including the first one a freshly
+attached service ever sees — moves links pinned to a *strictly older*
+epoch into the drain window (`leap_time + GROUP_EPOCH_DRAIN_SECONDS`),
+arming the deadline even when the leap was learned late; pending old-
+epoch handshakes dropped by the leap fail their waiters explicitly. The
+observed clock never regresses (§16.1): an out-of-order or replayed
+observation cannot kill keys minted for the true current epoch, so only
+strictly older epochs ever drain. Acceptance is exactly the §16.5 closed
+form: `frame.epoch == current` (live link), or `frame.epoch ==
+current − 1` inside the window with the old link still draining. KEX
+pins the current epoch only — the drain window is for message frames,
+never for handshakes.
+
+**B7. Relay ACL, offline, and rate semantics.** Forward authorization
+requires an attested session whose fingerprint matches the envelope's
+`from`, an ACTIVE sender, an ACTIVE recipient (both on the authoritative
+roster), and `epoch ∈ {current, current − 1}` (§16.5). Refusals and
+unavailability come back as typed ERRORs that carry the *intended
+recipient* (`member` field) so the sender correlates them:
+`group/offline` (recipient session gone — dropped at the relay, never
+queued server-side, §29), `group/rate` (20/s + burst per group+sender,
+all kinds), `group/not-member`, `group/unknown`, `group/invalid`.
+Client-side, `group/offline` tears down the (now dead) pairwise link and
+fails its pairing waiter immediately; `group/rate` requeues the envelope
+in the bounded retry queue. A well-behaved client additionally paces its
+own forwards to ~18/s (a no-op when sparse), so a cold seven-way fanout
+with its bursty kex never trips the brake; sustained abuse is still
+capped server-side. Group *event* ops (leave/remove/dissolve) are
+rate-gated separately (4 ops / 10 s / session).
+
+**B8. Offline members.** Senders hold a per-member bounded queue (8,
+FIFO drop-oldest with explicit FAILED markings and notices). Offline
+verdicts arrive fast via relay ERRORs rather than timeouts. When the
+member returns, any live traffic from them (or the 5 s sweeper) restarts
+the pump, a fresh link is negotiated, interpolation of epochs is
+re-verified per job, and queued plaintext is sealed at the *current*
+epoch before transmit (§27.2) — never under a stale key.
+
+**B9. Delivery fanout.** Per-recipient states are
+QUEUED→SENDING→SENT→DELIVERED→READ, or FAILED; `delivered k/m` with
+pending/failed handles renders always — full delivery is never claimed
+on partial fanout. Duplicate deliveries re-send the GACK but never
+re-render (§30).
+
+**B10. Defects found and fixed during Phase 6C.**
+(a) First-observation drain: an early mesh engaged the drain deadline
+only on *subsequent* leaps, letting first-observed old-epoch links stay
+openable past the window — fixed so every observation arms the window;
+regression tests pin the exact 30 s boundary.
+(b) Reconnect deadlock: a reconnecting responder-role sender knocked,
+but the initiator-side peer declined to re-pair while a stale live link
+existed, so post-reconnect sends wedged — fixed by knock-triggered
+re-pair (B2) with zeroization of the superseded key.
+(c) Stale links after peer reconnect: a `group/offline` verdict proved
+the peer's relay session — and with it every session-scoped pairwise key
+— was gone; the sender must tear the link down now, not reuse it.
+(d) State-listener crash: failing a never-used offline queue raised and
+masked the rest of a roster transition (missing membership notices);
+bounded to no-op.
+(e) Removed-member re-sync expectation: the local fail-closed gate
+(§15 state check) refuses before any network call — verified as the
+correct first line of defense, with the relay ACL independently proven
+on the raw path.

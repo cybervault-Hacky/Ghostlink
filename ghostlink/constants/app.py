@@ -19,7 +19,7 @@ LICENSE_NAME: str = "MIT"
 BUILD_DATE: str = "2026-08-08"
 REPOSITORY_URL: str = "https://github.com/cybervault-Hacky/Ghostlink"
 
-RELEASE_PHASE: str = "Phase 6B"
+RELEASE_PHASE: str = "Phase 6C"
 RELEASE_CODENAME: str = "Secure Groups"
 RELEASE_LABEL: str = f"{RELEASE_PHASE} · {RELEASE_CODENAME}"
 

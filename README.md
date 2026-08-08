@@ -27,16 +27,17 @@ designed primarily for **Termux on Android**, with first-class support for
 process, one beautiful TUI, and a codebase engineered for the secure
 networking phases ahead.
 
-> **Current release: Phase 6B — Secure Group Lifecycle.**
-> Owner-created groups of up to 8 members (`gl-group-…`), group invites on the
-> Phase 5 authority, owner-countersigned admissions, self-signed leaves,
-> owner-signed removals/dissolutions, and strictly monotonic epochs — the relay
-> authorizes every roster change and never sees a key. Two people still meet
-> through secure one-time invites (`gl://join/<token>`, enforced by the relay
-> authority), one-to-one chats are untouched, and the Phase 6A group security
-> design in [docs/GROUPS.md](docs/GROUPS.md) now has its verified membership
-> foundation. Group *messaging/encryption* is the next stage — intentionally
-> not part of this release. See the [roadmap](docs/ROADMAP.md).
+> **Current release: Phase 6C — Group Messaging + Pairwise-Mesh Encryption.**
+> End-to-end encrypted group conversations for up to 8 members: every group
+> message is sealed **separately for each authorized recipient** over an
+> identity-bound, epoch-pinned pairwise link (the Phase 3 stack — X25519,
+> HKDF-SHA256, ChaCha20-Poly1305 — no new primitives, no shared group key).
+> The relay routes opaque `GROUP_FORWARD` envelopes and never sees plaintext,
+> keys, message ids, or sequence numbers. Sender keys are deliberately *not*
+> implemented — they are the documented Phase 7 hardening candidate. The
+> Phase 6B membership foundation is unchanged: owner-created groups, signed
+> roster events, strictly monotonic epochs. See the
+> [roadmap](docs/ROADMAP.md) and [docs/GROUPS.md](docs/GROUPS.md).
 
 ## Screenshots
 
@@ -129,6 +130,39 @@ between two identity-bound sessions.
   overwritten before release; logs record ids, sizes and states only, never
   content.
 
+## Feature highlights (Phase 6C — Group Messaging + Pairwise-Mesh Encryption)
+
+- **Per-recipient end-to-end encryption** — a group message produces one
+  independently sealed ciphertext per authorized recipient (fanout ≤ 7),
+  over a pairwise link handshaken with context
+  `ghostlink/group/v1|{group}|{epoch}` and identity keys pinned by the
+  roster in both directions. Removed members hold no new-epoch links;
+  joiners gain no history.
+- **Cryptographic context binding** — AEAD binds
+  `{group, epoch, sender, recipient}` and the sealed frame re-carries the
+  same context for a post-decrypt cross-check: ciphertext moves across
+  groups, epochs, senders, or recipients never authenticate.
+  One-to-one-chat ciphertext can never open as group traffic.
+- **Explicit delivery, never overclaimed** — per-recipient states
+  (queued/sending/sent/delivered/read/failed) render `delivered k/m` with
+  pending handles; offline members are marked, held in a bounded retry
+  queue (8 messages, drop-oldest), and flushed with fresh keys after they
+  reconnect — re-sealed to the *current* epoch.
+- **Relay stays blind** — it validates framing, enforces the roster ACL
+  and a 20/s per-sender forward brake, then forwards opaque ciphertext.
+  In the design's own words (docs/GROUPS.md §28.5): "The relay routes
+  opaque ciphertext and sees connection/group metadata. It cannot read
+  messages or keys. It can observe IP addresses, timing, and traffic
+  volume, and can refuse or delay service." End-to-end content
+  confidentiality is not the same as network anonymity — GhostLink makes
+  no anonymity or untraceability claims.
+- **Terminal group chat** — `ghostlink group chat <gl-group-…>`: banner
+  with group, members, epoch, mesh and encryption status; attributed
+  messages; delivery lines and security notices; commands
+  `/help /info /members /fingerprint /delivery /invite /leave /history
+  /export /quit`. History reuses the existing store (off/session/
+  encrypted), never any keys.
+
 ## Feature highlights (Phase 6B — Secure Group Lifecycle)
 
 - **Owner-created groups of up to 8 members** — `ghostlink group create`
@@ -157,8 +191,9 @@ between two identity-bound sessions.
   post-restart relays read as *defunct*, never silently resurrected.
 - **CLI lifecycle** — `ghostlink group create|list|info|invite|join|leave|
   remove|dissolve|sync|host`, thin wrappers over the domain manager with
-  typed errors (exit code 8). Relay protocol v4 adds the `GROUP_*` family
-  behind version negotiation; v1–v3 clients are untouched.
+  typed errors (exit code 8). Relay protocol v4 adds the `GROUP_*` lifecycle
+  family and `GROUP_FORWARD` opaque routing, behind version negotiation;
+  v1–v3 clients are untouched.
 
 ## Feature highlights (Phase 5 — Ephemeral Identity & One-Time Invites)
 
@@ -431,8 +466,8 @@ see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, bootstrap, async model, error taxonomy |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every key, location, and precedence rule |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Dev setup, quality gate, contribution patterns |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Phases 1–6B and what is explicitly out of scope |
-| [docs/GROUPS.md](docs/GROUPS.md) | Group security design (Phase 6A) + Phase 6B implementation notes |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Phases 1–6C and what is explicitly out of scope |
+| [docs/GROUPS.md](docs/GROUPS.md) | Group security design (Phase 6A) + Phase 6B/6C implementation notes |
 
 ## Project layout
 
@@ -451,9 +486,10 @@ ghostlink/                # the package
 │                         #   GLFP-… fingerprint, 0600 storage, lifecycle)
 ├── invites/              # Phase 5: one-time join invites — tokens, models,
 │                         #   relay authority, registry, redemption, panels
-├── groups/               # Phase 6B: group lifecycle — ids, events, models,
-│                         #   relay authority (roster/epochs), metadata
-│                         #   registry, client lifecycle manager
+├── groups/               # Phase 6B/6C: group lifecycle — ids, events, models,
+│                         #   relay authority (roster/epochs), metadata registry,
+│                         #   client lifecycle manager; pairwise-mesh links,
+│                         #   sealed frames, and the group messaging service
 ├── transfer/             # Phase 4: secure encrypted file transfer
 │   ├── manager.py        #   offers, send pump, resume, expiry, history
 │   ├── models.py         #   transfer lifecycle state machine + snapshots

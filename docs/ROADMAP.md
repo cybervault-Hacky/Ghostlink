@@ -149,10 +149,32 @@ and production-quality before the next begins.
   against a real relay, concurrent-redemption races, revocation, peer
   fingerprint display, and log secret-leak audits
 
-## Phase 6 — Rich Communication
+## Phase 6a — Secure Groups 🚧 (design complete — implementation pending review)
+
+Secure multi-peer communication (groups beyond the one-to-one channel),
+prioritized ahead of the other Phase 6 items:
+
+- Private, invite-only groups of up to 8 members on the existing relay
+- Full membership lifecycle: create → invite → join → leave → remove →
+  dissolve, under a single authorized owner, with a relay-authoritative
+  roster and owner-signed membership events
+- **Group encryption model: mesh of pairwise Phase 3 sessions** — no
+  shared/copied group key (explicitly rejected); each member pair keeps an
+  X25519 + HKDF + ChaCha20-Poly1305 session with mandatory identity-key
+  binding, group/epoch-bound key context, sender fanout, and an epoch leap
+  on every membership change so removed members lose access
+- Relay protocol v4 (`GROUP_*`), additive and version-negotiated
+- Termux-grade resource limits and the Phase 5 bar of live-relay tests
+- Sender-key encryption is the documented Phase 7 upgrade path, sketched
+  but **not** part of 6a
+
+The full security model, authorization rules, wire protocol, limits, and
+test plan live in [docs/GROUPS.md](GROUPS.md) — implementation starts only
+after that design is approved.
+
+## Phase 6b — Rich Communication
 
 - Friend system: adding, verifying safety numbers, blocking
-- Group rooms beyond the one-to-one channel
 - Message replies, edits, and reactions
 - Contact cards and room metadata panels
 - Settings screen becomes editable; notification center gains unread state

@@ -51,7 +51,7 @@ export default function Projects() {
             <Field label="Project name">
               <input className="input" value={name} onChange={(e) => setName(e.target.value)} required />
             </Field>
-            {error && <p className="error-text">{error}</p>}
+            {error && <p className="error-text" role="alert">{error}</p>}
             <Button variant="primary">Create</Button>
           </form>
         </GlassCard>

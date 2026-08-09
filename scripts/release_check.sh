@@ -117,11 +117,15 @@ else
     rm -rf "$(dirname "${SMOKE_VENV}")"
 fi
 
-# ----------------------------------------------------------- 11. secret scan
+# ----------------------------------------------------------- 11. security audit
+step "Deterministic security audit"
+"${PYTHON}" scripts/security_check.py
+
+# ----------------------------------------------------------- 12. secret scan
 step "Repository secret scan"
 "${PYTHON}" scripts/scan_secrets.py
 
-# -------------------------------------------------- 12. banned security claims
+# -------------------------------------------------- 13. banned security claims
 # Strong affirmative overclaims the project must never make. Negated phrases
 # ("not invisible", "not ... perfect security") are honest disclaimers and
 # are intentionally NOT matched (matches tests/test_packaging.py).

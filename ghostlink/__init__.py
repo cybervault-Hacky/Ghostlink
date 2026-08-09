@@ -74,6 +74,17 @@ explicit compatibility matrix, and expands the test suite with
 compatibility, migration, package-content, protocol-downgrade and
 CLI-reliability coverage.
 
+Phase 11 (Production Portal Hardening & Launch Readiness) hardens the
+Phase 10B Developer Portal into a launch-ready architecture: an
+environment-driven production configuration layer (fail-closed in
+production), a versioned database migration system with indexes, session
+hardening (idle/absolute lifetime, password-change session invalidation),
+WebAuthn hardening (single-use/expiring challenges, origin validation),
+an email-provider abstraction (dev + SMTP), deterministic security
+audit tooling (scripts/security_check.sh), metadata-only operational
+logging, and expanded E2E/failure-recovery tests. No telemetry, no
+payments, no new crypto.
+
 Phase 10B (Developer Portal) adds a secure web application for GhostLink
 developers: remote developer accounts, developer credentials with a full
 lifecycle (create / rotate / revoke / verify), projects, sessions,
@@ -100,7 +111,7 @@ makes **zero network requests** and uploads nothing.
 
 from __future__ import annotations
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 __all__ = ["__version__", "version_info"]
 
 _major, _minor, _patch = (int(part) for part in __version__.split("."))

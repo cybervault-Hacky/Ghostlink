@@ -428,7 +428,7 @@ remote service, no secret upload, zero network requests.**
   CLI, doctor/security-status, packaging).
 - Full suite green at 1465 passing.
 
-## Phase 10B — Developer Portal ✅ (latest implemented)
+## Phase 10B — Developer Portal ✅
 
 **STATUS: IMPLEMENTED** — a secure web application for GhostLink
 developers, built as a real, tested, security-focused portal (not a mock).
@@ -466,7 +466,32 @@ developers, built as a real, tested, security-focused portal (not a mock).
 - Contact cards and room metadata panels
 - Settings screen becomes editable; notification center gains unread state
 
-## Phase 11 — Hardening & Polish
+## Phase 11 — Production Portal Hardening & Launch Readiness ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — hardened the Phase 10B portal into a
+launch-ready architecture.
+
+- **Production configuration** (`portal_server/config.py`): an
+  environment-driven, fail-closed config layer (`APP_ENV` = development/
+  staging/production); production rejects development conveniences and
+  requires `SESSION_SECRET`, `DATABASE_URL`, `EMAIL_*`, and `WEBAUTHN_*`.
+- **Database** (`portal_server/db.py`): versioned, transactional
+  migrations (v1 schema + v2 indexes), foreign-key/uniqueness enforcement,
+  and future-schema fail-closed. Docs: `docs/DATABASE.md`.
+- **Authentication/session hardening**: idle + absolute session lifetime,
+  session rotation, password-change session invalidation, revoke-all.
+- **WebAuthn hardening**: single-use/expiring challenges and origin
+  validation; no biometric data ever collected or stored.
+- **Email abstraction** (`portal_server/emailing.py`): dev + SMTP providers.
+- **Security tooling**: `scripts/security_check.sh` (deterministic audit)
+  and metadata-only operational logging (`ghostlink.portal.request`).
+- **Docs**: `PRODUCTION_CONFIG.md`, `DATABASE.md`, `DISASTER_RECOVERY.md`,
+  `OPERATIONS.md`, `SECURITY_MODEL.md`; updated `API.md`, `DEPLOYMENT.md`,
+  `DEVELOPER_PORTAL.md`, `SECURITY.md`, `ARCHITECTURE.md`.
+- Full suite green at 1502+ portal-aware tests; no new crypto, no
+  payments, no telemetry.
+
+## Phase 12 — Hardening & Polish
 
 - Full security review and threat-model document
 - Offline message queue and multi-device sync design

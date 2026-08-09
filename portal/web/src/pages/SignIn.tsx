@@ -59,7 +59,7 @@ export default function SignIn() {
               <Field label="Authentication code">
                 <input className="input" value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoFocus />
               </Field>
-              {error && <p className="error-text">{error}</p>}
+              {error && <p className="error-text" role="alert">{error}</p>}
               <Button variant="primary" style={{ width: "100%" }}>Verify code</Button>
             </form>
           ) : (
@@ -70,7 +70,7 @@ export default function SignIn() {
               <Field label="Password">
                 <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
               </Field>
-              {error && <p className="error-text">{error}</p>}
+              {error && <p className="error-text" role="alert">{error}</p>}
               <Button variant="primary" style={{ width: "100%" }}>Sign in</Button>
             </form>
           )}

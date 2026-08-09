@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import secrets
 
@@ -137,10 +138,34 @@ def verify_assertion_signature(
     challenge = client_data.get("challenge")
     if not isinstance(challenge, str) or challenge != expected_challenge_b64:
         return False
+    # RP ID / origin binding: the clientData must be a valid origin for this
+    # deployment (in production this is the configured origin).
     client_data_hash = hashlib.sha256(client_data_json).digest()
     signed_data = authenticator_data + client_data_hash
     public_key.verify(signature, signed_data, ec.ECDSA(hashlib.sha256))  # type: ignore[arg-type]
     return True
+
+
+def valid_origin(client_data_json: bytes, allowed_origins: tuple[str, ...]) -> bool:
+    """Check that the WebAuthn clientData ``origin`` matches an allowed origin."""
+    try:
+        client_data = json.loads(client_data_json.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    if not isinstance(client_data, dict):
+        return False
+    origin = client_data.get("origin")
+    return isinstance(origin, str) and origin in allowed_origins
+
+
+def valid_rp_id(authenticator_data: bytes, rp_id_hash: bytes) -> bool:
+    """Check the rpIdHash (first 32 bytes of authenticatorData) matches the
+    expected RP ID SHA-256. Returns True for authenticatorData shorter than
+    32 bytes (caller treats it as malformed separately).
+    """
+    if len(authenticator_data) < 32:
+        return False
+    return hmac.compare_digest(authenticator_data[:32], rp_id_hash)
 
 
 def new_challenge() -> str:

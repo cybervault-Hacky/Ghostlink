@@ -108,6 +108,16 @@ Versioned under `/api/v1/`. See [docs/API.md](API.md) for the full reference.
   `X-Frame-Options`, `Permissions-Policy`); HSTS in production.
 * Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` in production.
 
+## 7b. Production hardening (Phase 11)
+
+Phase 11 added: a fail-closed production configuration layer
+([docs/PRODUCTION_CONFIG.md](PRODUCTION_CONFIG.md)), versioned database
+migrations ([docs/DATABASE.md](DATABASE.md)), session hardening (idle +
+absolute lifetime, password-change invalidation, revoke-all), WebAuthn
+single-use/expiring challenges with origin validation, an email-provider
+abstraction (dev + SMTP), deterministic security audit tooling
+(`scripts/security_check.sh`), and metadata-only operational logging.
+
 ## 8. Known limitations (honest)
 
 * Email delivery is **not** wired to a real provider by default; a dev

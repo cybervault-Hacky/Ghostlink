@@ -72,7 +72,7 @@ export default function Credentials() {
             <Field label="Key name">
               <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="production-key" required />
             </Field>
-            {error && <p className="error-text">{error}</p>}
+            {error && <p className="error-text" role="alert">{error}</p>}
             <Button variant="primary">Generate key</Button>
           </form>
         </GlassCard>

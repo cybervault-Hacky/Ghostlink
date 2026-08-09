@@ -107,8 +107,7 @@ def _strip_py_surface(text: str) -> str:
     keep: list[str] = []
     for tok in tokens:
         if tok.type in (tokenize.COMMENT, tokenize.STRING) and (
-            tok.type is tokenize.COMMENT
-            or tok.string.startswith(("'''", '"""'))
+            tok.type is tokenize.COMMENT or tok.string.startswith(("'''", '"""'))
         ):
             keep.append(" " * len(tok.string))
         else:

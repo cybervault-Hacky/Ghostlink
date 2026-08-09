@@ -35,7 +35,7 @@ export default function Verify() {
             <Field label="Verification token">
               <input className="input mono" value={token} onChange={(e) => setToken(e.target.value)} required />
             </Field>
-            {error && <p className="error-text">{error}</p>}
+            {error && <p className="error-text" role="alert">{error}</p>}
             <Button variant="primary" style={{ width: "100%" }}>Verify email</Button>
           </form>
         </GlassCard>

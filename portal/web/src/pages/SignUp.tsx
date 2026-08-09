@@ -41,7 +41,7 @@ export default function SignUp() {
             <Field label="Confirm password">
               <input className="input" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
             </Field>
-            {error && <p className="error-text">{error}</p>}
+            {error && <p className="error-text" role="alert">{error}</p>}
             <Button variant="primary" style={{ width: "100%" }}>Create account</Button>
           </form>
           <p className="muted mt-16" style={{ fontSize: 13 }}>

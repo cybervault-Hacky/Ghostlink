@@ -38,22 +38,26 @@ PORTAL_SECURE_COOKIES=true gunicorn -w 4 -b 127.0.0.1:8788 \
 
 ## Environment variables
 
-See `portal/.env.example`. Production values:
+See `portal/.env.example` and [docs/PRODUCTION_CONFIG.md](PRODUCTION_CONFIG.md).
+The portal is configured entirely via environment; production **fails
+closed** on missing or development values.
 
 | Variable | Notes |
 | --- | --- |
-| `PORTAL_DB` | `postgresql://…` in production |
-| `PORTAL_SECURE_COOKIES` | `true` over HTTPS |
-| `EMAIL_PROVIDER` | Set a real transactional/email provider (the default dev adapter only records messages) |
-| `SESSION_SECRET` | High-entropy signing/encryption secret |
-| `WEBAUTHN_RP_ID` / `WEBAUTHN_ORIGIN` | Real RP ID and origin for passkeys |
+| `APP_ENV` | `development` / `staging` / `production` |
+| `DATABASE_URL` | `postgresql://…` in production |
+| `SESSION_SECRET` | High-entropy; required and non-default in production |
+| `PORTAL_SECURE_COOKIES` | `true` over HTTPS (enforced in production) |
+| `EMAIL_PROVIDER` | `dev` (records) or `smtp` (production); `smtp` requires `EMAIL_SMTP_*` |
+| `WEBAUTHN_RP_ID` / `WEBAUTHN_ORIGIN` | Real RP ID and origin for passkeys (required in production) |
+| `PORTAL_TRUSTED_PROXY` | `true` when behind a reverse proxy |
 
 ## Database migrations
 
-The backend runs `CREATE TABLE IF NOT EXISTS …` on startup (schema v1). For a
-PostgreSQL production backend, apply the same schema and manage forward
-migrations explicitly; never rely on destructive auto-recreation. The schema
-is versioned (`schema_meta`).
+Migrations are versioned, ordered, and transactional (see
+[docs/DATABASE.md](DATABASE.md)). On startup the backend applies pending
+migrations and records the version in `schema_meta`; a future schema fails
+closed and is never modified. Never rely on destructive auto-recreation.
 
 ## Security hardening
 

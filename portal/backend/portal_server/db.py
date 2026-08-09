@@ -19,9 +19,14 @@ import threading
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
 
-_SCHEMA = """
+class DatabaseMigrationError(Exception):
+    """Raised when the database schema cannot be safely migrated."""
+
+
+SCHEMA_VERSION = 2
+
+_BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -128,6 +133,30 @@ CREATE TABLE IF NOT EXISTS webauthn_credentials (
 );
 """
 
+# Production indexes (Phase 11): query-path acceleration without changing
+# the schema shape. Added as a forward migration (v2).
+_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_tokens_hash ON tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_tokens_user ON tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_credentials_user ON credentials(user_id);
+CREATE INDEX IF NOT EXISTS idx_credentials_key_id ON credentials(key_id);
+CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
+CREATE INDEX IF NOT EXISTS idx_security_events_user_time ON security_events(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_recovery_user ON mfa_recovery_codes(user_id);
+CREATE INDEX IF NOT EXISTS idx_webauthn_user ON webauthn_credentials(user_id);
+"""
+
+# Versioned, ordered migrations. Each entry is (version, [sql statements]).
+# The base migration (v1) creates the full Phase 10B schema; v2 adds the
+# production indexes. Migrations run inside a single transaction each, and
+# a migration that would downgrade the schema fails clearly.
+MIGRATIONS: list[tuple[int, list[str]]] = [
+    (1, [_BASE_SCHEMA]),
+    (2, [_INDEXES]),
+]
+
 
 class Database:
     """A minimal, thread-safe SQLite wrapper."""
@@ -144,17 +173,52 @@ class Database:
         return conn
 
     def _init_schema(self) -> None:
+        """Apply pending migrations in order, transactionally.
+
+        Fails closed: if the stored schema version is ahead of what this
+        build understands (a downgrade), or a migration is corrupt, we raise
+        rather than silently modifying the schema.
+        """
         with self._lock:
             conn = self.connect()
             try:
-                conn.executescript(_SCHEMA)
+                # Bootstrap: ensure the meta table exists so we can read the
+                # current schema version on a fresh or existing database.
                 conn.execute(
-                    "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', ?)",
-                    (str(SCHEMA_VERSION),),
+                    "CREATE TABLE IF NOT EXISTS schema_meta ("
+                    "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
                 )
-                conn.commit()
+                row = conn.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone()
+                current = int(row["value"]) if row else 0
+                if current > SCHEMA_VERSION:
+                    raise DatabaseMigrationError(
+                        f"Database schema v{current} is newer than this build "
+                        f"(supports up to v{SCHEMA_VERSION}). Refusing to modify it."
+                    )
+                for version, statements in MIGRATIONS:
+                    if version <= current:
+                        continue
+                    try:
+                        conn.execute("BEGIN")
+                        for statement in statements:
+                            conn.executescript(statement)
+                        conn.execute(
+                            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', ?)",
+                            (str(version),),
+                        )
+                        conn.commit()
+                    except sqlite3.DatabaseError as exc:
+                        conn.rollback()
+                        raise DatabaseMigrationError(
+                            f"Migration to schema v{version} failed: {exc}"
+                        ) from exc
             finally:
                 conn.close()
+
+    @property
+    def schema_version(self) -> int:
+        row = self.query_one("SELECT value FROM schema_meta WHERE key='version'")
+        return int(row["value"]) if row else 0
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         with self._lock:
@@ -200,4 +264,4 @@ class Database:
         pass  # sqlite connections are opened/closed per call
 
 
-__all__ = ["SCHEMA_VERSION", "Database"]
+__all__ = ["MIGRATIONS", "SCHEMA_VERSION", "Database", "DatabaseMigrationError"]

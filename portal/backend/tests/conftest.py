@@ -11,6 +11,7 @@ import io
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -85,14 +86,43 @@ class TestClient:
         return status, body
 
 
+class Clock:
+    """A controllable monotonic clock for testing time-sensitive behavior."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 @pytest.fixture()
 def portal_app(tmp_path: Path):
     db = Database(tmp_path / "portal.db")
     emails = EmailSender(enabled=True)
     app = create_wsgi_app(db, secure_cookies=False, emails=emails)
-    portal = type(
-        "Portal", (), {"db": db, "emails": emails, "client": TestClient(app), "app": app}
-    )()
+    portal = SimpleNamespace(db=db, emails=emails, client=TestClient(app), app=app)
+    yield portal
+    db.close()
+
+
+@pytest.fixture()
+def clocked_portal(tmp_path: Path):
+    """A portal with a controllable clock (for expiry/idle tests)."""
+    db = Database(tmp_path / "portal.db")
+    emails = EmailSender(enabled=True)
+    clock = Clock()
+    app = create_wsgi_app(db, secure_cookies=False, emails=emails, clock=clock)
+    portal = SimpleNamespace(
+        db=db,
+        emails=emails,
+        client=TestClient(app),
+        app=app,
+        clock=clock,
+    )
     yield portal
     db.close()
 

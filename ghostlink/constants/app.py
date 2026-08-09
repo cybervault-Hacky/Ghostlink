@@ -19,8 +19,8 @@ LICENSE_NAME: str = "MIT"
 BUILD_DATE: str = "2026-08-09"
 REPOSITORY_URL: str = "https://github.com/cybervault-Hacky/Ghostlink"
 
-RELEASE_PHASE: str = "Phase 10B"
-RELEASE_CODENAME: str = "Developer Portal"
+RELEASE_PHASE: str = "Phase 11"
+RELEASE_CODENAME: str = "Production Portal Hardening"
 RELEASE_LABEL: str = f"{RELEASE_PHASE} · {RELEASE_CODENAME}"
 
 MIN_PYTHON: tuple[int, int] = (3, 11)

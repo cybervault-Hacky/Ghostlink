@@ -122,7 +122,7 @@ export default function Security() {
           <Field label="New password">
             <input className="input" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
           </Field>
-          {error && <p className="error-text">{error}</p>}
+          {error && <p className="error-text" role="alert">{error}</p>}
           <Button variant="primary">Update password</Button>
         </form>
       </Card>

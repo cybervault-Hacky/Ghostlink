@@ -21,7 +21,7 @@ Private conversations. End-to-end encryption. No browser required.
 ## Contents
 
 [Design principle](#design-principle) · [What is GhostLink?](#what-is-ghostlink) ·
-[Architecture](#architecture-overview) · [Current release](#current-release-phase-10b) ·
+[Architecture](#architecture-overview) · [Current release](#current-release-phase-11) ·
 [Screenshots](#screenshots) · [Feature matrix](#feature-matrix) ·
 [Security model](#security-model) · [What the relay can see](#what-the-relay-can-see) ·
 [Identity & invites](#identity-and-invites) · [File transfer](#file-transfer) ·
@@ -133,36 +133,32 @@ lives in [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
-## Current release: Phase 10B
+## Current release: Phase 11
 
-**Phase 10B — Developer Portal** is the latest implemented phase (version
-`0.12.0`).
+**Phase 11 — Production Portal Hardening & Launch Readiness** is the latest
+implemented phase (version `0.13.0`).
 
-- **A real, tested, security-focused web portal** for GhostLink developers:
-  remote developer accounts, credentials (create / rotate / revoke /
-  verify), projects, sessions/devices, security activity, and settings.
-- **Backend** — a dependency-light Python WSGI app (stdlib +
-  `cryptography`). PBKDF2 password hashing, HttpOnly/SameSite session
-  cookies + per-session CSRF, single-use hashed email-verification and
-  password-reset tokens, IP+account rate limiting, metadata-only audit
-  events, and security headers.
-- **Credentials** — reuse the Phase 10A CSPRNG generator; the secret is
-  shown once and stored only as salted verification material. Rotation and
-  revocation are authenticated, confirmed, atomic, and audited.
-- **MFA & passkeys** — TOTP (RFC 6238) with hashed recovery codes; WebAuthn
-  ES256 challenge + assertion verification. No biometric data is collected
-  or stored.
-- **Frontend** — React + TypeScript + Vite with a white-first glassmorphism
-  design system, an antigravity particle background (respects
-  `prefers-reduced-motion`), and protected routes.
-- **Database** — SQLite (dev) with a PostgreSQL-ready schema.
-- Local-first foundation; live email, full WebAuthn breadth, and HTTPS
-  deployment are documented production configuration.
-- Docs: [docs/DEVELOPER_PORTAL.md](docs/DEVELOPER_PORTAL.md),
-  [docs/API.md](docs/API.md), [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+- **Production configuration** — an environment-driven, fail-closed config
+  layer (`APP_ENV` = development/staging/production; production rejects
+  development conveniences and requires `SESSION_SECRET`, `DATABASE_URL`,
+  `EMAIL_*`, and `WEBAUTHN_*`). See
+  [docs/PRODUCTION_CONFIG.md](docs/PRODUCTION_CONFIG.md).
+- **Database** — a versioned, transactional migration system with indexes,
+  foreign-key and uniqueness enforcement, and future-schema fail-closed.
+  See [docs/DATABASE.md](docs/DATABASE.md).
+- **Authentication & session hardening** — idle + absolute session
+  lifetime, session rotation, password-change session invalidation,
+  revoke-all. See [docs/DEVELOPER_PORTAL.md](docs/DEVELOPER_PORTAL.md).
+- **WebAuthn hardening** — single-use/expiring challenges and origin
+  validation (no biometric data ever collected or stored).
+- **Email abstraction** — a provider interface (dev adapter + SMTP).
+- **Security tooling** — a deterministic audit
+  (`scripts/security_check.sh`) and metadata-only operational logging.
+- **Testing** — expanded E2E and failure/recovery coverage (74 portal
+  backend tests).
 
-Phase 10A's **local** Developer Account system is fully retained and
-unchanged. All of Phases 1–9 remain fully intact, including sender-key
+Phase 10B's portal and Phase 10A's **local** Developer Account system are
+fully retained. All of Phases 1–9 remain fully intact, including sender-key
 encryption and
 the reliability/release hardening. Run `ghostlink security-status` for a
 read-only security & recovery summary and `ghostlink --doctor` to verify
@@ -767,9 +763,10 @@ GhostLink ships in deliberate, self-contained phases.
 | 8 | Reliability, security hardening & adversarial validation | ✅ Implemented |
 | 9 | Production readiness, compatibility & release engineering | ✅ Implemented |
 | 10A | Developer account & credential infrastructure | ✅ Implemented |
-| 10B | Developer portal (web) | ✅ Implemented (current) |
+| 10B | Developer portal (web) | ✅ Implemented |
+| 11 | Production portal hardening & launch readiness | ✅ Implemented (current) |
 | 6D | Rich communication — replies/edits/reactions, friend system, editable settings | Planned |
-| 11 | Hardening & polish — security review, offline queue design, localization | Planned |
+| 12 | Hardening & polish — security review, offline queue design, localization | Planned |
 
 Sender-key encryption is implemented as the opt-in `senderkey-v1` suite
 (docs/GROUPS.md §36); `mesh-v1` remains the default for full backward

@@ -671,3 +671,23 @@ by the group's `crypto_suite` (`mesh-v1` default, or `senderkey-v1`):
 - Credential lifecycle (create/rotate/revoke/verify) reuses
   `ghostlink.developer.keys` for CSPRNG generation and salted verification.
 - Docs: `docs/DEVELOPER_PORTAL.md`, `docs/API.md`, `docs/DEPLOYMENT.md`.
+
+## 19. Portal production hardening (Phase 11)
+
+- `portal_server/config.py` — environment-driven, fail-closed config
+  (`APP_ENV` development/staging/production). Production requires
+  `SESSION_SECRET`, `DATABASE_URL`, `EMAIL_*`, and `WEBAUTHN_*`, and rejects
+  dev conveniences. Docs: `docs/PRODUCTION_CONFIG.md`.
+- `portal_server/db.py` — versioned, transactional migrations (v1 schema +
+  v2 indexes), FK/uniqueness enforcement, future-schema fail-closed. Docs:
+  `docs/DATABASE.md`.
+- Session hardening — idle + absolute lifetime, session rotation,
+  password-change session invalidation, revoke-all.
+- WebAuthn hardening — single-use/expiring challenges, origin validation,
+  ES256 verification (no biometric data).
+- `portal_server/emailing.py` — email provider abstraction (dev + SMTP).
+- `scripts/security_check.sh` / `scripts/security_check.py` — deterministic
+  security audit (secrets, headers, telemetry, outbound-HTTP, config).
+- Metadata-only operational logging (`ghostlink.portal.request`).
+- Docs: `docs/DATABASE.md`, `docs/DISASTER_RECOVERY.md`, `docs/OPERATIONS.md`,
+  `docs/SECURITY_MODEL.md`, `docs/PRODUCTION_CONFIG.md`.

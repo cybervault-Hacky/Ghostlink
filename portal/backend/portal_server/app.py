@@ -12,6 +12,7 @@ returned after creation.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 from collections.abc import Callable
@@ -20,7 +21,9 @@ from typing import Any
 
 from ghostlink.developer import keys as dev_keys
 from portal_server import auth, webauthn
+from portal_server.config import PortalConfig
 from portal_server.db import Database
+from portal_server.emailing import DevEmailProvider, EmailProvider
 from portal_server.http import (
     COOKIE_NAME,
     Request,
@@ -39,22 +42,9 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 SESSION_TTL_SECONDS = 7 * 24 * 3600  # 7 days
 
 
-class EmailSender:
-    """Email adapter interface. The dev adapter records messages (no send).
-
-    A production adapter (SMTP/transactional API) is configured via
-    ``EMAIL_PROVIDER`` env; see docs/DEPLOYMENT.md.
-    """
-
-    def __init__(self, enabled: bool = False) -> None:
-        self.enabled = enabled
-        self.sent: list[dict[str, str]] = []
-
-    def send_verification(self, email: str, token: str) -> None:
-        self.sent.append({"kind": "email_verify", "to": email, "token": token})
-
-    def send_password_reset(self, email: str, token: str) -> None:
-        self.sent.append({"kind": "password_reset", "to": email, "token": token})
+# Backward-compatible alias: tests and the dev runner construct ``EmailSender``
+# which is the in-memory dev provider.
+EmailSender = DevEmailProvider
 
 
 class Portal:
@@ -65,15 +55,25 @@ class Portal:
         db: Database,
         *,
         secure_cookies: bool = False,
-        emails: EmailSender | None = None,
+        emails: EmailProvider | None = None,
         clock: Callable[[], float] = time.monotonic,
+        config: PortalConfig | None = None,
     ) -> None:
         self.db = db
-        self.secure_cookies = secure_cookies
-        self.emails = emails if emails is not None else EmailSender()
-        self.limiter = RateLimiter(monotonic=clock)
+        self.config = config
+        self.secure_cookies = secure_cookies or (config is not None and config.secure_cookies)
+        # Default email is disabled so the portal never claims real delivery
+        # unless a provider is explicitly enabled (dev or SMTP).
+        self.emails = emails if emails is not None else DevEmailProvider(enabled=False)
+        self.limiter = RateLimiter(
+            monotonic=clock,
+            limits=(
+                config.rate_limit_overrides if config and config.rate_limit_overrides else None
+            ),
+        )
         self.clock = clock
-        self.webauthn_challenges: dict[str, object] = {}  # nonce -> challenge / preauth user id
+        self.webauthn_challenges: dict[str, tuple[str, float]] = {}  # key -> (value, expiry_mono)
+        self.preauth_tickets: dict[str, int] = {}  # ticket -> user_id (short-lived)
 
 
 # ------------------------------------------------------------------ helpers
@@ -127,8 +127,17 @@ def _authenticate(
     )
     if row is None:
         return None, error_response(401, "unauthorized", "Session not found.")
+    # Absolute session lifetime.
     if row["revoked_at"] or row["expires_at"] < auth.now_iso():
         return None, error_response(401, "unauthorized", "Session expired or revoked.")
+    # Idle timeout (Phase 11 session hardening).
+    idle_seconds = portal.config.idle_timeout_seconds if portal.config else 30 * 60
+    idle_ok = _within_last(row["last_active_at"], idle_seconds)
+    if not idle_ok:
+        portal.db.execute(
+            "UPDATE sessions SET revoked_at=? WHERE id=?", (auth.now_iso(), row["id"])
+        )
+        return None, error_response(401, "unauthorized", "Session idle timeout exceeded.")
     user = portal.db.query_one("SELECT * FROM users WHERE id=?", (row["user_id"],))
     if user is None or user["status"] != "active":
         return None, error_response(403, "forbidden", "Account is not active.")
@@ -142,6 +151,22 @@ def _authenticate(
         (auth.now_iso(), row["id"]),
     )
     return user, None
+
+
+def _within_last(iso_value: str | None, seconds: int) -> bool:
+    """True if ``iso_value`` (ISO-8601 UTC) is within ``seconds`` of now."""
+    from datetime import UTC, datetime, timedelta
+
+    if not iso_value:
+        return True  # never set — treat as fresh (defensive)
+    try:
+        moment = datetime.fromisoformat(iso_value)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
+        return (now - moment) < timedelta(seconds=seconds)
+    except ValueError:
+        return False  # malformed timestamp fails closed
 
 
 def _record_event(
@@ -277,7 +302,7 @@ def handle_signin(portal: Portal, request: Request) -> Response:
 def _issue_preauth(portal: Portal, user_id: int) -> str:
     # A short-lived in-memory ticket that only permits MFA completion.
     ticket = auth.make_token()
-    portal.webauthn_challenges[f"preauth:{ticket}"] = user_id  # reuse map keyed by nonce
+    portal.preauth_tickets[ticket] = user_id
     return ticket
 
 
@@ -285,11 +310,9 @@ def handle_mfa_verify(portal: Portal, request: Request) -> Response:
     body = request.body_json or {}
     preauth = str(body.get("preauth", ""))
     code = str(body.get("code", ""))
-    key = f"preauth:{preauth}"
-    raw = portal.webauthn_challenges.pop(key, None)
-    if not isinstance(raw, int):
+    user_id = portal.preauth_tickets.pop(preauth, None)
+    if user_id is None:
         return error_response(400, "invalid_ticket", "MFA session expired.")
-    user_id: int = raw
     mfa = portal.db.query_one("SELECT * FROM mfa_totp WHERE user_id=? AND enabled=1", (user_id,))
     if mfa is None or not verify_totp(mfa["secret"], code):
         _record_event(portal, user_id, "mfa_failed", "mfa")
@@ -306,8 +329,9 @@ def _future_iso(seconds: int) -> str:
     return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
-def _session_expiry() -> str:
-    return _future_iso(SESSION_TTL_SECONDS)
+def _session_expiry(portal: Portal) -> str:
+    ttl = portal.config.session_ttl_seconds if portal.config else SESSION_TTL_SECONDS
+    return _future_iso(ttl)
 
 
 def _complete_signin(portal: Portal, request: Request, user: dict[str, Any]) -> Response:
@@ -325,7 +349,7 @@ def _complete_signin(portal: Portal, request: Request, user: dict[str, Any]) -> 
             user["id"],
             auth.hash_secret(token),
             now,
-            _session_expiry(),
+            _session_expiry(portal),
             now,
             str(request.body_json.get("device", "") or "")[:80]
             if isinstance(request.body_json, dict)
@@ -701,6 +725,12 @@ def handle_change_password(portal: Portal, request: Request, user: dict[str, Any
         "UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
         (auth.hash_password(new_password), auth.now_iso(), user["id"]),
     )
+    # Phase 11: revoke all sessions (including this one) on password change so
+    # an attacker with a stolen session cannot persist past the password reset.
+    portal.db.execute(
+        "UPDATE sessions SET revoked_at=? WHERE user_id=?",
+        (auth.now_iso(), user["id"]),
+    )
     _record_event(portal, user["id"], "password_changed", "web")
     return ok({"changed": True})
 
@@ -754,11 +784,13 @@ def handle_mfa_disable(portal: Portal, request: Request, user: dict[str, Any]) -
 
 def handle_webauthn_begin(portal: Portal, request: Request, user: dict[str, Any]) -> Response:
     challenge = webauthn.new_challenge()
-    portal.webauthn_challenges[f"wa:{user['id']}:{challenge}"] = challenge
+    expiry = portal.clock() + 300.0  # 5-minute challenge lifetime
+    portal.webauthn_challenges[f"wa:{user['id']}:{challenge}"] = (challenge, expiry)
+    rp_id = portal.config.webauthn_rp_id if portal.config else "localhost"
     return ok(
         {
             "challenge": challenge,
-            "rpId": "localhost",
+            "rpId": rp_id,
             "user": {"id": str(user["id"]), "name": user["email"]},
         }
     )
@@ -770,8 +802,23 @@ def handle_webauthn_register(portal: Portal, request: Request, user: dict[str, A
     credential_id = str(body.get("credentialId", ""))
     cose = webauthn.b64url_decode(str(body.get("publicKeyCose", "")))
     stored = portal.webauthn_challenges.pop(f"wa:{user['id']}:{challenge}", None)
-    if stored != challenge:
+    # Single-use + expiry check.
+    if stored is None or stored[0] != challenge or portal.clock() > stored[1]:
         return error_response(400, "invalid_challenge", "Challenge invalid or expired.")
+    # Origin validation when the client supplies clientData (production).
+    client_data_b64 = str(body.get("clientData", "") or "")
+    if client_data_b64:
+        try:
+            client_data_json = webauthn.b64url_decode(client_data_b64)
+        except Exception:
+            return error_response(400, "invalid_client_data", "Malformed client data.")
+        allowed = (
+            (portal.config.webauthn_origin,)
+            if portal.config and portal.config.webauthn_origin
+            else ("http://localhost:5173", "http://127.0.0.1:5173")
+        )
+        if not webauthn.valid_origin(client_data_json, allowed):
+            return error_response(400, "invalid_origin", "WebAuthn origin mismatch.")
     try:
         raw_point = webauthn.parse_cose_ec2_public_key(cose)
         webauthn.build_public_key(raw_point)  # validate
@@ -884,48 +931,101 @@ def create_wsgi_app(
     db: Database,
     *,
     secure_cookies: bool = False,
-    emails: EmailSender | None = None,
+    emails: EmailProvider | None = None,
     clock: Callable[[], float] = time.monotonic,
     debug: bool = False,
+    config: PortalConfig | None = None,
 ) -> Callable[[dict[str, Any], Any], list[bytes]]:
-    portal = Portal(db, secure_cookies=secure_cookies, emails=emails, clock=clock)
+    resolved_emails = emails
+    if resolved_emails is None and config is not None:
+        from portal_server.emailing import get_email_provider
+
+        resolved_emails = get_email_provider(config)
+    portal = Portal(
+        db,
+        secure_cookies=secure_cookies,
+        emails=resolved_emails,
+        clock=clock,
+        config=config,
+    )
+    apply_hsts = config is not None and config.is_production
 
     def wsgi_app(environ: dict[str, Any], start_response: Any) -> list[bytes]:
         request = Request(environ)
-        # Health check (unauthenticated, no data).
-        if request.path == "/health" and request.method == "GET":
-            return app_response(ok({"ok": True}), start_response)
-        # Static SPA fallback is served by the reverse proxy; unknown API
-        # paths return 404 JSON.
-        if not request.path.startswith("/api/"):
-            return app_response(error_response(404, "not_found", "Not found."), start_response)
-        for route in ROUTES:
-            if route.method != request.method:
-                continue
-            params = _match(route.pattern, request.path)
-            if params is None:
-                continue
-            user: dict[str, Any] | None = None
-            if route.auth_required:
-                user, err = _authenticate(request, portal)
-                if err is not None:
-                    return app_response(err, start_response)
-                assert user is not None
-            try:
-                if user is not None:
-                    resp = route.handler(portal, request, user, **params)
-                else:
-                    resp = route.handler(portal, request)
-                return app_response(resp, start_response)
-            except Exception:
-                if debug:
-                    raise
-                return app_response(
-                    error_response(500, "internal", "An unexpected error occurred."), start_response
-                )
-        return app_response(error_response(404, "not_found", "Endpoint not found."), start_response)
+        if apply_hsts:
+            # Inject HSTS for every response in production.
+            environ["ghostlink.hsts"] = "1"
+        return _dispatch(portal, request, environ, start_response, debug=debug)
 
     return wsgi_app
+
+
+_operational_logger = None
+
+
+def _log_request(request: Request, status: int, started: float) -> None:
+    """Operational request log — metadata only, never secrets.
+
+    Logs method, path (never the query string or body), HTTP status, and
+    duration. No cookies, tokens, passwords, or credentials.
+    """
+    global _operational_logger
+    if _operational_logger is None:
+        import logging
+
+        _operational_logger = logging.getLogger("ghostlink.portal.request")
+    duration_ms = (time.monotonic() - started) * 1000.0
+    _operational_logger.info(
+        "%s %s -> %d (%.1fms)", request.method, request.path, status, duration_ms
+    )
+
+
+def _dispatch(
+    portal: Portal,
+    request: Request,
+    environ: dict[str, Any],
+    start_response: Any,
+    *,
+    debug: bool,
+) -> list[bytes]:
+    """Route a request, applying HSTS when the caller flagged production."""
+    started = time.monotonic()
+    try:
+        resp = _route_request(portal, request)
+    except Exception:
+        if debug:
+            raise
+        resp = error_response(500, "internal", "An unexpected error occurred.")
+    if environ.get("ghostlink.hsts"):
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    with contextlib.suppress(Exception):
+        _log_request(request, resp.status, started)
+    return app_response(resp, start_response)
+
+
+def _route_request(portal: Portal, request: Request) -> Response:
+    if request.path == "/health" and request.method == "GET":
+        return ok({"ok": True})
+    if not request.path.startswith("/api/"):
+        return error_response(404, "not_found", "Not found.")
+    for route in ROUTES:
+        if route.method != request.method:
+            continue
+        params = _match(route.pattern, request.path)
+        if params is None:
+            continue
+        user: dict[str, Any] | None = None
+        if route.auth_required:
+            user, err = _authenticate(request, portal)
+            if err is not None:
+                return err
+            assert user is not None
+        if user is not None:
+            resp = route.handler(portal, request, user, **params)
+        else:
+            resp = route.handler(portal, request)
+        return resp
+    return error_response(404, "not_found", "Endpoint not found.")
 
 
 __all__ = ["EmailSender", "Portal", "create_wsgi_app"]

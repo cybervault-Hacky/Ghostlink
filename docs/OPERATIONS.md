@@ -81,3 +81,32 @@ The structured JSON logs (`event`, `request_id`, `route`, `status`,
 `duration_ms`, `error_class`, `environment`) and `/health/*` endpoints provide
 the raw signals; any alerting system can consume them. No telemetry or
 third-party analytics is added.
+
+---
+
+## Phase 15 — severity model & escalation
+
+`portal_server.securityseverity` classifies operational/security events:
+INFO / NOTICE / WARNING / HIGH / CRITICAL. Events at WARNING and above trigger
+escalation. Classified events (never containing secret payloads):
+
+- authentication failure (spikes → HIGH)
+- rate-limit exhaustion
+- refresh-token replay (WARNING)
+- credential / device revocation (NOTICE)
+- suspicious scope request (WARNING)
+- malformed authentication (NOTICE)
+- migration integrity failure (CRITICAL)
+- backup integrity failure (HIGH)
+- configuration failure (CRITICAL)
+- repeated 5xx (WARNING)
+
+Operational event categories: startup, shutdown, request_error,
+authentication_failure, rate_limit, migration, backup, restore,
+credential_revocation, device_revocation, security_alert, owner_boundary,
+refresh_replay, configuration_failure.
+
+**ENVIRONMENT-GATED**: live PostgreSQL and container execution are not
+available here; `ghostlink production check`, the Docker static check, the
+secret scanner, and the gated PostgreSQL/DR test suites provide the
+deterministic verification path.

@@ -87,3 +87,25 @@ def test_secrets_finds_embedded_private_key(sc, tmp_path: Path, monkeypatch) -> 
     assert len(sc._text_files()) >= 1, sc._text_files()
     findings = sc.check_secrets()
     assert any("private-key" in f for f in findings), findings
+
+
+def test_production_debug_mode_detected(sc, tmp_path: Path, monkeypatch) -> None:
+    deploy = tmp_path / "deployment"
+    deploy.mkdir(parents=True)
+    (deploy / "docker-compose.prod.yml").write_text("APP_ENV: production\nDEBUG: true\n")
+    monkeypatch.setattr(sc, "ROOT", tmp_path)
+    findings = sc.check_phase15_hygiene()
+    assert any("debug" in f.lower() for f in findings)
+
+
+def test_frontend_storage_detected(sc, tmp_path: Path, monkeypatch) -> None:
+    portal = tmp_path / "portal" / "web" / "src"
+    portal.mkdir(parents=True)
+    (portal / "app.tsx").write_text("localStorage.setItem('token', t);\n")
+    monkeypatch.setattr(sc, "ROOT", tmp_path)
+    findings = sc.check_phase15_hygiene()
+    assert any("client-side storage" in f for f in findings)
+
+
+def test_phase15_clean_repo(sc) -> None:
+    assert sc.check_phase15_hygiene() == []

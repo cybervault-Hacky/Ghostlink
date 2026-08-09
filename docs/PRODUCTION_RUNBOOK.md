@@ -61,3 +61,39 @@ high latency, disk exhaustion, certificate expiry, connection-pool exhaustion.
 ## Disaster recovery
 
 See `docs/DISASTER_RECOVERY.md` and `docs/INCIDENT_RESPONSE.md`.
+
+---
+
+## Phase 15 — production operations
+
+### Commands
+
+```
+ghostlink production check          # PASS/WARN/FAIL readiness (non-zero on mandatory FAIL)
+ghostlink release manifest          # machine-readable release manifest
+ghostlink release check | verify    # deterministic release gates
+ghostlink db status | verify | migrate
+ghostlink backup create | verify | list | restore --dry-run
+ghostlink system health | readiness
+ghostlink security-audit
+```
+
+`ghostlink production check` validates environment, required variables,
+database configuration, rate limiter, secure cookies, HTTPS, allowed hosts,
+trusted proxy, email provider, migration state, secret configuration, backup
+configuration, and version consistency. It never prints secret values and
+returns non-zero when a mandatory requirement fails.
+
+### Release manifest fields
+
+version, phase, commit SHA, build timestamp, Python version, package version,
+frontend version, migration version, dependency-lock state, security-check
+result, test count, build status.
+
+### Alert response & severity
+
+Severity model: INFO / NOTICE / WARNING / HIGH / CRITICAL (see
+`docs/OPERATIONS.md` and `docs/INCIDENT_RESPONSE.md`). Alerts are raised for
+authentication-failure spikes, rate-limit exhaustion, refresh-token replay,
+credential/device revocation, suspicious scope requests, migration/backup
+integrity failures, configuration failures, and repeated 5xx errors.

@@ -215,6 +215,39 @@ def cmd_security_audit(args: argparse.Namespace) -> int:
     return proc.returncode
 
 
+def cmd_production_check(args: argparse.Namespace) -> int:
+    """Run the production readiness check (Phase 15P)."""
+    from portal_server.ops.prodcheck import run_production_check
+
+    report = run_production_check()
+    _out(report)
+    # Non-zero exit when mandatory requirements fail or overall is FAIL.
+    return 0 if report["status"] in ("PASS", "WARN") else 1
+
+
+def cmd_release_check(args: argparse.Namespace) -> int:
+    from portal_server.ops.release import run_release_gate
+
+    report = run_release_gate()
+    _out({"clean": report["clean"], "issues": report["issues"]})
+    return 0 if report["clean"] else 1
+
+
+def cmd_release_verify(args: argparse.Namespace) -> int:
+    from portal_server.ops.release import run_release_gate
+
+    report = run_release_gate()
+    _out(report)
+    return 0 if report["clean"] else 1
+
+
+def cmd_release_manifest(args: argparse.Namespace) -> int:
+    from portal_server.ops.release import build_manifest
+
+    _out(build_manifest())
+    return 0
+
+
 def _add_db_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", default=None, help="override DATABASE_URL (never logged)")
 
@@ -272,6 +305,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sa = sub.add_parser("security-audit", help="run the offline security audit")
     sa.set_defaults(func=cmd_security_audit)
+
+    pc = sub.add_parser("production", help="production readiness checks")
+    pc_sub = pc.add_subparsers(dest="production_command", required=True)
+    ppc = pc_sub.add_parser("check", help="validate production readiness (Phase 15P)")
+    ppc.set_defaults(func=cmd_production_check)
+
+    rel = sub.add_parser("release", help="release management (Phase 15F)")
+    rel_sub = rel.add_subparsers(dest="release_command", required=True)
+    for name, handler, help_text in (
+        ("check", cmd_release_check, "run deterministic release gates"),
+        ("verify", cmd_release_verify, "run release gates (non-zero on failure)"),
+        ("manifest", cmd_release_manifest, "emit the release manifest"),
+    ):
+        pp = rel_sub.add_parser(name, help=help_text)
+        pp.set_defaults(func=handler)
 
     return parser
 

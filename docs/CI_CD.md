@@ -67,3 +67,15 @@ git push origin arena/019fe552-ghostlink
 Do **not** force-push. The workflow definitions are already validated by the
 offline quality gate (`scripts/security_check.py` includes CI auto-deploy
 checks).
+
+## Phase 15 — CI/CD status
+
+The workflow definitions remain in `.github/workflows/` (untracked) and could
+not be pushed because the connected GitHub App token lacks the `workflows`
+permission. **CI is NOT deployed/executed remotely in this environment.** The
+offline quality gate validates the workflows (no auto-deploy, no hardcoded
+credentials) and the full local gate (pytest, ruff, mypy, compileall, frontend,
+secret scan, security audit, Docker static check, dependency audit) is the
+deterministic verification path available here. PostgreSQL integration tests
+are environment-gated and run in the `postgres-integration` job once the
+workflow files are pushed.

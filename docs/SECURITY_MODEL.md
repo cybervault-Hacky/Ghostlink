@@ -96,3 +96,22 @@ deployment, and recovery detail live in
 - **Termux client fail-closed** — a network failure or a malformed 2xx response
   is never treated as successful authentication.
 - **Incident response** — see `docs/INCIDENT_RESPONSE.md`.
+
+---
+
+## Phase 15 — additions
+
+- **Security-event severity model** (`portal_server.securityseverity`): INFO /
+  NOTICE / WARNING / HIGH / CRITICAL classification for authentication
+  failures, rate-limit exhaustion, refresh-token replay, credential/device
+  revocation, suspicious scope requests, malformed auth, migration/backup/
+  configuration integrity failures, and repeated 5xx.
+- **Secret scanning** — the repository scanner now also detects pairing codes,
+  developer credentials (`dk_…`), Bearer/JWT-like tokens, assigned secret
+  variables (`SESSION_SECRET`, `EMAIL_SMTP_PASSWORD`, `BACKUP_ENCRYPTION_KEY`),
+  and database-URL passwords, while ignoring placeholders, examples and test
+  fixtures (deterministic, tested).
+- **API contract** — a machine-readable developer-API contract
+  (`portal_server.api_contract`) and tests that lock the stable endpoint set
+  and error envelope so existing CLI clients keep working.
+- **Incident response** — see `docs/INCIDENT_RESPONSE.md`.

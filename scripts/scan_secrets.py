@@ -35,6 +35,30 @@ _JOIN_LINK_EXAMPLE = re.compile(r"gl://join/[<…A-Za-z0-9]{0,20}[…>]?\b")
 _HEX64 = re.compile(r"\b[0-9a-fA-F]{64}\b")
 _KEYISH_NAME = re.compile(r"(private_key|secret_key|session_key|sender_key|signing_key)")
 
+# Phase 15D — secret-shaped runtime values that must never be committed.
+# These are deliberately strict: they only match a real literal (not a
+# placeholder) and skip test fixtures and example files.
+_PAIRING_CODE = re.compile(r"\bGL-[A-Z2-7]{16,}\b")
+_DEV_CRED = re.compile(r"\bdk_[A-Za-z0-9]+:[A-Za-z0-9+/=_\-]{16,}")
+_BEARER = re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{40,}")
+_JWT = re.compile(r"\b[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\b")
+_ASSIGNED_SECRET = re.compile(
+    r"(SESSION_SECRET|EMAIL_SMTP_PASSWORD|BACKUP_ENCRYPTION_KEY|SMTP_PASSWORD)\s*=\s*['\"][^'\"$<>\s]{8,}['\"]"
+)
+_DBURL_PASSWORD = re.compile(r"postgres(?:ql)?://[^:/\s]+:([^@/\s]+)@")
+_REFRESH_TOKEN = re.compile(
+    r"\b(access_token|refresh_token|api_key|api_secret)\s*=\s*['\"][A-Za-z0-9_\-]{24,}['\"]"
+)
+
+# Values that indicate an example/placeholder (never a real secret).
+_PLACEHOLDER = re.compile(r"(CHANGE_ME|example\.com|<.*>|your-|xxxx|\.\.\.|\$\{)")
+
+
+def _looks_secretish(text: str) -> bool:
+    """True if a line looks like it carries a real secret (not a placeholder)."""
+    return not _PLACEHOLDER.search(text)
+
+
 # Files / directories we never scan (binary, third-party, git metadata).
 _SKIP_DIRS = {
     ".git",
@@ -119,6 +143,11 @@ def _is_test(path: Path) -> bool:
     return "tests" in path.parts or path.stem.startswith("test_")
 
 
+def _is_example(path: Path) -> bool:
+    name = path.name
+    return name.startswith(".env") or ".example" in name or name.endswith(".example")
+
+
 def scan() -> int:
     findings: list[str] = []
     for path in tracked_files():
@@ -146,6 +175,28 @@ def scan() -> int:
             for line_no, line in enumerate(text.splitlines(), 1):
                 if _HEX64.search(line) and _KEYISH_NAME.search(line):
                     findings.append(f"{rel}:{line_no}: 64-hex value under a key-ish name")
+        # Phase 15D — secret-shaped values in committed source (skip tests and
+        # example/env template files, and placeholder lines).
+        if not _is_test(path) and not _is_example(path):
+            surface = _strip_py_surface(text) if path.suffix == ".py" else text
+            for line_no, line in enumerate(surface.splitlines(), 1):
+                if not _looks_secretish(line):
+                    continue
+                if _PAIRING_CODE.search(line):
+                    findings.append(f"{rel}:{line_no}: pairing code literal")
+                if _DEV_CRED.search(line):
+                    findings.append(f"{rel}:{line_no}: developer credential literal")
+                if _BEARER.search(line):
+                    findings.append(f"{rel}:{line_no}: bearer token literal")
+                if _JWT.search(line):
+                    findings.append(f"{rel}:{line_no}: JWT-like literal")
+                if _ASSIGNED_SECRET.search(line):
+                    findings.append(f"{rel}:{line_no}: assigned secret literal")
+                if _REFRESH_TOKEN.search(line):
+                    findings.append(f"{rel}:{line_no}: token/secret assignment")
+                m = _DBURL_PASSWORD.search(line)
+                if m and not _PLACEHOLDER.search(m.group(1)):
+                    findings.append(f"{rel}:{line_no}: database URL password literal")
 
     if findings:
         print("Secret scan findings:")

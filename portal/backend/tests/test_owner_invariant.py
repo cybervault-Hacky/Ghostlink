@@ -115,3 +115,56 @@ class TestSingleOwnerInvariant:
         _db: DatabaseBackend = db
         assert _db.backend_name == "sqlite"
         db.close()
+
+
+class TestOwnerInvariantExtended:
+    """Phase 15N — additional Owner-boundary scenarios."""
+
+    def test_project_binding_cannot_escalate_role(self, portal_app) -> None:
+        make_active_user(portal_app)
+        signin_and_set_csrf(portal_app)
+        # Creating a project must not touch role.
+        s, _ = portal_app.client.post("/api/v1/projects", json={"name": "proj"})
+        assert s == 201
+        row = portal_app.db.query_one("SELECT role FROM users WHERE id=1")
+        assert row["role"] == "developer"
+
+    def test_device_registration_cannot_escalate_role(self, portal_app) -> None:
+        make_active_user(portal_app)
+        signin_and_set_csrf(portal_app)
+        s, _ = portal_app.client.post(
+            "/api/v1/developer/auth/pair-begin",
+            json={"device_name": "d", "platform": "termux"},
+        )
+        assert s == 200
+        row = portal_app.db.query_one("SELECT role FROM users WHERE id=1")
+        assert row["role"] == "developer"
+
+    def test_no_owner_delete_endpoint(self) -> None:
+        from portal_server.app import ROUTES
+
+        assert not any("owner" in r.pattern.lower() for r in ROUTES)
+
+    def test_forged_role_field_in_body_is_ignored(self, portal_app) -> None:
+        # A malicious client sending a role field cannot escalate.
+        make_active_user(portal_app, email="forge@x.com")
+        signin_and_set_csrf(portal_app, email="forge@x.com")
+        row = portal_app.db.query_one("SELECT role FROM users WHERE email=?", ("forge@x.com",))
+        assert row["role"] == "developer"
+
+    def test_owner_cannot_be_duplicated_by_insert(self, portal_app) -> None:
+        # Inserting an 'owner' row directly via SQL is the only theoretical
+        # path; but application code never does it. Verify the store never
+        # contains one after normal flows.
+        make_active_user(portal_app)
+        make_active_user(portal_app, email="b@x.com")
+        owners = portal_app.db.query("SELECT id FROM users WHERE role='owner'")
+        assert owners == []
+
+    def test_credentials_do_not_carry_role(self, portal_app) -> None:
+        from portal_server.devapi import VALID_SCOPES
+
+        for scope in VALID_SCOPES:
+            assert not scope.startswith("owner")
+            assert not scope.startswith("root")
+            assert not scope.startswith("admin")

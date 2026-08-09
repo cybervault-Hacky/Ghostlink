@@ -538,7 +538,7 @@ infrastructure foundation while preserving Phases 1–12.
   `BACKUPS.md`, `DISASTER_RECOVERY.md`, `OBSERVABILITY.md`, `RATE_LIMITING.md`,
   `DEPLOYMENT.md`, `SECURITY_MODEL.md`, `OPERATIONS.md`, `CI_CD.md`.
 
-## Phase 14 — Public Production Launch & Reliability ✅ (latest implemented)
+## Phase 14 — Public Production Launch & Reliability ✅
 
 **STATUS: IMPLEMENTED** — operational environment model, production config
 fail-closed, PostgreSQL production path (env-gated runtime), observability
@@ -562,6 +562,34 @@ release/incident/runbook documentation.
   empty states, reduced-motion.
 - Docs: `PRODUCTION_RUNBOOK.md`, `INCIDENT_RESPONSE.md`, `RELEASE.md`,
   `TERMUX.md`, `CHANGELOG.md`.
+
+## Phase 15 — Production Operations & Platform Maturity ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — operational tooling (production check, release
+management), security severity model, hardened secret scanning, deterministic
+DR drill, API contract, gated PostgreSQL integration suite, Docker static
+verification, concurrency/failure tests, and extended Owner-invariant tests.
+
+- **`ghostlink production check`** — PASS/WARN/FAIL readiness; non-zero on
+  mandatory failure; never prints secrets.
+- **`ghostlink release check|verify|manifest`** — fail-closed release gates and
+  a machine-readable manifest.
+- **Security severity model** — INFO/NOTICE/WARNING/HIGH/CRITICAL classification.
+- **Secret scanning hardened** — pairing codes, dk_ credentials, Bearer/JWT,
+  assigned secrets, DB-URL passwords; placeholder/example/test aware.
+- **Deterministic DR drill** — restore never reactivates revoked state or
+  creates an Owner; corruption/wrong-key/incomplete/schema tests.
+- **API contract** — machine-readable developer-API contract + stability tests.
+- **Gated PostgreSQL integration suite** (12 tests) — runs in CI; env-gated here.
+- **Docker static check** (`scripts/docker_check.py`) — validates all prod
+  Docker artifacts; runtime reported honestly.
+- **Concurrency/failure tests** — rate limits, rotation, backup, replay, DB
+  locked/duplicate/rollback.
+- **Extended Owner invariant** — project/device/credential/CLI/DB/restore paths.
+- **Observability** — `severity` field, security event emission, operational
+  event categories.
+- Docs updated: `PRODUCTION_RUNBOOK.md`, `RELEASE.md`, `OPERATIONS.md`,
+  `SECURITY_MODEL.md`, `CI_CD.md`, `DISASTER_RECOVERY.md`.
 
 ### Planned (not started)
 

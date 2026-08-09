@@ -280,6 +280,33 @@ def check_phase14_hygiene() -> list[str]:
     return findings
 
 
+def check_phase15_hygiene() -> list[str]:
+    """Phase 15 checks: production debug mode, frontend secret leakage."""
+    findings: list[str] = []
+    # 1. Production must never enable debug mode.
+    for p in (ROOT / "deployment").rglob("*.yml"):
+        text = p.read_text(encoding="utf-8")
+        if ("APP_ENV: production" in text or "APP_ENV=production" in text) and re.search(
+            r"DEBUG\s*[:=]\s*(true|1)\b", text, re.IGNORECASE
+        ):
+            findings.append(f"{p.relative_to(ROOT)}: debug enabled in production")
+    # 2. Frontend must not store secrets in localStorage/sessionStorage.
+    for path, text in _repo_texts():
+        if "portal" not in str(path) or not path.name.endswith((".ts", ".tsx")):
+            continue
+        if re.search(r"(localStorage|sessionStorage)\.(setItem|set)", text):
+            findings.append(f"{path.relative_to(ROOT)}: client-side storage of values")
+    # 3. Backend must never print DATABASE_URL / SMTP password.
+    for path, text in _repo_texts():
+        if "portal" not in str(path) or not path.name.endswith(".py"):
+            continue
+        if "tests" in path.parts:
+            continue
+        if re.search(r"print\(.*(DATABASE_URL|EMAIL_SMTP_PASSWORD|SESSION_SECRET)", text):
+            findings.append(f"{path.relative_to(ROOT)}: may print a secret")
+    return findings
+
+
 def run_all() -> list[str]:
     findings: list[str] = []
     findings += check_secrets()
@@ -290,6 +317,7 @@ def run_all() -> list[str]:
     findings += check_devapi_hygiene()
     findings += check_phase13_hygiene()
     findings += check_phase14_hygiene()
+    findings += check_phase15_hygiene()
     return findings
 
 

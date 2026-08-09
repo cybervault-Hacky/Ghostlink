@@ -50,3 +50,27 @@ GitHub Actions workflows live in `.github/workflows/`. In this build they could
 **not** be pushed to the remote because the connected GitHub App token lacks
 the `workflows` permission (GitHub refuses to create/update workflow files
 without it). See `docs/CI_CD.md` for the exact blocker and manual push steps.
+
+---
+
+## Phase 15 — release process & manifest
+
+### Commands
+
+```
+ghostlink release check     # run deterministic release gates (fail on issues)
+ghostlink release verify    # same, returns non-zero on failure
+ghostlink release manifest  # emit the machine-readable release manifest
+```
+
+The release gate **fails closed** when: version mismatch, unexpectedly dirty
+working tree, secrets present, security audit fails, tests fail, frontend build
+fails, package build fails, or migration checksum is invalid. **Creating a
+release never deploys anything** — deployment requires an explicit, separately
+approved step.
+
+### Release manifest
+
+Contains: version, phase, commit SHA, build timestamp, Python version, package
+version, frontend version, migration version, dependency-lock state,
+security-check result, test count, and build status.

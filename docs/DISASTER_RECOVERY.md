@@ -106,3 +106,16 @@ corruption. The common recovery path is: verify backup → restore into an
 isolated DB → migrate → verify schema, security invariants, revocation state,
 and the Owner invariant → only then replace production (never automatically,
 never without explicit confirmation).
+
+---
+
+## Phase 15 — deterministic DR drill
+
+`portal/backend/tests/test_dr_drill.py` executes a full drill: populate a
+database (users, devices, scoped credentials, API tokens, security events),
+revoke selected credentials, take an encrypted backup, verify manifest +
+checksum, destroy the source, restore into an isolated database, and verify:
+revoked credentials stay revoked, revoked sessions do not become valid,
+schema version and migration checksums match, and **no Owner is ever created**.
+Also covered: wrong-key rejection, backup corruption, incompatible schema, and
+incomplete backups. Restore never silently reactivates revoked security state.

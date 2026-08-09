@@ -17,6 +17,7 @@ Never log database credentials; the backup directory path is safe to print.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import secrets
@@ -193,15 +194,26 @@ def _read_backup(
         raise BackupError(f"Unsupported backup format version {manifest.get('format_version')}.")
     payload_b64 = payload_line.strip()
     if not manifest.get("encrypted"):
+        # Validate the plain payload base64 early (incomplete/corrupt file).
+        try:
+            base64.b64decode(payload_b64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise BackupError("Backup payload is not valid base64 (corrupt).") from exc
         return manifest, "plain", payload_b64, None
-    enc = json.loads(payload_b64)
-    if enc.get("enc") != "chacha20poly1305":
+    try:
+        enc = json.loads(payload_b64)
+    except json.JSONDecodeError as exc:
+        raise BackupError("Encrypted backup payload is corrupt.") from exc
+    if not isinstance(enc, dict) or enc.get("enc") != "chacha20poly1305":
         raise BackupError(f"Unsupported encryption scheme: {enc.get('enc')!r}")
-    secret = (
-        base64.b64decode(enc["salt"]),
-        base64.b64decode(enc["nonce"]),
-        base64.b64decode(enc["ciphertext"]),
-    )
+    try:
+        secret = (
+            base64.b64decode(enc["salt"], validate=True),
+            base64.b64decode(enc["nonce"], validate=True),
+            base64.b64decode(enc["ciphertext"], validate=True),
+        )
+    except (binascii.Error, ValueError, KeyError) as exc:
+        raise BackupError("Encrypted backup payload is corrupt.") from exc
     return manifest, "chacha20poly1305", payload_b64, secret
 
 

@@ -152,5 +152,27 @@ else
 fi
 rm -rf "${TMPADMIN}"
 
+# ---------------------------------------------------- 15. Docker artifact check
+step "Docker artifact static check"
+if "${PYTHON}" scripts/docker_check.py >/dev/null 2>&1; then
+    echo "docker_check OK"
+else
+    echo "docker_check reported findings (see output)"
+    fail "docker_check failed"
+fi
+
+# ---------------------------------------------------- 16. Dependency audit (best-effort)
+step "Dependency audit (pip-audit / npm audit if available)"
+if command -v pip-audit >/dev/null 2>&1; then
+    pip-audit -r <(pip freeze) || echo "pip-audit found issues (review above) — not blocking local gate"
+else
+    echo "pip-audit not installed — run: pip install pip-audit && pip-audit -r <(pip freeze)"
+fi
+if command -v npm >/dev/null 2>&1 && [ -f portal/web/package.json ]; then
+    (cd portal/web && npm audit --audit-level=high || echo "npm audit found issues — review above")
+else
+    echo "npm audit skipped (npm unavailable)"
+fi
+
 echo
 echo "All release checks passed."

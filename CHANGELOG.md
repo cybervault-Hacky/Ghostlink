@@ -4,6 +4,35 @@ All notable GhostLink changes by release. GhostLink follows a phased,
 production-gated development model — each phase is fully tested before the next
 begins.
 
+## [0.17.0] — Phase 15 (Production Operations & Platform Maturity)
+
+- **Production readiness** — `ghostlink production check` (PASS/WARN/FAIL,
+  non-zero on mandatory failure, never prints secrets).
+- **Release management** — `ghostlink release check|verify|manifest`
+  (fail-closed gates; machine-readable manifest with version, commit, build
+  timestamp, python, package/frontend/migration versions, lock state, test
+  count, build status). A release never deploys automatically.
+- **Security severity model** — INFO/NOTICE/WARNING/HIGH/CRITICAL
+  classification; security event emission in structured logs.
+- **Secret scanning hardened** — detects pairing codes, `dk_…` credentials,
+  Bearer/JWT tokens, assigned secrets, and database-URL passwords while
+  ignoring placeholders/examples/test fixtures.
+- **Deterministic DR drill** — encrypted backup, restore into isolated DB,
+  revoked state stays revoked, no Owner created; corruption/wrong-key/
+  incomplete/schema tests.
+- **API contract** — machine-readable developer-API contract with stability
+  tests locking the endpoint set and error envelope.
+- **Gated PostgreSQL integration suite** (12 tests) — runs against a real
+  server in CI; environment-gated locally (reported honestly).
+- **Docker static verification** — `scripts/docker_check.py`.
+- **Concurrency & failure tests** — rate limits, rotation, backup, replay, DB
+  locked/duplicate/rollback.
+- **Extended Owner invariant** — `TestSingleOwnerInvariant` covers project/
+  device/credential/CLI/DB/restore escalation paths.
+
+**Status:** no public deployment has been performed. PostgreSQL runtime
+integration and Docker image builds are environment-gated in this build.
+
 ## [0.16.0] — Phase 14 (Public Production Launch & Reliability)
 
 - **Production environment model** — explicit `development` / `staging` /

@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { request } from "../lib/api";
-import { Badge, Button, Card, Field, EmptyState, GlassCard, StatusBadge } from "../components/ui";
+import { Badge, Button, Card, Field, EmptyState, ErrorState, GlassCard, Loading, StatusBadge } from "../components/ui";
 import type { CredentialMeta, NewCredential } from "../lib/types";
 
 export default function Credentials() {
@@ -10,14 +10,28 @@ export default function Credentials() {
   const [newCred, setNewCred] = useState<NewCredential | null>(null);
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  async function load() {
-    const res = await request("GET", "/api/v1/developer-keys");
-    if (res.status === 200) setCreds(res.body.credentials);
-  }
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const res = await request("GET", "/api/v1/developer-keys");
+      if (res.status === 200) {
+        setCreds(res.body.credentials);
+      } else {
+        setLoadError(res.body?.error?.message ?? "Unable to load credentials.");
+      }
+    } catch {
+      setLoadError("Unable to reach the portal.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -79,10 +93,12 @@ export default function Credentials() {
       )}
 
       <div className="stack mt-24">
-        {creds.length === 0 && !showNew && (
+        {loading && <Loading label="Loading credentials…" />}
+        {!loading && loadError && <ErrorState title="Could not load credentials" message={loadError} onRetry={load} />}
+        {!loading && !loadError && creds.length === 0 && !showNew && (
           <Card><EmptyState title="No developer keys yet." cta={<Button onClick={() => setShowNew(true)}>Create one</Button>} /></Card>
         )}
-        {creds.map((c) => (
+        {!loading && !loadError && creds.map((c) => (
           <Card key={c.keyId}>
             <div className="row between">
               <div>

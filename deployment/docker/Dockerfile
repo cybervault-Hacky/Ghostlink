@@ -10,7 +10,7 @@
 #   * explicit exposed port, graceful SIGTERM handling
 #
 # Build:
-#   docker build -f deployment/docker/Dockerfile -t ghostlink/portal:0.16.0 .
+#   docker build -f deployment/docker/Dockerfile -t ghostlink/portal:0.17.0 .
 
 FROM python:3.11-slim AS base
 

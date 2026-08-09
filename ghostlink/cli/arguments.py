@@ -431,13 +431,15 @@ def build_parser() -> argparse.ArgumentParser:
         ("db", "manage the portal database (status/migrate/verify)"),
         ("backup", "create/verify/list/restore portal backups"),
         ("system", "portal health / readiness probes"),
+        ("production", "production readiness checks (Phase 15P)"),
+        ("release", "release management: check/verify/manifest (Phase 15F)"),
     ):
         _p = subparsers.add_parser(_name, help=_help)
         _p.add_argument(
             "admin_args",
             nargs=argparse.REMAINDER,
             metavar="ARGS",
-            help="sub-command arguments (e.g. 'status', 'migrate')",
+            help="sub-command arguments (e.g. 'status', 'migrate', 'check')",
         )
     subparsers.add_parser("security-audit", help="run the deterministic offline security audit")
     return parser

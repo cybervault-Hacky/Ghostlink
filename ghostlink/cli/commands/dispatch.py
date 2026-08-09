@@ -39,6 +39,6 @@ def run_command(options: CLIOptions) -> int:
         return run_security_status(options)
     if options.command == "developer":
         return run_developer(options)
-    if options.command in ("db", "backup", "system", "security-audit"):
+    if options.command in ("db", "backup", "system", "production", "release", "security-audit"):
         return run_admin(options)
     raise ValueError(f"Unknown command {options.command!r} passed argument parsing.")

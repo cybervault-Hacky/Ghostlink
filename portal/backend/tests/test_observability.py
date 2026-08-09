@@ -143,3 +143,46 @@ def test_logger_lifecycle_event() -> None:
     assert parsed["event"] == "startup"
     # Non-safe metadata (database_backend not allow-listed) is dropped.
     assert "database_backend" not in parsed
+
+
+def test_security_event_emits_severity_without_secrets() -> None:
+    import json
+
+    logger = StructuredLogger(level="info", log_format="json", environment="production")
+    line = _emit(
+        logger,
+        "warning",
+        "credential_revocation",
+        {
+            "event": "credential_revocation",
+            "security_event_type": "security",
+            "severity": "NOTICE",
+            "request_id": "req_s",
+            "credential_secret": "shh-dont-log",
+        },
+    )
+    parsed = json.loads(line)
+    assert parsed["severity"] == "NOTICE"
+    assert parsed["event"] == "credential_revocation"
+    assert "shh-dont-log" not in line
+
+
+def test_operational_events_set() -> None:
+    from portal_server.observability import OPERATIONAL_EVENTS
+
+    for ev in (
+        "startup",
+        "shutdown",
+        "request_error",
+        "authentication_failure",
+        "rate_limit",
+        "migration",
+        "backup",
+        "restore",
+        "credential_revocation",
+        "device_revocation",
+        "security_alert",
+        "owner_boundary",
+        "refresh_replay",
+    ):
+        assert ev in OPERATIONAL_EVENTS

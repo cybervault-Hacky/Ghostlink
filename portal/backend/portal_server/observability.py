@@ -122,6 +122,7 @@ class StructuredLogger:
             "deployment_version",
             "environment",
             "error_class",
+            "severity",
             "actor",
             "action",
             "source",
@@ -186,9 +187,44 @@ class StructuredLogger:
         """Startup/shutdown/migration/backup lifecycle events (Phase 14)."""
         self._emit("info", event, {"event": event, **extra})
 
+    def security(
+        self, severity: str, event: str, *, category: str = "security", **extra: Any
+    ) -> None:
+        """Emit a classified security event (Phase 15I/15J).
+
+        Logs only the safe metadata (severity, event, category, request_id…).
+        Secret-shaped extra values are dropped by the allow-list.
+        """
+        self._emit(
+            "warning" if severity in ("WARNING", "HIGH", "CRITICAL") else "info",
+            event,
+            {"event": event, "security_event_type": category, "severity": severity, **extra},
+        )
+
+
+OPERATIONAL_EVENTS = frozenset(
+    {
+        "startup",
+        "shutdown",
+        "request_error",
+        "authentication_failure",
+        "rate_limit",
+        "migration",
+        "backup",
+        "restore",
+        "credential_revocation",
+        "device_revocation",
+        "security_alert",
+        "owner_boundary",
+        "refresh_replay",
+        "configuration_failure",
+    }
+)
+
 
 __all__ = [
     "DEFAULT_REQUEST_ID_HEADER",
+    "OPERATIONAL_EVENTS",
     "StructuredLogger",
     "json_line",
     "new_request_id",

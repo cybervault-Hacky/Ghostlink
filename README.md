@@ -133,10 +133,43 @@ lives in [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
-## Current release: Phase 14
+## Current release: Phase 15
 
-**Phase 14 — Public Production Launch & Reliability** is the latest implemented
-phase (version `0.16.0`).
+**Phase 15 — Production Operations & Platform Maturity** is the latest
+implemented phase (version `0.17.0`).
+
+- **Production readiness & release tooling** — `ghostlink production check`
+  (PASS/WARN/FAIL readiness; non-zero on mandatory failure; never prints
+  secrets) and `ghostlink release check|verify|manifest` (machine-readable
+  release manifest; fail-closed gates). See `docs/PRODUCTION_RUNBOOK.md` and
+  `docs/RELEASE.md`.
+- **Security severity model** — INFO/NOTICE/WARNING/HIGH/CRITICAL classification
+  for auth failures, rate-limit exhaustion, refresh replay, credential/device
+  revocation, scope anomalies, and migration/backup/config integrity. See
+  `docs/OPERATIONS.md` and `docs/SECURITY_MODEL.md`.
+- **Secret scanning hardened** — the repository scanner now detects pairing
+  codes, developer credentials, Bearer/JWT tokens, assigned secrets, and
+  database-URL passwords (ignoring placeholders/examples/tests). See
+  `docs/SECURITY_MODEL.md`.
+- **Deterministic DR drill** — `test_dr_drill.py` proves restore never
+  reactivates revoked state and never creates an Owner. See
+  `docs/DISASTER_RECOVERY.md`.
+- **API contract** — a machine-readable developer-API contract
+  (`portal_server/api_contract.py`) with stability tests.
+- **Gated PostgreSQL integration suite** — 12 tests that run against a real
+  server in CI (environment-gated here).
+- **Docker static verification** — `scripts/docker_check.py` validates all
+  production Docker artifacts (non-root, no secrets, gunicorn, healthcheck,
+  dropped capabilities) and reports runtime availability honestly.
+- **Owner invariant** — extended `TestSingleOwnerInvariant` regression suite.
+
+Phase 14 (Public Production Launch & Reliability, `0.16.0`) is fully retained
+and described below.
+
+## Phase 14 — Public Production Launch & Reliability
+
+**Phase 14 — Public Production Launch & Reliability** is the previous
+implemented phase (version `0.16.0`).
 
 - **Production environment model** — explicit `development`/`staging`/
   `production` with fail-closed validation (production rejects SQLite, memory

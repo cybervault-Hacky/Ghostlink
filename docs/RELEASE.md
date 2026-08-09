@@ -1,4 +1,4 @@
-# Release (Phase 14)
+# Release (Phase 15)
 
 ## Status
 
@@ -8,7 +8,7 @@ been published** to PyPI, and **no public deployment has been performed**.
 
 ## Versioning
 
-Phase 14 → `0.16.0`. The version is kept in sync across:
+Phase 15 → `0.17.0`. The version is kept in sync across:
 
 - `ghostlink/__init__.py` (`__version__`)
 - `pyproject.toml` (`project.version`)

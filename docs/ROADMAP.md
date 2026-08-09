@@ -594,9 +594,19 @@ verification, concurrency/failure tests, and extended Owner-invariant tests.
 ### Planned (not started)
 
 - Live public deployment (not performed).
-- Offline message queue and multi-device sync design
-- Localization framework activation (beyond `en`)
-- Plugin hooks for room automations
+
+## Roadmap complete at Phase 15
+
+**GhostLink's development roadmap is complete at Phase 15.** Phase 15 is the
+final development phase; Phase 16 is **not planned** and will not be created.
+
+Future work is maintenance, bug fixes, security patches, dependency updates,
+compatibility fixes, performance fixes, documentation corrections, and
+operational releases — **not additional development phases**.
+
+Historical "planned" ideas (offline message queue, multi-device sync,
+localization beyond `en`, plugin hooks) are intentionally **deferred and out of
+scope** for the shipped product; they are not scheduled development phases.
 
 ## Explicitly out of scope
 

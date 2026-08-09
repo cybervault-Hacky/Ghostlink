@@ -54,6 +54,11 @@ class CLIOptions:
     group_target: str | None = None
     group_subject: str | None = None
     group_name: str | None = None
+    crypto_suite: str | None = None
+    developer_action: str | None = None
+    developer_key_action: str | None = None
+    developer_key_id: str | None = None
+    admin_argv: list[str] | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -310,6 +315,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="group name for create (1..48 printable characters)",
     )
     group.add_argument(
+        "--crypto-suite",
+        dest="crypto_suite",
+        default=None,
+        metavar="SUITE",
+        help="group encryption suite for create: mesh-v1 (default) or senderkey-v1",
+    )
+    group.add_argument(
         "--expires",
         default=None,
         metavar="SECONDS|5m|1h",
@@ -364,6 +376,72 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("session", help="show the session dashboard (history, rooms, invites)")
     subparsers.add_parser("doctor", help="run environment diagnostics and exit")
+    subparsers.add_parser(
+        "security-status",
+        help="show a read-only security, crypto-suite and group-recovery summary",
+    )
+    developer = subparsers.add_parser(
+        "developer",
+        help="manage the local developer account, portal integration, and API credentials",
+    )
+    developer.add_argument(
+        "developer_action",
+        nargs="?",
+        choices=[
+            "init",
+            "status",
+            "key",
+            "export-info",
+            "login",
+            "logout",
+            "whoami",
+            "device",
+            "project",
+            "credential",
+            "security-status",
+            "doctor",
+        ],
+        default=None,
+        help="developer account / portal-integration action",
+    )
+    developer.add_argument(
+        "developer_key_action",
+        nargs="?",
+        choices=["create", "list", "rotate", "revoke", "register", "use", "status"],
+        default=None,
+        help="sub-action for key / device / project / credential",
+    )
+    developer.add_argument(
+        "developer_key_id",
+        nargs="?",
+        default=None,
+        metavar="dk_…",
+        help="credential key id — required by 'key revoke'",
+    )
+    developer.add_argument(
+        "--relay",
+        dest="relay_url",
+        default=None,
+        metavar="URL",
+        help="portal URL (http://… or ws://…) — overrides configuration",
+    )
+
+    # ---- Phase 13 production administration ----------------------------
+    for _name, _help in (
+        ("db", "manage the portal database (status/migrate/verify)"),
+        ("backup", "create/verify/list/restore portal backups"),
+        ("system", "portal health / readiness probes"),
+        ("production", "production readiness checks (Phase 15P)"),
+        ("release", "release management: check/verify/manifest (Phase 15F)"),
+    ):
+        _p = subparsers.add_parser(_name, help=_help)
+        _p.add_argument(
+            "admin_args",
+            nargs=argparse.REMAINDER,
+            metavar="ARGS",
+            help="sub-command arguments (e.g. 'status', 'migrate', 'check')",
+        )
+    subparsers.add_parser("security-audit", help="run the deterministic offline security audit")
     return parser
 
 
@@ -413,4 +491,9 @@ def parse_args(argv: Sequence[str] | None = None) -> CLIOptions:
         group_target=getattr(namespace, "group_target", None),
         group_subject=getattr(namespace, "group_subject", None),
         group_name=getattr(namespace, "group_name", None),
+        crypto_suite=getattr(namespace, "crypto_suite", None),
+        developer_action=getattr(namespace, "developer_action", None),
+        developer_key_action=getattr(namespace, "developer_key_action", None),
+        developer_key_id=getattr(namespace, "developer_key_id", None),
+        admin_argv=getattr(namespace, "admin_args", None),
     )

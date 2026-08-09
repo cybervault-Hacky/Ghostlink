@@ -1,16 +1,17 @@
 # GhostLink Groups — Phase 6A Security & Design Specification
 
-> **STATUS: DESIGN / REVIEW — NO IMPLEMENTATION HAS STARTED.**
+> **STATUS: IMPLEMENTED.** Phases 6B (lifecycle), 6C (pairwise-mesh
+> messaging), 7 (sender-key hardening, §36-§37) and 8 (reliability &
+> adversarial hardening, §41-§42) are implemented and tested. This document
+> is the authoritative security model; §36's sender-key design and §41's
+> recovery model are the implemented design.
 >
-> This document is the complete security model for Phase 6A secure groups.
-> It exists so that implementation never invents security rules during
-> coding. Every security-critical decision is stated here explicitly, with
-> its attacker analysis, deterministic failure behavior, and test
-> obligations. Group implementation begins **only** after this design is
-> reviewed and approved; any implementation finding that contradicts this
-> document must amend the document first — code must not silently diverge.
+> This document is the complete security model for secure groups. It exists
+> so that implementation never invents security rules during coding. Every
+> security-critical decision is stated here explicitly, with its attacker
+> analysis, deterministic failure behavior, and test obligations.
 >
-> Scope anchors: GhostLink remains a **Python ≥ 3.12, terminal-only
+> Scope anchors: GhostLink remains a **Python ≥ 3.11, terminal-only
 > (TUI) project for Termux and Linux**. No APK, no Android app, no GUI, no
 > browser client, no web frontend is introduced or implied by this design.
 > No new cryptographic primitive and no new cryptographic library is
@@ -857,10 +858,15 @@ recorded *before* T remains unreadable.
   — the DH secrets are gone. Other pairs' traffic is untouched (mesh
   isolation).
 * **Within one live session: NO additional margin (partial, stated
-  plainly).** The mesh has no per-message ratchet; one live session key
-  opens every undelivered/recorded message of *that same* session for
-  that pair. Phase 3's conversation-granularity FS is inherited
-  unchanged. Per-message FS is a sender-key/ratchet property (§36).
+  plainly) on mesh groups.** The mesh has no per-message ratchet; one live
+  session key opens every undelivered/recorded message of *that same*
+  session for that pair. Phase 3's conversation-granularity FS is
+  inherited unchanged.
+* **On sender-key (`senderkey-v1`) groups: per-message ratchet.** Each
+  message key derives from the sender's one-way HKDF chain (§36.2);
+  compromising a live chain reveals that sender's current-and-future
+  messages, not its past ones. This is per-message FS at the epoch
+  granularity, honestly stated.
 * **Removed member / forward direction:** see §25.2.
 * **Compromised endpoint (§5.8):** loses exactly {its open session keys,
   its screen, its decrypted history}; not closed sessions/epochs.
@@ -1111,6 +1117,16 @@ implementation; documented in [CONFIGURATION.md](CONFIGURATION.md)):
 | Epoch metadata retained | current + previous | §16.8; purge older |
 | History (group) | existing modes & caps | Off / session / encrypted; per-group records purged per retention |
 | Local metadata retention after defunct/dissolved | 24 h purge (mirror invite retention) | No stale-secret accumulation |
+| Sender-key skipped cache | `GROUP_SK_SKIPPED_MAX` = **64** / sender | §36.5 out-of-order bound; pruned oldest-first |
+| Sender-key pending frames | **16** / sender (≤ 64 sender buckets) | §36.5 GSK/SKMSG race buffer, bounded |
+| Receiver-chain state | `GROUP_SK_MAX_RECEIVER_STATE` = **64** total | Defensive cap on incoming chains |
+| Sender-key offline retry | **8** envelopes / member (FIFO) | Mirrors §29 offline bound |
+| Sealed-envelope cache | **64** / group | For async offline requeue; pruned oldest-first |
+| GSKREQ rate | `GROUP_SKREQ_RATE_OPS` = **4** / 10 s / (group, requester) | §41: key-pull abuse brake, both directions |
+| Sender-key pending buckets | `GROUP_SK_PENDING_BUCKETS` = **64** | Bounded GSK/SKMSG race buffer keys |
+| Sender-key pending per sender | `GROUP_SK_PENDING_PER_SENDER` = **16** | Bounded per-sender buffered frames |
+| Relay live clients | `RELAY_MAX_CONNECTIONS` = **1024** | §41: hard connection cap |
+| Relay connect rate | `RELAY_CONNECT_RATE_PER_SECOND` = **40** / burst **80** per IP | §41: per-source token bucket |
 
 **Why exactly 8 members:** (1) mesh arithmetic is quadratic —
 n(n−1)/2 links — and 8 keeps the worst case at 28 links / 7 sessions /
@@ -1205,36 +1221,132 @@ removal (§25.4).
 
 L8. **No forward-secrecy ratchet within a live session** (§24).
 
-## 36. Future sender-key architecture (DESIGN ONLY — not implemented)
+## 36. Sender-key architecture (Phase 7 — IMPLEMENTED)
 
-Motivation: mesh costs O(n) seals per message and O(n²) links; beyond
-~8 members this stops being "cheap and obvious". Sketch of the Phase 7
-direction (its own full design document required before any code):
+### 36.1 Overview and motivation
 
-* **Sender keys:** each member derives a per-sender symmetric chain key
-  (hash ratchet). Each message is sealed **once** under the sender's
-  current ratchet step — O(1) per message per sender.
-* **Distribution:** sender keys/epochs are delivered to members over the
-  *existing mesh links* (this is why 6A's mesh is the control channel
-  for 7's data channel — no alternate key-exchange system appears).
-* **Epochs:** the §16 model carries over unchanged; roster change ⇒
-  epoch leap ⇒ **immediate re-distribution of fresh sender keys** to the
-  surviving roster over fresh links. Removed members hold only dead-epoch
-  sender keys: useless by construction.
-* **Join:** new member receives *current-epoch* sender keys only;
-  ratchet gives no backward derivation (hash-chain one-wayness).
-* **Replay protection:** per-(sender, epoch, ratchet-step) windows
-  replace the §21.2 id-LRU for data frames; control frames stay mesh.
-* **Forward secrecy:** per-message-step ratcheting heals continuously —
-  strictly stronger than §24's session granularity.
-* **Migration:** §37.
-* **Hard requirements to accept this design later:** distribution acks
-  and bounded re-distribution storms; transcript hash-chaining for L1;
-  a threat-model *diff* against this document; the §38-class test
-  battery scaled to key-rotation races.
+Pairwise-mesh messaging (§17) costs O(n) seals per message and O(n²)
+links. Phase 7 introduces **sender keys** on opt-in `senderkey-v1`
+groups: each sender derives a per-sender symmetric **hash-ratchet chain**
+for the current (group, epoch), distributes it over the existing mesh,
+and seals each message **once** with the sender's current message key —
+O(1) per message per sender. Every authorized recipient holding that
+sender's chain opens the *same* ciphertext.
+
+No new cryptographic primitive and no new library is introduced: the
+Phase 3 stack (X25519 for the mesh distribution channel, HKDF-SHA256 for
+the chain, ChaCha20-Poly1305 for sealing) is reused verbatim, with an
+explicit domain-separation string `ghostlink/group/senderkey/v1`.
+
+### 36.2 The chain
+
+A sender-key chain is a one-way HKDF ratchet:
+
+```
+chain_key(n) ── KDF(ghostlink/group/senderkey/v1|msg|…) ──> message_key(n)
+     └── KDF(ghostlink/group/senderkey/v1|chain|…) ──> chain_key(n+1)
+```
+
+* Message-key derivation binds **group id, epoch, sender identity,
+  generation, and message index** (defense in depth on top of the AEAD
+  AAD).
+* The ratchet advances monotonically; a message key is used for exactly
+  one message (never reused).
+* One-wayness: `chain_key(n)` cannot recover `message_key(n-1)` — this
+  gives **per-message forward secrecy at the epoch granularity**: if a
+  live chain is compromised, the attacker learns that sender's
+  current-and-future message keys, not its past ones, and not other
+  senders' chains.
+
+### 36.3 Distribution
+
+* Sender keys are delivered only to **currently authorized** roster
+  members, over the **authenticated pairwise links** (§17.2) — never in
+  plaintext, never relay-readable.
+* A distribution is a `GSK` inner frame sealed over the pairwise link with
+  AAD `ghostlink/group-sk-key/v1|group|epoch|sender|recipient|gen`,
+  carrying the chain root (base64) plus generation and current index. It
+  is bound to group, epoch, sender, recipient and generation, so a
+  distribution minted for one pair/context can never be opened elsewhere.
+* Distribution is **generation-scoped**: each (group, epoch) mint is a new
+  generation; a distribution advertises the live index so a late/queued
+  recipient can replay the ratchet to catch up.
+* **Pull path:** a recipient that receives a message before it holds the
+  sender's chain sends a `GSKREQ` control frame over the mesh; the sender
+  answers with a fresh `GSK`.
+
+### 36.4 Epoch scoping
+
+The §16 epoch model is authoritative. A roster mutation (join/leave/
+remove/dissolve) bumps the epoch; every client **prunes** all sender
+chains pinned to any other epoch and mints/redistributes fresh chains at
+the new epoch. Consequences, deterministic:
+
+* a **removed** member never receives the new epoch's distributions
+  (roster-gated + relay ACL + no surviving link), and its stale old-epoch
+  chains are pruned from updated clients;
+* a **new** member receives only current-epoch chains; the ratchet gives
+  no backward derivation, so it cannot decrypt previous-epoch traffic;
+* stale/old-epoch `GSK`/`GSKMSG` frames are rejected.
+
+### 36.5 Replay protection and out-of-order delivery
+
+* Per-(sender, epoch, generation) the receiver tracks `last_seen`. A
+  message index `≤ last_seen` is a **replay** and is dropped.
+* **Bounded skipped-key cache**: when a message jumps ahead by ≤
+  `GROUP_SK_SKIPPED_MAX` (64), the intermediate message keys are derived
+  and cached for out-of-order delivery (10, 8, 9 pattern). The cache is
+  bounded and pruned oldest-first — never unbounded.
+* A jump **beyond** the skipped window is rejected (no unbounded
+  allocation) and triggers a fresh distribution request.
+* The id-LRU/gseq monotonic gates of §21/§22 still run on the decrypted
+  inner `GMSG`, so the sender-key path inherits the full replay/duplicate
+  defense layered on top of index monotonicity.
+
+### 36.6 Sender-key frames and envelope kinds
+
+New inner-frame types `GSK` (distribution) and `GSKREQ` (pull); new
+GROUP_FORWARD kinds `sk` (distribution envelope, public header carries
+`gen`) and `skmsg` (broadcast message, public header carries `gen, seq`).
+The broadcast `GMSG` inner frame uses the recipient sentinel `"*"` (not a
+real fingerprint); receivers cross-check it instead of their own. Control
+frames (`GSK`/`GSKREQ`) stay on the pairwise mesh; data frames (`skmsg`)
+are broadcast. Everything is validated eagerly and fails closed.
+
+### 36.7 Forward / backward secrecy — honest statement
+
+* **Removed member:** cannot obtain new-epoch sender keys (ACL + roster
+  gate + link teardown), cannot decrypt new-epoch ciphertext, cannot reuse
+  old-epoch keys for new-epoch messages. It *can* still decrypt anything
+  it received legitimately before its exclusion — that is unfixable.
+* **New member:** cannot decrypt previous-epoch messages; receives only
+  current-epoch chains.
+* **Compromised live chain:** exposes that sender's current-and-future
+  messages for the compromised epoch/generation, not its past messages,
+  and not other senders'. Rotation (epoch leap, reconnect, member change)
+  heals forward once the endpoint is clean.
+* Per-message forward secrecy is provided **within** the ratchet epoch;
+  the epoch itself is the other granularity, as in §24. No absolute or
+  memory-erasure guarantee is claimed (Python cannot guarantee secure
+  erasure; bytearrays are zeroized best-effort on teardown).
+
+### 36.8 Resource limits
+
+All remote-controlled sender-key state is bounded (see §32 additions):
+skipped-key cache ≤ 64/sender, pending buffered frames ≤ 16/sender (≤ 64
+sender buckets), receiver-chain state ≤ 64 total, offline retry queue ≤ 8
+envelopes/member, sealed-envelope cache ≤ 64/group.
 
 ## 37. Migration considerations
 
+* **Crypto-suite negotiation (Phase 7):** a group carries a
+  relay-authoritative `crypto_suite` field (`mesh-v1` default, or
+  `senderkey-v1`), minted at creation and advertised on redeem/attest/
+  roster. It is **additive and never downgraded silently**: an
+  established group whose authoritative suite differs from the locally
+  pinned one is marked suspect and refused, and `GROUP_FORWARD` kinds
+  from the "wrong" suite are dropped (a mesh GMSG on a sender-key group
+  is rejected, and vice-versa).
 * **Negotiation:** protocol v4 advertises group capability; all roster
   members must be ≥ v4 (attestation carries the version; mixed-version
   admissions are refused, never downgraded). A v4 group never silently
@@ -1308,6 +1420,112 @@ Implementation must deliver, at minimum:
 15. **Regression gates:** `pytest`, `ruff check`, `ruff format --check`,
     `mypy --strict`, `compileall`, `scripts/dev_check.sh` — all green,
     never weakened, no test deleted or skipped without a written reason.
+16. **Phase 7 sender-key (unit + loopback):** chain derivation binding
+    group/epoch/sender/gen/index; chain advancement; seal/open roundtrip;
+    out-of-order delivery via the bounded skipped cache; replay and
+    excessive-gap rejection; missing-key pull (`GSKREQ`); distribution
+    install and generation supersession; epoch pruning on every mutation;
+    removed-member new-epoch isolation; joiner no-history + current-epoch
+    reads; broadcast same-ciphertext O(1) proof; relay never sees
+    plaintext/chain-root; tampered/wrong-sender/wrong-epoch SKMSG
+    rejection; offline requeue after reconnect; suite negotiation +
+    no-downgrade; log/storage secret-hygiene; bounded resource tests.
+
+## 41. Reliability & adversarial hardening (Phase 8 — IMPLEMENTED)
+
+### 41.1 Recovery state machine
+
+`ghostlink/core/recovery.py` provides the single authoritative recovery
+authority:
+
+* :class:`RecoveryState` — `CONNECTED / DEGRADED / RECONNECTING /
+  RESYNC_REQUIRED / RECOVERING / READY / FAILED / CLOSED` with a closed,
+  deterministic transition table (illegal jumps raise
+  `IllegalRecoveryTransition`).
+* :class:`RecoveryCoordinator` — exactly-**one** in-flight operation per
+  key. `begin(op_key)` returns an exclusive `RecoveryLease` only when no
+  operation for that key is running; a competing resync / install /
+  reconnect for the same key is refused, not merely throttled. This
+  prevents the classic "competing recovery loop" failure.
+
+The group messaging service wires the coordinator into its resync path:
+at most one in-flight resync per group, guaranteed by lease, with the
+throttle map as a second (coarser) layer.
+
+### 41.2 Group resync model
+
+When a member detects an epoch gap, stale roster, invalid event, missing
+sender-key generation, incompatible suite, or a reconnect after a long
+offline period, it enters `RESYNC_REQUIRED`. It does **not** guess state.
+Recovery is:
+
+1. re-attest + fetch the authoritative `GROUP_STATE` snapshot,
+2. verify epoch monotonicity (never regress; a gap marks the record
+   suspect and refuses sends until repaired),
+3. verify the owner-signed roster/event tail against the pinned owner key,
+4. reconcile sender-key state (prune old epochs, request distributions),
+5. only then transition `RECOVERING → READY`.
+
+The relay is never trusted blindly: mismatched crypto-suite, regressed
+epoch, or unverifiable signatures fail closed and mark the record suspect.
+
+### 41.3 Sender-key recovery hardening
+
+* Missing/skipped/stale/future/wrong-epoch/wrong-sender/wrong-recipient/
+  wrong-group/replayed/corrupted `GSK` frames are rejected or ignored
+  deterministically; a duplicate `GSK` does not reset a live chain.
+* `GSKREQ` is rate-limited per (group, requester) in **both** directions
+  (outbound pulls and responding distributions) so a hostile peer cannot
+  force an amplification loop (`GROUP_SKREQ_RATE_OPS`).
+* The skipped-key cache, pending-frame buffer, offline retry queue and
+  sealed-envelope cache are all bounded (§32). Sender-key stores remain
+  memory-only, epoch-scoped, generation-scoped, never logged, never
+  persisted; teardown zeroizes `bytearray` slots best-effort (Python
+  cannot guarantee secure memory erasure — stated honestly).
+
+### 41.4 Relay abuse controls
+
+The relay stays a lightweight in-memory routing/authority component. On
+top of the §32 forward/event brakes it now enforces:
+
+* a hard concurrent-connection cap (`RELAY_MAX_CONNECTIONS`), and
+* a per-source-IP connection token bucket
+  (`RELAY_CONNECT_RATE_PER_SECOND` / `RELAY_CONNECT_BURST`).
+
+Both are fail-closed, in-memory, and pruned on the sweep. No database,
+cloud, or web-service dependency is added.
+
+### 41.5 Log & exception hygiene
+
+`ghostlink/core/logging.py` now carries a `SecretRedactor` + `RedactingFilter`
+backstop: exact secrets registered at runtime (e.g. invite tokens at mint
+time) and well-known token shapes are scrubbed from every log record,
+even if a code path slips. Sender-key material is never logged or placed
+in exceptions; `senderkeys.py` contains no logger at all. Regression
+tests inject secrets and assert absence.
+
+### 41.6 Known limitations
+
+* Relay connection limits are per-process and per-source-IP; a truly
+  distributed flood across many IPs is bounded only by the global cap.
+* Log redaction is a backstop, not a substitute for the code discipline
+  that already avoids logging secrets.
+* As elsewhere in GhostLink: no anonymity, no endpoint-compromise
+  protection, no absolute guarantees — only the precise, tested claims
+  above.
+
+## 42. Adversarial validation (Phase 8 — IMPLEMENTED)
+
+Deterministic fuzz/property tests cover packet decoding, inner-frame
+validation, group ids, identity fingerprints, invite parsing, and
+sender-key frame parsing (fixed seeds, bounded runs, fail-closed only).
+Adversarial loopback tests over the real relay cover stale/wrong-epoch/
+duplicate `GSK`, out-of-order and future-epoch sender-key messages,
+`GSKREQ` abuse, concurrent membership + message flows, epoch-advance
+determinism, group resync, and removed-member send refusal. Crash
+consistency tests prove atomic storage survives interruption (leftover
+temp files ignored, corrupt active files surface typed errors, identity
+stores survive restart).
 
 ## 39. Implementation checklist
 

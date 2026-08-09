@@ -334,3 +334,17 @@ class TestSubcommandParsing:
         with pytest.raises(SystemExit) as captured:
             parse_args(argv)
         assert captured.value.code == 2
+
+
+class TestDeveloperPortalArgs:
+    def test_developer_portal_actions_parse(self) -> None:
+        from ghostlink.cli.arguments import parse_args
+
+        for action in ("login", "logout", "whoami", "doctor"):
+            options = parse_args(["developer", action])
+            assert options.developer_action == action
+        assert parse_args(["developer", "device", "register"]).developer_key_action == "register"
+        assert parse_args(["developer", "project", "list"]).developer_key_action == "list"
+        assert parse_args(["developer", "credential", "status"]).developer_key_action == "status"
+        options = parse_args(["developer", "whoami", "--relay", "http://127.0.0.1:8788"])
+        assert options.relay_url == "http://127.0.0.1:8788"

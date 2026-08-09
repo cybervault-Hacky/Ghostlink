@@ -1,760 +1,686 @@
-<div align="center">
+# GhostLink
 
-# GHOSTLINK
+> A secure, developer-first platform for controlled device connectivity, scoped
+> developer APIs, Termux integration, and production-grade operations — built on
+> a terminal-only, encrypted messaging foundation.
 
-**Terminal-native encrypted communication for Termux and Linux.**
-
-Private conversations. End-to-end encryption. No browser required.
-
-[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Platform-Termux%20%7C%20Linux-22D3EE)](https://termux.dev/)
-[![Release](https://img.shields.io/badge/Release-Phase%206C-A78BFA)](docs/ROADMAP.md)
-[![Tests](https://img.shields.io/badge/Tests-1283%20passing-34D399)](docs/DEVELOPMENT.md)
-[![License](https://img.shields.io/badge/License-MIT-34D399)](LICENSE)
-
-<img src="docs/assets/home.svg" alt="GhostLink home screen" width="860"/>
-
-</div>
+**Version:** `0.17.0` · **Phase:** 15 — Production Operations & Platform Maturity · **Status:** Final Development Release
 
 ---
 
-## Contents
+## Badges
 
-[Design principle](#design-principle) · [What is GhostLink?](#what-is-ghostlink) ·
-[Architecture](#architecture-overview) · [Current release](#current-release-phase-6c) ·
-[Screenshots](#screenshots) · [Feature matrix](#feature-matrix) ·
-[Security model](#security-model) · [What the relay can see](#what-the-relay-can-see) ·
-[Identity & invites](#identity-and-invites) · [File transfer](#file-transfer) ·
-[Group messaging](#group-messaging) · [Installation](#installation-termux) ·
-[First run](#first-run) · [CLI reference](#cli-reference) ·
-[Chat commands](#terminal-chat-commands) · [Project structure](#project-structure) ·
-[Development](#development) · [Testing](#testing) · [Roadmap](#roadmap) ·
-[Security disclaimer](#security-disclaimer) · [Responsible use](#responsible-use) ·
-[License](#license)
+| | |
+|---|---|
+| **Python** | `>= 3.11` |
+| **Frontend** | React · Vite · Vitest |
+| **Database** | SQLite (dev) · PostgreSQL (production) |
+| **License** | MIT |
 
----
-
-## Design principle
-
-<div align="center">
-
-**The terminal is the interface.<br/>
-The cryptographic session is the security boundary.**
-
-</div>
-
-GhostLink has no GUI layer, no web client, and no background service. Every
-capability is reachable from a terminal, and every security property is
-defined by the cryptographic session between endpoints — not by trusting the
-infrastructure that routes traffic between them.
+> Badges for third-party services (CI, coverage, download counts) are omitted
+> because those services are not actively connected in this environment. This
+> is intentional — nothing here is claimed that is not verified.
 
 ---
 
 ## What is GhostLink?
 
-GhostLink is a **terminal-only encrypted communication platform** written in
-Python, designed primarily for **Termux on Android** with first-class support
-for **desktop Linux**. Everything runs as a single CLI/TUI process: launch
-it, talk, transfer, and exit. Nothing keeps running after you quit.
+GhostLink is a **terminal-only encrypted messenger** designed for **Termux on
+Android** and **desktop Linux**, extended with a **production-grade developer
+platform**: a scoped, authenticated, revocable **Developer API v1**, a
+**Termux-friendly developer CLI**, device identity, project binding, credential
+lifecycle, and a full operations layer (PostgreSQL backend, migrations,
+encrypted backups, health/readiness, structured observability, and fail-closed
+production configuration).
 
-GhostLink provides:
+It exists to give developers a **controlled, least-privilege way** to connect
+their Termux/device tooling to a backend they own, without exposing permanent
+secrets or weakening the security model of the underlying messenger.
 
-- **Encrypted one-to-one conversations** with identity-bound sessions
-- **Ephemeral identities** — local Ed25519 keypairs, no accounts
-- **One-time invites** enforced by the relay authority
-- **Encrypted file transfer** with integrity verification and resume
-- **Encrypted group conversations** (up to 8 members) with pairwise-mesh encryption
-- **Terminal-native controls** — menus, chat commands, live dashboards
-- **Relay-based rendezvous** — a reference relay ships with the project
+**Clearly separated components:**
 
-GhostLink does **not** require — and deliberately is not:
-
-| Not required | Not part of the project |
-| --- | --- |
-| an Android APK | a GUI application |
-| Android Studio | a browser client |
-| Flutter | an Electron application |
-| a phone number | a web application |
-| an email address | a background daemon |
-| a permanent account | a phone/email-based messenger |
+- **Messenger core** — the terminal-only encrypted chat (rooms, groups,
+  file transfer, ephemeral identity, one-time invites, relay).
+- **Developer Portal** (`portal/`) — the web console (white-first, Apple-inspired
+  glassmorphism UI) plus the backend that owns identity and credentials.
+- **Developer API** (`/api/v1/developer/*`) — the scoped, authenticated API.
+- **Termux CLI** — `ghostlink developer …` plus operational commands.
+- **Security & operations layer** — the Owner boundary, rate limiting, secret
+  scrubbing, backups, health checks, and release tooling.
 
 ---
 
-## Architecture overview
+## Key Features
 
-Two endpoints run GhostLink; a relay routes opaque frames between them.
-Encryption happens **at the endpoints** — the relay receives ciphertext only.
+### Developer Platform
+- Versioned Developer API (`/api/v1/developer/*`)
+- Scoped credentials (least-privilege scope set)
+- Project binding and project isolation
+- Device identity and device management
+- API activity (metadata-only) and security events
+- Access/refresh token rotation and credential revocation
+
+### Security
+- Short-lived access tokens (15 min) and rotating refresh tokens (single-use)
+- Hashed token/secret storage (never plaintext)
+- Server-side scope, device, and project binding
+- Distributed rate limiting (in-memory + PostgreSQL), fail-closed in production
+- CSRF protection, session revocation, password-change session invalidation
+- Security-event severity model (INFO → CRITICAL) and secret scrubbing
+- **Single-Owner boundary** (see [Security Model](#security-model))
+
+### Termux
+- `developer login / logout / whoami / device / project / credential /
+  security-status / doctor`
+- Fail-closed on network failures and malformed responses
+- Secure local token store (0600/0700, atomic, symlink-refusing)
+
+### Infrastructure
+- PostgreSQL adapter + SQLite development backend
+- Numbered, checksummed migrations with advisory-lock serialisation
+- Transactions, connection pooling, timeouts, future-schema rejection
+- Health/liveness/readiness endpoints
+- Encrypted, checksummed backups and a deterministic disaster-recovery drill
+
+### Operations
+- Structured JSON logging with request correlation and secret scrubbing
+- `ghostlink production check` (PASS/WARN/FAIL readiness)
+- `ghostlink release check | verify | manifest` (fail-closed release gates)
+- Docker, nginx, systemd, and PostgreSQL deployment artifacts
+- Gunicorn WSGI entrypoint for production
+
+---
+
+## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph A["Endpoint A"]
-        direction TB
-        A1["User A terminal"] --> A2["GhostLink CLI/TUI"]
-        A2 --> A3["Encrypted session"]
+flowchart TB
+    subgraph Clients
+        Termux[Termux CLI]
+        Dev[Developer / Tooling]
     end
-    subgraph B["Endpoint B"]
-        direction TB
-        B3["Encrypted session"] --> B2["GhostLink CLI/TUI"]
-        B2 --> B1["User B terminal"]
+    subgraph API
+        DevAPI[Developer API v1]
+        Auth[Authentication / Authorization]
+        Device[Device Identity]
+        Project[Project Binding]
+        Scope[Scope Enforcement]
+        Rate[Rate Limiting]
     end
-    A3 -- "opaque ciphertext frames" --> R["Relay"]
-    R -- "opaque ciphertext frames" --> B3
+    subgraph Backend
+        Portal[Developer Portal / WSGI]
+        DB[(PostgreSQL / SQLite)]
+        Ops[Backup · Health · Observability]
+    end
+
+    Termux --> DevAPI
+    Dev --> DevAPI
+    DevAPI --> Auth --> Device & Project & Scope & Rate
+    Auth --> Portal
+    Portal --> DB
+    Portal --> Ops
 ```
 
-For groups, the sender encrypts **once per recipient** (pairwise fanout) and
-the relay forwards each sealed payload independently:
+> This is a conceptual diagram. GhostLink does not invent services or
+> integrations beyond what is implemented in the repository.
 
-```mermaid
-flowchart LR
-    S["Sender<br/>(member A)"] -- "payload sealed for B" --> R["Relay"]
-    S -- "payload sealed for C" --> R
-    S -- "payload sealed for D" --> R
-    R --> B["Member B"]
-    R --> C["Member C"]
-    R --> D["Member D"]
+---
+
+## Security Model
+
+This is the strongest part of the product. Every claim below is enforced by
+automated tests.
+
+### Authentication
+
+- **Access tokens** — short-lived (15 minutes), issued only through the pairing
+  flow, sent via `Authorization: Bearer`.
+- **Refresh tokens** — long-lived (30 days) but **single-use**: each refresh
+  rotates the token, so a replayed refresh token **fails closed**.
+- **Revocation** — revoking a credential or device invalidates its tokens;
+  revoked credentials can never mint new tokens.
+- **Sessions** — absolute + idle expiry, CSRF-protected, revocable; password
+  changes revoke all sessions.
+
+### Authorization
+
+Authorization is **derived server-side** from the authenticated identity, never
+from client-supplied ownership fields.
+
+```
+credential → developer → project → device → scope
 ```
 
-Key properties:
+Each request is bound to a scoped credential, a project, and (where relevant) a
+device. Least privilege is enforced on every endpoint.
 
-- The **relay routes traffic**; it does not receive plaintext, keys, message
-  ids, or sequence numbers.
-- **Encryption is performed at the endpoints** (X25519 + HKDF-SHA256 +
-  ChaCha20-Poly1305), and keys never leave them.
-- **Group messages use pairwise fanout**: each authorized recipient receives
-  an independently sealed ciphertext. Groups are capped at **8 members**, so
-  a message is encrypted at most 7 times.
-- The relay sees connection metadata, including IP addresses. **GhostLink
-  does not claim the relay hides IP addresses.**
+### Device Identity
 
-Layers, bootstrap, async model, and error taxonomy are documented in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the group security design
-lives in [docs/GROUPS.md](docs/GROUPS.md).
+GhostLink uses a **cryptographically random device identity** issued at pairing
+time. It deliberately **does not** collect or rely on:
 
----
+- IMEI, SIM data, contacts, precise location, biometrics, or other unnecessary
+  Android identifiers.
 
-## Current release: Phase 6C
+### Owner Boundary
 
-**Phase 6C — Group Messaging + Pairwise-Mesh Encryption** is the latest
-implemented phase (version `0.7.0`).
+**GhostLink has exactly one Owner.** This is a permanent, non-negotiable
+invariant.
 
-- Group messaging is implemented on top of the Phase 6B group lifecycle.
-- Every recipient receives an **independently sealed ciphertext** — there is
-  **no shared group key**.
-- Encryption reuses the existing Phase 3 primitives verbatim: **X25519** key
-  agreement, **HKDF-SHA256** derivation, **ChaCha20-Poly1305** AEAD. No new
-  primitives were introduced.
-- Pairwise group links are **epoch-bound** and identity-bound; membership is
-  controlled by **signed roster events**, and roster epochs increment on
-  every membership change.
-- The relay forwards opaque `GROUP_FORWARD` envelopes only — it validates
-  framing and roster ACLs, never content.
-- Groups are limited to **8 members** (fanout ≤ 7 encryptions per message).
+- Developer accounts **cannot become Owner**.
+- Developer accounts **cannot transfer ownership**.
+- There is **no** `owner:*`, `root:*`, or `admin:*` scope available to developer
+  accounts.
+- The Owner cannot be created, duplicated, escalated to, or deleted through any
+  developer API, CLI command, database migration, backup restore, or pairing
+  path.
 
-Sender-key encryption is **not implemented**. It remains a documented future
-hardening direction (see [docs/ROADMAP.md](docs/ROADMAP.md) and
-[docs/GROUPS.md](docs/GROUPS.md)), not a property of the current release.
+`TestSingleOwnerInvariant` is a dedicated regression suite that enforces this
+permanently.
+
+### Scope Security
+
+Developer credentials carry a **least-privilege scope set**. Privileged
+owner/root/admin scopes are not available. Requested scopes are validated
+server-side; unknown or privileged scopes are rejected.
 
 ---
 
-## Screenshots
+## Developer API
 
-Every image below is generated from the **live application** by
-`scripts/generate_screenshots.py` — real handshakes, real frames, real
-transfers over an in-process relay. Nothing is mocked or hand-drawn.
+Namespace: `/api/v1/developer/*`
 
-### Terminal interface
+| Method | Endpoint | Scope |
+|---|---|---|
+| POST | `/api/v1/developer/auth/pair-begin` | — |
+| POST | `/api/v1/developer/auth/pair-approve` | — |
+| POST | `/api/v1/developer/auth/token` | — |
+| POST | `/api/v1/developer/auth/refresh` | — |
+| GET | `/api/v1/developer/devices` | `device:read` |
+| POST | `/api/v1/developer/devices/{device_id}/revoke` | `device:write` |
+| GET | `/api/v1/developer/projects` | `project:read` |
+| GET | `/api/v1/developer/credentials` | `credential:read` |
+| POST | `/api/v1/developer/credentials/{credential_id}/rotate` | `credential:rotate` |
+| POST | `/api/v1/developer/credentials/{credential_id}/revoke` | `credential:read` |
+| GET | `/api/v1/developer/security/activity` | `security:read` |
+| GET | `/api/v1/developer/health` | — |
 
-<div align="center">
-<img src="docs/assets/home.svg" alt="GhostLink home screen" width="860"/>
-</div>
+**Authentication:** `Authorization: Bearer YOUR_ACCESS_TOKEN`
 
-### Secure messaging
+**Error envelope:**
 
-| Encrypted chat (real scripted session) | Relay dashboard (real probe) |
-| :---: | :---: |
-| <img src="docs/assets/chat.svg" alt="GhostLink encrypted chat" width="420"/> | <img src="docs/assets/relay.svg" alt="GhostLink relay status dashboard" width="420"/> |
+```json
+{ "error": { "code": "unauthorized", "message": "…" } }
+```
 
-### Secure transfers
+**Behavior:** scoped access, project + device binding, rate limiting, request
+size limits, malformed-JSON fail-closed, and IDOR resistance. Replay and
+expired/revoked tokens are rejected.
 
-| File transfer (real scripted transfer) | One-time invite (real redemption) |
-| :---: | :---: |
-| <img src="docs/assets/transfers.svg" alt="GhostLink encrypted file transfer" width="420"/> | <img src="docs/assets/invites.svg" alt="GhostLink one-time invite redemption" width="420"/> |
-
-### Group messaging
-
-The group chat surface (`ghostlink group chat gl-group-…`) ships in Phase 6C.
-No screenshot of it is published yet — images in this README are only added
-when they can be generated from the real application.
-
----
-
-## Feature matrix
-
-| Capability | Status |
-| --- | :---: |
-| Terminal-only UI | ✅ |
-| Termux support | ✅ |
-| Linux support | ✅ |
-| Encrypted one-to-one messaging | ✅ |
-| Ephemeral identities | ✅ |
-| One-time invites | ✅ |
-| Encrypted file transfer | ✅ |
-| Resumable transfers | ✅ |
-| Group lifecycle (create/join/leave/remove/dissolve) | ✅ |
-| Group messaging | ✅ |
-| Pairwise-mesh group encryption | ✅ |
-| Shared sender keys | Planned (documented hardening candidate) |
-| Browser client | Out of scope — terminal-only by design |
-| GUI / Electron application | Out of scope — terminal-only by design |
-| Android APK | Not part of the project |
-| Voice / video / screen sharing | Out of scope |
-
-Statuses reflect the implemented code and the roadmap in
-[docs/ROADMAP.md](docs/ROADMAP.md).
+> The endpoint set above is machine-verified against the live router by the API
+> contract tests (`test_api_contract.py`).
 
 ---
 
-## Security model
+## Termux Integration
 
-**Primitives (Phase 3).** Key agreement uses ephemeral **X25519** bound to
-the handshake transcript; session keys are derived with **HKDF-SHA256**;
-every message, chunk, and group payload is sealed with
-**ChaCha20-Poly1305**. A fresh session key is derived per conversation and
-again after every reconnect. Keys live in process memory only and are
-overwritten before release — they never touch disk.
-
-**Identity (Phase 5).** Each installation holds a local ephemeral **Ed25519**
-identity keypair. Public identity keys are bound into session handshakes and
-group rosters; a substituted key fails the session loudly.
-
-**Group encryption (Phase 6C).** For a group of N members, the sender creates
-**independently authenticated ciphertext for each authorized recipient** over
-pairwise links. Groups hold at most **8 members**, so the maximum fanout is
-**7 recipient encryptions per sender message**.
-
-Every sealed group payload is cryptographically bound to its context:
-
-- **Group binding** — ciphertext is tied to the group id.
-- **Epoch binding** — ciphertext is tied to the roster epoch; old-epoch
-  traffic drains within a bounded window, then fails.
-- **Sender binding** — payloads authenticate the sending identity.
-- **Recipient binding** — a payload sealed for one member cannot
-  authenticate for another.
-- **AEAD authentication** — tampering, truncation, and forgery fail
-  decryption; failures are never silent.
-- **Replay protection** — message-id LRU deduplication plus bounded
-  sequence cursors; duplicates are re-acknowledged, never re-delivered.
-- **Roster authorization** — only active members of the current epoch may
-  send; membership changes commit only with valid signatures.
-
-**What the security model does not provide.** GhostLink makes no claims of
-anonymity, untraceability, IP hiding, or protection against traffic
-analysis. It does not protect you from a compromised endpoint, and it does
-not make you invisible to network observers.
-
-> **The relay is not an anonymity network.**
-
----
-
-## What the relay can see
-
-GhostLink is explicit about the relay's visibility. Content confidentiality
-is end-to-end; connection metadata is not hidden.
-
-| The relay **can** observe | The relay **cannot** read |
-| --- | --- |
-| Connection metadata (who connects, when) | Plaintext messages |
-| IP addresses of connecting clients | Session keys |
-| Timing of traffic | Private identity keys |
-| Traffic volume | File contents |
-| Group / session metadata (ids, epochs, membership events) | Decrypted group messages |
-| Connection state (whether a peer is connected) | Any cryptographic secret |
-
-The relay can also refuse or delay service. From
-[docs/GROUPS.md](docs/GROUPS.md) §28.5: *"The relay routes opaque ciphertext
-and sees connection/group metadata. It cannot read messages or keys. It can
-observe IP addresses, timing, and traffic volume, and can refuse or delay
-service."* If relay metadata matters to you, run your own relay and use
-`wss://` — network-level visibility is out of scope for GhostLink's design.
-
----
-
-## Identity and invites
-
-**Identity is local and ephemeral.**
-
-- A fresh **Ed25519 keypair** is generated on your device (stored `0600`);
-  the private key is never displayed, never logged, and never leaves the
-  device.
-- You get a short handle (e.g. `GL-7K3M`) and an optional nickname — nothing
-  else. **No email, no phone number, no account.**
-- Each identity has a verification fingerprint
-  (`GLFP-XXXX-XXXX-XXXX`) derived from the public key. Compare fingerprints
-  with your peer over a trusted out-of-band channel (`/fingerprint` inside
-  the chat) for stronger authentication.
-
-**Invites are one-time, relay-enforced tokens.**
-
-- `ghostlink invite create` mints a CSPRNG token and prints a
-  `gl://join/<token>` link; tokens are never re-displayed
-  (`invite list` / `invite info` show metadata only).
-- Expiration runs on the relay's monotonic clock.
-- Redemption is **atomic**: two peers racing for the same invite produce
-  exactly one winner.
-- The creator can **revoke** an invite at any time; the relay fails closed on
-  unknown, expired, revoked, or already-used tokens.
-
-Invite links are **terminal artifacts**. They are not browser URLs — typing
-one into a browser does nothing, and GhostLink never pretends otherwise.
-
----
-
-## File transfer
-
-Files travel through the same encrypted session, with their own safeguards:
-
-- **Peer approval first** — a sealed manifest (name, size, chunk geometry,
-  SHA-256 — never your local path) is offered; no bytes move before the
-  receiver accepts.
-- **Per-transfer encryption** — each transfer derives its own HKDF sub-key
-  from the session key; every chunk is AEAD-sealed with
-  `transfer_id|chunk_number` as associated data.
-- **Integrity verification** — the completed file is SHA-256-checked against
-  the manifest **before publication**; on mismatch the partial file is
-  deleted and both sides are informed.
-- **Pause / resume / cancel** — mid-flight, by either side.
-- **Connection-loss recovery** — the receiver's verified-chunk bitmap drives
-  the resume; verified chunks are never retransmitted.
-- **Hostile filename protection** — remote names are sanitized (separators,
-  unicode lookalikes, device names, length); no traversal, no absolute
-  paths, no silent overwrites.
-- **Bounded resources** — caps on file size, concurrency, chunk size,
-  retries, expiry, and temporary storage quota.
-
-Verified files land atomically in `~/Download/GhostLink` by default.
-
----
-
-## Group messaging
-
-Groups are private, invite-only, capped at **8 members** (the cap is enforced
-by the relay authority, not the UI). The workflow:
-
-1. The **owner creates** the group (`ghostlink group create`), proving
-   possession of their identity key; the relay mints the `gl-group-…` id.
-2. **Members join** through an authorized group invitation
-   (`gl://join/…`, owner-minted).
-3. **Signed roster events** establish membership — owner-signed
-   admissions/removals/dissolutions, self-signed leaves; a candidate can
-   never sign their own way in.
-4. The **epoch increments** on every committed membership change; clients
-   cannot pick, skip, or roll back epochs.
-5. The **sender encrypts per recipient** — one sealed payload per authorized
-   member, over identity-bound pairwise links.
-6. The **relay forwards opaque payloads** after framing/ACL checks.
-7. Each **recipient decrypts only their own payload**, cross-checking group,
-   epoch, sender, and recipient bindings.
-8. **Removed members cannot participate in future epochs** — they hold no
-   new-epoch links, and joiners gain no history.
-
-Delivery is reported per recipient (`delivered k/m`); the interface never
-claims full delivery for a partial fanout. Open the group chat with:
+GhostLink ships a Termux-friendly CLI. Verify commands locally with
+`ghostlink developer --help`.
 
 ```bash
-ghostlink group chat gl-group-XXXX-XXXX-XXXX
+ghostlink developer login
+ghostlink developer logout
+ghostlink developer whoami
+ghostlink developer device register
+ghostlink developer device list
+ghostlink developer device revoke
+ghostlink developer project list
+ghostlink developer project use
+ghostlink developer credential status
+ghostlink developer security-status
+ghostlink developer doctor
+```
+
+Operational commands available on a host with the portal backend:
+
+```bash
+ghostlink production check
+ghostlink release check
+ghostlink release verify
+ghostlink release manifest
+```
+
+**Local token storage:** the CLI stores access/refresh tokens in a local store
+with restrictive file permissions (0600/0700), atomic writes, symlink refusal,
+schema versioning, and corruption detection. It never stores the permanent API
+credential after one-time issuance.
+
+**Failure handling:** network failures, DNS/timeouts, and malformed or partial
+2xx responses **fail closed** — they are never treated as successful
+authentication. HTTP 401/403/429/500/503 produce clear, safe, actionable errors.
+
+---
+
+## Database
+
+### Development — SQLite
+The default backend for local development, tests, and Termux: a thread-safe
+SQLite adapter with foreign keys enabled and transactional migrations.
+
+### Production — PostgreSQL
+A first-class `psycopg3` + `psycopg_pool` adapter with:
+
+- connection pooling (min/max, connect/statement/idle timeouts)
+- numbered, **checksummed** migrations with advisory-lock serialisation
+- future-schema and corrupted-checksum **rejection** (fail closed)
+- transaction rollback and concurrent-write safety
+- PostgreSQL-persisted distributed rate limiting
+
+**Verification status:** the SQLite adapter and the PostgreSQL adapter logic are
+tested. **PostgreSQL runtime integration is environment-gated** — it must be
+verified against a real PostgreSQL instance before production deployment (the
+CI `postgres-integration` job runs it). This limitation is not hidden.
+
+---
+
+## Backup & Disaster Recovery
+
+```bash
+ghostlink backup create
+ghostlink backup verify
+ghostlink backup list
+ghostlink backup restore   # dry-run by default; --apply only into an isolated DB
+```
+
+- Encrypted (authenticated ChaCha20-Poly1305) and checksum-verified backups
+- Manifest with schema version, timestamp, and checksum
+- Restore into an **isolated/fresh database** only; never automatic or
+  destructive
+- **Critical invariant:** restore never reactivates revoked credentials or
+  sessions, and never creates an Owner — enforced by the deterministic DR drill
+  (`test_dr_drill.py`).
+
+Recovery assumptions: the backup key (when encryption is enabled) is required to
+verify/decrypt; a restore is never a substitute for verifying backups.
+
+---
+
+## Production Deployment
+
+Available deployment artifacts:
+
+| Artifact | Path |
+|---|---|
+| Dockerfile (prod) | `deployment/docker/Dockerfile` |
+| Dockerfile (dev) | `deployment/docker/Dockerfile.dev` |
+| Docker Compose (dev) | `deployment/docker/docker-compose.yml` |
+| Docker Compose (prod overlay) | `deployment/docker/docker-compose.prod.yml` |
+| Nginx reverse proxy | `deployment/nginx/ghostlink.conf` |
+| systemd unit | `deployment/systemd/ghostlink.service` |
+| PostgreSQL notes | `deployment/postgres/README.md` |
+| Environment templates | `deployment/env/*.example` |
+
+**Architecture:**
+
+```
+Internet → HTTPS (nginx) → Gunicorn → GhostLink WSGI app → PostgreSQL
+```
+
+Production runs the WSGI app under **gunicorn** (never the dev server), as a
+non-root user, with a read-only filesystem, dropped capabilities, and a
+healthcheck.
+
+> **Public production deployment has not been performed from this development
+> environment.** Deployment artifacts are implemented and statically verified;
+> Docker runtime and PostgreSQL runtime verification are environment-gated.
+
+---
+
+## Configuration
+
+GhostLink supports three environments: `development`, `staging`, `production`.
+
+**Production is fail-closed.** It rejects:
+- SQLite as the production database
+- in-memory rate limiting
+- insecure cookies (`PORTAL_SECURE_COOKIES=false`)
+- wildcard `ALLOWED_HOSTS`
+- the development session secret
+- development email configuration
+- a non-HTTPS `PUBLIC_BASE_URL`
+- missing required production secrets
+
+Configuration categories include: database (`DATABASE_URL`, `DB_POOL_*`,
+`DB_*_TIMEOUT`), rate limiting (`RATE_LIMIT_BACKEND`), sessions, cookies, hosts
+(`ALLOWED_HOSTS`, `TRUSTED_PROXIES`), SMTP, public URL, proxy trust, backup
+encryption (`BACKUP_ENCRYPTION_KEY`), and connection pools.
+
+Use the `.example` templates in `deployment/env/`. **Never commit a real `.env`.**
+
+---
+
+## Observability
+
+- Structured JSON logging (or text) with a **safe metadata allow-list**
+- Request correlation (`X-Request-ID`)
+- Lifecycle events (startup, shutdown, migration, backup)
+- Security-event severity (`INFO` → `CRITICAL`) and categories
+- Defensive **secret scrubbing** of secret-shaped values in free-form text
+- Health endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health/live` | Process is alive (no DB dependency) |
+| `GET /health/ready` | DB connectivity + migrations + required production config |
+| `GET /health` | Safe operational summary |
+
+Logs never contain passwords, tokens, credentials, pairing codes, session
+secrets, database/SMTP passwords, encryption keys, or raw Authorization headers.
+
+---
+
+## Frontend
+
+The Developer Portal (`portal/web`) is a **white-first, Apple-inspired, premium
+glassmorphism** interface with a subtle antigravity particle background,
+restrained indigo accent, and strong accessibility.
+
+Verified qualities:
+- Loading, empty, and error states on async pages with retry actions
+- Accessibility roles (`role=status`, `role=alert`), keyboard navigation,
+  visible focus, reduced-motion support
+- **No tokens in `localStorage`/`sessionStorage`** — session cookies only
+- Production build (`npm run build`) and tests (`npm test`)
+
+Pages: Landing, Dashboard, Developer API, Devices, Credentials, Projects,
+Sessions, Security, Activity, API Activity, Settings, Sign In / Sign Up /
+Verify.
+
+---
+
+## CLI
+
+| Command | Purpose |
+|---|---|
+| `host` / `join` / `invite` / `group` | Encrypted rooms, groups, and one-time invites |
+| `identity` | Local ephemeral identity |
+| `relay-status` / `session` | Network / session dashboards |
+| `doctor` / `security-status` | Environment & security diagnostics |
+| `developer` | Developer-API operations (Termux) |
+| `production check` | Production readiness validation |
+| `release check / verify / manifest` | Release verification |
+| `backup create / verify / list / restore` | Backup & disaster recovery |
+| `db status / migrate / verify` | Database operations |
+| `system health / readiness` | Operational probes |
+| `security-audit` | Offline deterministic security audit |
+
+---
+
+## Project Structure
+
+```
+ghostlink/               # CLI / messenger core (terminal-only)
+├── ghostlink/           #   package (messaging, groups, transfer, transport, CLI)
+├── portal/              # Developer Portal
+│   ├── backend/         #   WSGI backend, database, ops
+│   └── web/             #   React frontend
+├── deployment/          # Docker, nginx, systemd, PostgreSQL, env templates
+├── docs/                # Security, operations, runbook, API, recovery docs
+├── scripts/             # dev/security/release gates, secret scan, docker check
+├── tests/               # Python test suite
+├── pyproject.toml       # packaging + tool config
+├── CHANGELOG.md
+├── LICENSE              # MIT
+└── README.md
 ```
 
 ---
 
-## Installation: Termux
+## Installation
 
-GhostLink requires **Python 3.12 or newer** (Python 3.11 is not supported).
+**Requirements**
+
+- Python `>= 3.11`
+- Node.js + npm (for the portal frontend)
+- Optional: PostgreSQL (production), Docker (container runtime)
+
+**Clone**
 
 ```bash
-pkg update
-pkg install -y python git
-
 git clone https://github.com/cybervault-Hacky/Ghostlink.git
 cd Ghostlink
-
-python --version          # must report 3.12+
-pip install -r requirements.txt
 ```
 
-Or run the idempotent bootstrap, which performs the same steps:
+**Python environment**
 
 ```bash
-bash scripts/termux_setup.sh
-```
-
-Launch:
-
-```bash
-python ghostlink.py
-```
-
-Runtime dependencies are minimal: `rich` and `simple-term-menu` for the
-interface, `cryptography` for the audited X25519 / ChaCha20-Poly1305 /
-Ed25519 primitives. Nothing is rooted, and nothing keeps running after exit.
-
----
-
-## Installation: Linux
-
-Use your distribution's Python as long as it is **3.12 or newer**; check
-first:
-
-```bash
-python3 --version         # must report 3.12+
-```
-
-Then clone and install:
-
-```bash
-git clone https://github.com/cybervault-Hacky/Ghostlink.git
-cd Ghostlink
-
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
-Launch:
+**Frontend**
 
 ```bash
-python ghostlink.py
-```
-
-Optionally install GhostLink as a command:
-
-```bash
-pip install .             # provides the `ghostlink` command
-ghostlink
+cd portal/web
+npm install
+cd ../..
 ```
 
 ---
 
-## First run
-
-A complete first conversation, step by step:
-
-1. **Start a relay** (or use one you trust):
-
-   ```bash
-   python -m ghostlink.transport.relay.server --port 8787
-   ```
-
-2. **Create and host a room** in a second terminal:
-
-   ```bash
-   ghostlink host --relay ws://127.0.0.1:8787 --as Nova
-   ```
-
-   This prints the room id (e.g. `gl-room-ABCD-EFGH-JKMN`) and opens the
-   chat. Alternatively mint a one-time invite:
-   `ghostlink invite create --expires 10m --relay ws://127.0.0.1:8787`.
-
-3. **Share the room id or invite link** with your peer through a trusted
-   channel. Links are terminal artifacts — say them, message them, don't
-   post them publicly.
-
-4. **The peer joins**:
-
-   ```bash
-   ghostlink join gl-room-ABCD-EFGH-JKMN --relay ws://127.0.0.1:8787 --as Ravi
-   # or, with an invite:
-   ghostlink join gl://join/… --relay ws://127.0.0.1:8787
-   ```
-
-5. **Verify before you trust.** Both sides see the same safety code after the
-   handshake — compare it out-of-band once. For stronger authentication,
-   compare identity fingerprints with `/fingerprint`.
-
-6. **Chat.** Type messages; `/help` lists every command.
-
-7. **Transfer files if needed** — `/send <file>` offers an encrypted
-  transfer; the peer approves it before any bytes move.
-
-8. **Create a group if needed** — `ghostlink group create --name <name>`,
-   then `ghostlink group invite` and `ghostlink group chat`.
-
-Menu navigation: **↑/↓** or **j/k** to move, **Enter** to select, **q** to
-quit. When input is piped, the menu automatically becomes a numbered prompt.
-
----
-
-## CLI reference
-
-Every command below is defined by the argument parser in
-`ghostlink/cli/arguments.py`.
-
-| Command | Description |
-| --- | --- |
-| `ghostlink` | Launch the interactive menu |
-| `ghostlink host` | Create a room and a first invite, then display both; with `--relay` opens the encrypted chat |
-| `ghostlink join <gl-room-…\|gl://join/…>` | Join a room or redeem an invite, then chat |
-| `ghostlink identity` | Show your local identity (handle, fingerprint, nickname) |
-| `ghostlink identity fingerprint` | Print only the identity fingerprint |
-| `ghostlink identity nickname <name>` | Set the nickname your peers see |
-| `ghostlink invite create` | Mint a one-time `gl://join/…` invite |
-| `ghostlink invite list` | List your invites (metadata only — never tokens) |
-| `ghostlink invite info <gi_…>` | Inspect one invite (metadata only) |
-| `ghostlink invite revoke <gi_…>` | Revoke an invite (relay-authoritative) |
-| `ghostlink group create --name <name>` | Create a group (up to 8 members) |
-| `ghostlink group list` | List your groups (default group action) |
-| `ghostlink group info <gl-group-…>` | Show roster, epoch, and signed events |
-| `ghostlink group invite <gl-group-…>` | Mint a group invite link (owner only) |
-| `ghostlink group join <gl://join/…>` | Join a group via invite |
-| `ghostlink group leave <gl-group-…>` | Leave a group permanently |
-| `ghostlink group remove <gl-group-…> <GLFP-…>` | Remove a member (owner only) |
-| `ghostlink group dissolve <gl-group-…>` | Dissolve a group (owner only) |
-| `ghostlink group sync <gl-group-…>` | Re-sync the roster from the relay |
-| `ghostlink group host <gl-group-…>` | Stay online and countersign admissions (owner) |
-| `ghostlink group chat <gl-group-…>` | Open the encrypted group conversation |
-| `ghostlink relay-status` | Probe the relay and render the live status dashboard |
-| `ghostlink session` | Session dashboard: history, rooms, invites |
-| `ghostlink doctor` | Read-only environment diagnostics |
-
-Common options (where applicable): `--relay URL`, `--as NAME`,
-`--expires DURATION` (`900`, `30s`, `5m`, `1h`), `--uses N`,
-`--name NAME`, `--no-chat`.
-
-Global flags:
-
-| Flag | Effect |
-| --- | --- |
-| `--version` | Print the version banner and exit |
-| `--config FILE` | Use an alternate configuration file |
-| `--data-dir DIR` | Redirect state and logs for this run |
-| `--theme NAME` | Color theme: `phantom` (default), `emerald`, `ember`, `mono` |
-| `--debug` | Debug Mode: verbose logging and tracebacks |
-| `--no-color` | Plain output (also honours `NO_COLOR`) |
-| `--doctor` | Run diagnostics and exit (same as the `doctor` command) |
-
----
-
-## Terminal chat commands
-
-Verified against the chat surfaces in `ghostlink/ui/chat.py` and
-`ghostlink/ui/group_chat.py`.
-
-**One-to-one chat**
-
-| Command | Description |
-| --- | --- |
-| `/help` | Show the command list |
-| `/info` | Session, encryption, and delivery statistics |
-| `/identity` | Your local identity — nickname, handle, fingerprint |
-| `/fingerprint` | Peer verification fingerprints (compare out-of-band) |
-| `/invite [list\|revoke <id>]` | Invite status for this chat, or manage invites |
-| `/clear` | Clear the screen and redraw the banner |
-| `/history` | Show messages retained this session |
-| `/export [file]` | Write retained history to a plaintext file |
-| `/send <file>` | Offer a file — encrypted, peer approves first |
-| `/transfers` | List every transfer with live progress and state |
-| `/transfer <id>` | Transfer details: progress, integrity, destination |
-| `/accept [id]` | Accept the latest (or given) incoming offer — `Y` works too |
-| `/reject [id]` | Decline an incoming offer — `N` works too |
-| `/pause <id>` | Pause an in-flight transfer |
-| `/resume <id>` | Resume a paused transfer (verified chunks are kept) |
-| `/cancel <id>` | Cancel a transfer; ids may be unique prefixes |
-| `/exit`, `/quit` | Close the session and leave |
-
-A trailing `\` continues a multi-line message; **↑** recalls input history.
-
-**Group chat**
-
-| Command | Description |
-| --- | --- |
-| `/help` | Show the command list |
-| `/info` | Group, epoch, encryption, and delivery statistics |
-| `/members` | Roster with per-member pairwise-link state |
-| `/fingerprint` | Member verification fingerprints (compare out-of-band) |
-| `/delivery` | Recent per-recipient delivery states |
-| `/invite` | Mint a group invite link (owner only) |
-| `/leave` | Leave this group permanently |
-| `/history` | Show messages retained this session |
-| `/export [file]` | Write retained history to a plaintext file |
-| `/quit`, `/exit` | Close the group chat |
-
----
-
-## Project structure
-
-```
-Ghostlink/
-├── ghostlink.py            # direct-launch entry point
-├── ghostlink/              # the package
-│   ├── assets/             # ASCII branding + packaged default configuration
-│   ├── cli/                # argument parsing, subcommands, entry point
-│   ├── config/             # TOML loading, strict validation, manager
-│   ├── constants/          # metadata, file/env names — single source of truth
-│   ├── core/               # environment detection, logging, bootstrap, app loop
-│   ├── exceptions/         # GhostLinkError hierarchy + panel renderer
-│   ├── groups/             # Phase 6B/6C: roster authority, signed events, epochs,
-│   │                       #   pairwise-mesh links, sealed frames, group messaging
-│   ├── identity/           # Phase 5: ephemeral Ed25519 identity (GL-…, GLFP-…)
-│   ├── invites/            # Phase 5: one-time invites — tokens, relay authority,
-│   │                       #   registry, redemption, terminal panels
-│   ├── messaging/          # Phase 3: key exchange, AEAD frames, delivery lifecycle,
-│   │                       #   chat session orchestration, history, receipts, typing
-│   ├── models/             # frozen data models (environment, room, invite, settings)
-│   ├── services/           # DI container, session lifecycle, rooms & invites
-│   ├── storage/            # atomic JSON + in-memory backends, storage manager
-│   ├── transfer/           # Phase 4: encrypted file transfer — manifests, chunking,
-│   │                       #   integrity, resume, sanitized storage, progress
-│   ├── transport/          # Transport ABC, connection state machine, heartbeat,
-│   │                       #   RFC 6455 WebSocket, relay protocol v4 (client/server)
-│   ├── ui/                 # console, themes, menu, chat surfaces, components,
-│   │                       #   screens, dashboards, charts
-│   └── utils/              # XDG paths, text helpers
-├── docs/                   # ARCHITECTURE · CONFIGURATION · DEVELOPMENT · GROUPS · ROADMAP
-├── scripts/                # dev_check.sh · generate_screenshots.py · termux_setup.sh · run.sh
-└── tests/                  # pytest suite — 1283 passing tests
-```
-
----
-
-## Development
-
-GhostLink targets **Python 3.12+**. Developer setup:
+## Local Development
 
 ```bash
-git clone https://github.com/cybervault-Hacky/Ghostlink.git
-cd Ghostlink
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"        # pytest, ruff, mypy
+# 1. environment
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# 2. frontend deps
+(cd portal/web && npm install)
+
+# 3. configuration
+cp deployment/env/.env.development.example .env   # dev defaults
+
+# 4. database + migrations (SQLite dev backend)
+python -m ghostlink db migrate
+
+# 5. backend (dev WSGI server)
+python -m portal_server --db portal.db
+
+# 6. frontend dev server
+cd portal/web && npm run dev
 ```
 
-The full quality gate is `scripts/dev_check.sh`, which runs — in order —
-byte-compilation (`compileall`), **Ruff** lint, **Ruff** format
-verification, **mypy --strict**, the **pytest** suite, and `--version` /
-`--doctor` smoke checks:
-
-```bash
-scripts/dev_check.sh
-```
-
-Individual checks:
-
-```bash
-pytest tests/                  # test suite
-ruff check ghostlink tests ghostlink.py
-ruff format --check ghostlink tests ghostlink.py
-mypy --config-file pyproject.toml
-python -m compileall -q ghostlink tests ghostlink.py
-```
-
-Regenerate the documentation screenshots from the live application:
-
-```bash
-python scripts/generate_screenshots.py
-```
-
-| Document | Contents |
-| --- | --- |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, bootstrap, async model, error taxonomy |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every configuration key and precedence rule |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Dev setup, quality gate, contribution patterns |
-| [docs/GROUPS.md](docs/GROUPS.md) | Group security design and implementation notes |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Phase plan and explicit non-goals |
+> Development mode uses the safe dev defaults (SQLite, in-memory rate limiter,
+> dev email adapter). Production uses the fail-closed environment.
 
 ---
 
 ## Testing
 
-The suite currently reports **1283 passed, 1 skipped** (verified
-2026-08-08). Run it with:
-
 ```bash
-pytest tests/
+pytest
+scripts/dev_check.sh
+scripts/security_check.sh
+scripts/release_check.sh
+scripts/scan_secrets.py
+scripts/docker_check.py
 ```
 
-Coverage spans the whole stack, including:
+Frontend:
 
-- **Crypto** — key exchange, HKDF derivation, AEAD sealing, context binding
-- **Messaging** — session lifecycle, delivery states, ordering, receipts, typing
-- **Transport** — RFC 6455 framing, loopback, connection state machine, heartbeats
-- **Relay** — server, client, endpoint, routing, protocol versions
-- **Invites** — tokens, expiration, atomic redemption, relay authority, e2e
-- **Identity** — keypairs, fingerprints, nicknames, chat binding
-- **Transfers** — manifests, chunking, integrity, resume, storage hygiene
-- **Groups** — ids, events, frames, authority, registry, mesh, lifecycle,
-  relay e2e, messaging e2e
-- **CLI** — argument parsing and end-to-end command runs against a live relay
-- **Security hygiene** — secret-leak audits of logs and local stores
-- **Integration** — full two-party conversations, invite redemptions, file
-  transfers, and eight-member group fanout over a real in-process relay
+```bash
+cd portal/web
+npm test
+npm run build
+```
+
+The final release (0.17.0) test suite records **1733 passed, 13 skipped**; the
+13 skips are environment-gated PostgreSQL runtime tests (no live server in this
+environment). For the authoritative current count, run `pytest` locally.
 
 ---
 
-## Roadmap
+## Release Process
 
-GhostLink ships in deliberate, self-contained phases.
+```bash
+ghostlink production check    # PASS/WARN/FAIL readiness; non-zero on mandatory failure
+ghostlink release check       # deterministic release gates
+ghostlink release verify      # same, non-zero on failure
+ghostlink release manifest    # machine-readable release manifest
+```
 
-| Phase | Scope | Status |
-| --- | --- | --- |
-| 1 | Foundation — UI, configuration, environment, logging, diagnostics | ✅ Implemented |
-| 2 | Secure networking — WebSocket transport, relay, rooms, invites, heartbeats | ✅ Implemented |
-| 3 | Secure messaging — E2E encryption, identity-bound sessions, receipts | ✅ Implemented |
-| 4 | Secure file transfer — chunking, integrity, resume, hostile-name safety | ✅ Implemented |
-| 5 | Ephemeral identity & one-time invites | ✅ Implemented |
-| 6A | Group security design ([docs/GROUPS.md](docs/GROUPS.md)) | ✅ Design complete |
-| 6B | Group lifecycle — membership, signed roster events, epochs | ✅ Implemented |
-| 6C | Group messaging + pairwise-mesh encryption | ✅ Implemented (current) |
-| 6D | Rich communication — replies/edits/reactions, friend system, editable settings | Planned |
-| 7 | Hardening & polish — security review, offline queue design, localization | Planned |
+Releases are **fail-closed**: version mismatch, dirty tree, secrets, failed
+security audit, failed tests, failed frontend build, failed package build, or
+invalid migration checksum all block the release. The manifest reports version,
+phase, commit SHA, build timestamp, Python version, package/frontend/migration
+versions, dependency-lock state, security-check state, test count, and build
+state.
 
-The Phase 6A design documents sender keys as the Phase 7 hardening
-candidate; they are not part of any implemented phase.
-
-[docs/ROADMAP.md](docs/ROADMAP.md) is the authoritative roadmap, including
-what is explicitly out of scope (GUI/web clients, federated public rooms,
-voice/video).
+**A release command never deploys anything automatically.**
 
 ---
 
-## Security disclaimer
+## CI/CD
 
-GhostLink is a security-focused open-source project. It is **not** a
-guarantee of anonymity or perfect security, and it should not be treated as
-one.
+Workflow definitions exist for `test`, `security`, `build`, and `release` in
+`.github/workflows/`. They cover unit + integration tests, a PostgreSQL service,
+ruff, mypy, compileall, frontend tests + build, secret scan, security audit,
+package build + wheel inspection, and migration verification. The release
+workflow requires explicit approval and never deploys automatically.
 
-Real-world security depends on factors outside the protocol:
-
-- **Endpoint integrity** — a compromised device exposes everything the app
-  can access.
-- **Correct configuration** — for example, `wss://` relays beyond local
-  development.
-- **Trusted verification** — safety codes and fingerprints only help when
-  compared over a genuine out-of-band channel.
-- **A secure operating environment** — OS, terminal, and storage hygiene.
-- **Relay availability and honesty** — the relay can refuse or delay
-  service; relay-authoritative state (invites, rosters) is volatile by
-  design.
-- **Implementation correctness** — bugs happen; the codebase is open for
-  review and improvement.
-
-GhostLink minimizes application-level identity (no accounts, no email, no
-phone) and keeps keys off disk, but it makes no anonymity or
-untraceability claims. Evaluate it against your own threat model.
+> **Status:** the workflow files cannot currently be pushed to the remote
+> because the connected GitHub App token lacks the `workflows` permission
+> (GitHub refuses to create/update workflow files without it). **CI is not
+> running remotely in this environment.** The files are preserved locally and
+> the offline quality gates are the deterministic verification path here.
 
 ---
 
-## Responsible use
+## Production Readiness
 
-GhostLink is intended for **legitimate private communication, research,
-development, and authorized security experimentation**.
+| Area | Status |
+|---|---|
+| Authentication | Verified |
+| Authorization | Verified |
+| Owner invariant | Verified |
+| Rate limiting | Verified |
+| Secret scanning | Verified |
+| Database migrations | Verified |
+| PostgreSQL adapter | Implemented |
+| PostgreSQL runtime | **Environment-gated** |
+| Docker | Static verified |
+| Docker runtime | **Environment-gated** |
+| HTTPS | Configured / documented |
+| Public deployment | **Not performed** |
+| Backup / restore | Verified |
+| Termux CLI | Verified |
+| Frontend build | Verified |
+| CI/CD | Environment / permission dependent |
 
-Users are responsible for complying with the laws and regulations that apply
-to them and for obtaining any permissions required in their environment.
-This project does not provide guidance for abuse, and encryption does not
-make any conduct lawful.
+---
+
+## Development Roadmap
+
+GhostLink shipped in 15 deliberate phases:
+
+| Phase | Focus |
+|---|---|
+| 1 | Foundation |
+| 2 | Secure Networking |
+| 3 | Secure Messaging |
+| 4 | Secure File Transfer |
+| 5 | Ephemeral Identity & One-Time Invites |
+| 6A–6D | Group Security, Lifecycle, Messaging, Rich Communication |
+| 7 | Sender-Key Hardening |
+| 8 | Reliability & Adversarial Validation |
+| 9 | Production Readiness & Release Engineering |
+| 10A–10B | Developer Accounts & Developer Portal |
+| 11 | Production Portal Hardening & Launch Readiness |
+| 12 | Developer API Platform & Termux Integration |
+| 13 | Production Infrastructure, Database & Deployment Hardening |
+| 14 | Public Production Launch & Reliability |
+| 15 | **Production Operations & Platform Maturity** |
+
+### Final Development Status
+
+**GhostLink development is complete through Phase 15.**
+
+Phase 15 is the **final planned development phase**. **There is intentionally no
+Phase 16.** Future repository activity is maintenance-only:
+
+- security patches
+- bug fixes
+- dependency updates
+- compatibility and performance fixes
+- operational improvements
+- documentation corrections
+
+These are maintenance work, **not** new numbered development phases.
+
+---
+
+## Known Limitations
+
+- **Public deployment:** not performed from this development environment.
+- **PostgreSQL runtime:** environment-gated; must be verified against a real
+  instance before production deployment.
+- **Docker / nginx runtime:** not executed here; artifacts are statically
+  validated.
+- **GitHub workflow delivery:** blocked by GitHub App `workflows` permission.
+- **Dependency advisories:** `npm audit` flags `react-router <7` and `vite <8`;
+  both require breaking major upgrades and are non-exploitable in this
+  deployment model (client-side SPA with no SSR; vite is build-time). Assessed
+  and documented in `docs/DEPENDENCIES.md`; not claimed as fixed.
+- **No automatic destructive rollback** — by design.
+
+---
+
+## Security Policy
+
+GhostLink takes security seriously. If you discover a security issue:
+
+- **Do not** publicly exploit or disclose it in a way that harms users.
+- **Do not** publish credentials, tokens, or private material.
+- Report responsibly by contacting the maintainers through the repository's
+  available security/issue mechanism.
+
+See [docs/SECURITY.md](docs/SECURITY.md) for the security model and
+[docs/INCIDENT_RESPONSE.md](docs/INCIDENT_RESPONSE.md) for operational incident
+procedures.
+
+---
+
+## Contributing
+
+1. Fork the repository and create a feature branch.
+2. Make your changes.
+3. Run the quality gates: `pytest`, `ruff`, `mypy --strict`, `compileall`,
+   `scripts/security_check.sh`, and the frontend `npm test` + `npm run build`.
+4. Open a pull request.
+
+Security-sensitive changes (authentication, authorization, the Owner boundary,
+crypto, secret handling) require extra review and must not weaken existing
+controls.
 
 ---
 
 ## License
 
-GhostLink is released under the [MIT License](LICENSE).
+Licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
 
-© 2026 cybervault-Hacky
+---
+
+## Final Status
+
+- **Version:** 0.17.0
+- **Final phase:** 15 — Production Operations & Platform Maturity
+- **Development roadmap:** complete through Phase 15 (no Phase 16)
+- **Public production deployment:** not performed
+- **Maintenance mode:** active for security patches, bug fixes, and dependency
+  updates
+
+GhostLink is released as a final, frozen development product. It is **not**
+claimed to be "100% secure," "unhackable," or "production-deployed" — those are
+not true, and this project does not make such claims.

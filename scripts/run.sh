@@ -7,7 +7,7 @@ PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
 
 PYTHON_BIN="$(command -v python3 || command -v python)"
 if [[ -z "${PYTHON_BIN}" ]]; then
-    echo "GhostLink requires Python 3.12+ but no interpreter was found." >&2
+    echo "GhostLink requires Python 3.11+ but no interpreter was found." >&2
     echo "On Termux run: pkg install python" >&2
     exit 1
 fi

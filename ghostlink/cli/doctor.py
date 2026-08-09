@@ -7,12 +7,15 @@ environment is fully supported, 3 when something needs attention.
 
 from __future__ import annotations
 
+from typing import Any
+
 from rich.console import Group
 from rich.text import Text
 
 from ghostlink.cli.arguments import CLIOptions
 from ghostlink.config.manager import ConfigOverrides, ConfigurationManager
 from ghostlink.constants.app import MIN_PYTHON
+from ghostlink.constants.net import DEFAULT_CRYPTO_SUITE, GROUP_CRYPTO_SUITES
 from ghostlink.core.environment import EnvironmentDetector
 from ghostlink.core.logging import get_logger
 from ghostlink.exceptions.base import ExitCode, GhostLinkError
@@ -41,6 +44,107 @@ def _python_row(environment: EnvironmentInfo, theme: ThemeSpec) -> tuple[str, Te
             theme=theme,
         )
     return "Python Runtime", Text.assemble(label, "  ", state)
+
+
+def _dependency_row(theme: ThemeSpec) -> tuple[str, Text]:
+    """Availability of the runtime crypto + rendering dependencies."""
+    missing: list[str] = []
+    try:
+        import importlib.metadata as _md
+
+        crypto_label = f"cryptography {_md.version('cryptography')}"
+    except Exception:
+        crypto_label = "missing"
+        missing.append("cryptography")
+    try:
+        import importlib.metadata as _md
+
+        rich_label = f"rich {_md.version('rich')}"
+    except Exception:
+        rich_label = "missing"
+        missing.append("rich")
+    try:
+        import importlib.metadata as _md
+
+        menu_label = f"simple-term-menu {_md.version('simple-term-menu')}"
+    except Exception:
+        menu_label = "missing"
+        missing.append("simple-term-menu")
+    tone = BadgeTone.ERROR if missing else BadgeTone.SUCCESS
+    label = f"{crypto_label} · {rich_label} · {menu_label}"
+    state = badge("OK" if not missing else f"Missing: {', '.join(missing)}", tone, theme=theme)
+    return "Dependencies", Text.assemble(label, "  ", state)
+
+
+def _crypto_backend_row(theme: ThemeSpec) -> tuple[str, Text]:
+    """The OpenSSL backend + the crypto suites GhostLink can offer."""
+    try:
+        from cryptography.hazmat.backends.openssl import backend
+
+        openssl = backend.openssl_version_text()
+        tone = BadgeTone.SUCCESS if openssl else BadgeTone.WARNING
+        label = openssl or "OpenSSL backend unavailable"
+    except Exception as exc:
+        tone = BadgeTone.ERROR
+        label = f"unavailable ({exc.__class__.__name__})"
+    suites = ", ".join(sorted(GROUP_CRYPTO_SUITES))
+    state = badge("Available", tone, theme=theme)
+    return "Crypto", Text.assemble(
+        f"{label}  · suites: {suites} (default {DEFAULT_CRYPTO_SUITE})", "  ", state
+    )
+
+
+def _storage_row(config: Any, theme: ThemeSpec) -> tuple[str, Text]:
+    """Data-directory presence, writability, and store-file permission checks.
+
+    Read-only: the doctor never creates or modifies user state.
+    """
+    data_dir = config.data_dir if config is not None else None
+    if data_dir is None:
+        return "Data Directory", Text("(unresolved)")
+    problems: list[str] = []
+    if not data_dir.exists():
+        problems.append("missing")
+    else:
+        import os
+
+        if not os.access(data_dir, os.W_OK):
+            problems.append("not writable")
+    if not problems:
+        state = badge("Healthy", BadgeTone.SUCCESS, theme=theme)
+    else:
+        state = badge("Needs attention", BadgeTone.WARNING, theme=theme)
+    return "Data Directory", Text.assemble(str(data_dir), "  ", state)
+
+
+def _developer_row(config: Any, theme: ThemeSpec) -> tuple[str, Text]:
+    """Developer-account storage & credential health (metadata only, no secret)."""
+    if config is None:
+        return "Developer account", Text("(unresolved)")
+    from ghostlink.developer.storage import DEV_DIR_NAME
+    from ghostlink.developer.validation import inspect_security
+
+    dev_dir = config.data_dir / DEV_DIR_NAME
+    try:
+        report = inspect_security(dev_dir)
+    except Exception:
+        return "Developer account", Text.assemble(
+            "unreadable", "  ", badge("Needs attention", BadgeTone.WARNING, theme=theme)
+        )
+    if not report.configured:
+        return "Developer account", Text.assemble(
+            "not configured", "  ", badge("OK", BadgeTone.INFO, theme=theme)
+        )
+    summary = []
+    if report.dir_secure:
+        summary.append("storage secure")
+    else:
+        summary.append("storage insecure")
+    if report.account_owner_mismatch:
+        summary.append("owner mismatch")
+    tone = BadgeTone.SUCCESS if report.healthy else BadgeTone.WARNING
+    state = badge("Configured", tone, theme=theme)
+    return "Developer account", Text.assemble("configured · " + "; ".join(summary), "  ", state)
 
 
 def run_doctor(options: CLIOptions) -> int:
@@ -128,7 +232,10 @@ def run_doctor(options: CLIOptions) -> int:
             "Configuration",
             Text.assemble(config_state, f"  {config.config_path}"),
         ),
-        ("Data Directory", Text(str(config.data_dir) if config_error is None else "(unresolved)")),
+        _storage_row(config if config_error is None else None, theme),
+        _developer_row(config if config_error is None else None, theme),
+        _dependency_row(theme),
+        _crypto_backend_row(theme),
     ]
 
     if config_error is not None:

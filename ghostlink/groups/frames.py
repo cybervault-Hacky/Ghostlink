@@ -34,11 +34,15 @@ from ghostlink.groups.models import validate_group_display_name
 
 
 class FrameType(str, Enum):
-    """Inner frame families (§18.1, §18.4)."""
+    """Inner frame families (§18.1, §18.4; Phase 7 adds sender-key frames)."""
 
     GMSG = "GMSG"
     GACK = "GACK"
     GREAD = "GREAD"
+    # Phase 7 sender-key control frames — these stay on the pairwise mesh
+    # (docs/GROUPS.md §36: "control frames stay mesh").
+    GSK = "GSK"  # sender-key distribution (chain root + gen + index)
+    GSKREQ = "GSKREQ"  # pull a fresh distribution from a sender
 
 
 REQUIRED_FIELDS: dict[FrameType, frozenset[str]] = {
@@ -47,13 +51,27 @@ REQUIRED_FIELDS: dict[FrameType, frozenset[str]] = {
     ),
     FrameType.GACK: frozenset({"v", "t", "group", "epoch", "from", "to", "id"}),
     FrameType.GREAD: frozenset({"v", "t", "group", "epoch", "from", "to", "upto"}),
+    FrameType.GSK: frozenset({"v", "t", "group", "epoch", "from", "to", "gen", "root", "index"}),
+    FrameType.GSKREQ: frozenset({"v", "t", "group", "epoch", "from", "to"}),
 }
 
 # KEX payloads ride the same GROUP_FORWARD envelope as sealed frames,
-# distinct from the sealed "msg" routing class.
+# distinct from the sealed "msg" routing class. Phase 7 adds:
+#   KIND_SK    — sender-key *distribution* (a GSK inner frame) whose public
+#                header carries the generation, sealed over a pairwise link.
+#   KIND_SKMSG — a sender-key-*sealed* GMSG broadcast whose public header
+#                carries {generation, index}; one ciphertext for the whole
+#                roster (O(1) seal per sender message).
 KIND_KEX: str = "kex"
 KIND_MSG: str = "msg"
-GROUP_FORWARD_KINDS: frozenset[str] = frozenset({KIND_KEX, KIND_MSG})
+KIND_SK: str = "sk"
+KIND_SKMSG: str = "skmsg"
+GROUP_FORWARD_KINDS: frozenset[str] = frozenset({KIND_KEX, KIND_MSG, KIND_SK, KIND_SKMSG})
+
+# The `to` fingerprint used in a *broadcast* sender-key GMSG inner frame.
+# It is not a real recipient; receivers cross-check this sentinel instead of
+# their own fingerprint (§ sender-key messaging is recipient-agnostic).
+GROUP_BROADCAST_RECIPIENT: str = "*"
 
 #
 # Since the sealed bytes are opaque, a KEX payload carries a small scheme
@@ -93,6 +111,10 @@ class GroupInnerFrame:
     display_name: str = ""
     text: str = ""
     ts: float = 0.0
+    # Phase 7 sender-key fields (GSK / GSKREQ only; empty otherwise).
+    gen: int = 0
+    root: str = ""
+    index: int = 0
 
 
 def _base_fields(
@@ -126,10 +148,31 @@ def gmsg_frame(
     display_name: str,
     text: str,
     ts: float,
+    broadcast: bool = False,
 ) -> bytes:
-    """Build a GMSG inner frame; validates eagerly, never crashes."""
+    """Build a GMSG inner frame; validates eagerly, never crashes.
 
-    fields = _base_fields(FrameType.GMSG, group_id, epoch, sender, recipient)
+    ``broadcast=True`` (sender-key mode) emits a recipient-agnostic frame
+    addressed to ``GROUP_BROADCAST_RECIPIENT`` — the same ciphertext is
+    fanned out to the whole roster and every receiver accepts it.
+    """
+
+    if broadcast:
+        if recipient != GROUP_BROADCAST_RECIPIENT:
+            raise GroupMessageError(
+                "A broadcast GMSG must target the broadcast recipient.",
+                hint="Sender-key frames are sealed once for the roster.",
+            )
+        fields = {
+            "v": 1,
+            "t": FrameType.GMSG.value,
+            "group": group_id,
+            "epoch": epoch,
+            "from": require_valid_fingerprint(sender, field="sender fingerprint"),
+            "to": GROUP_BROADCAST_RECIPIENT,
+        }
+    else:
+        fields = _base_fields(FrameType.GMSG, group_id, epoch, sender, recipient)
     if not is_valid_message_id(message_id):
         raise GroupMessageError(
             f"Inner-frame message id '{message_id}' is malformed.",
@@ -176,6 +219,41 @@ def gread_frame(group_id: str, epoch: int, sender: str, recipient: str, *, upto_
     if upto_gseq < 0:
         raise GroupMessageError("GREAD cursor must be ≥ 0.", hint="")
     fields["upto"] = upto_gseq
+    return json.dumps(fields, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def gsk_frame(
+    group_id: str,
+    epoch: int,
+    sender: str,
+    recipient: str,
+    *,
+    gen: int,
+    root: str,
+    index: int,
+) -> bytes:
+    """Build a GSK sender-key distribution inner frame (Phase 7).
+
+    ``root`` is the base64 chain root — a secret. This frame is always
+    sealed over an identity-bound pairwise link, so it never travels as
+    plaintext; only the link's AEAD envelope exposes it to the recipient.
+    """
+
+    fields = _base_fields(FrameType.GSK, group_id, epoch, sender, recipient)
+    if gen < 1:
+        raise GroupMessageError("GSK generation must be ≥ 1.", hint="")
+    if index < 1:
+        raise GroupMessageError("GSK index must be ≥ 1.", hint="")
+    fields["gen"] = gen
+    fields["root"] = root
+    fields["index"] = index
+    return json.dumps(fields, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def gskreq_frame(group_id: str, epoch: int, sender: str, recipient: str) -> bytes:
+    """Build a GSKREQ key-request inner frame (pull a fresh distribution)."""
+
+    fields = _base_fields(FrameType.GSKREQ, group_id, epoch, sender, recipient)
     return json.dumps(fields, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
@@ -229,7 +307,12 @@ def parse_inner_frame(data: bytes, *, max_bytes: int = GROUP_MSG_MAX_BYTES * 3) 
     if epoch < 1:
         raise GroupMessageError("Inner-frame epoch must be ≥ 1.", hint="")
     sender = require_valid_fingerprint(str(obj["from"]), field="sender fingerprint")
-    recipient = require_valid_fingerprint(str(obj["to"]), field="recipient fingerprint")
+    raw_to = str(obj["to"])
+    if frame_type is FrameType.GMSG and raw_to == GROUP_BROADCAST_RECIPIENT:
+        # Sender-key broadcast frame: recipient is the roster sentinel.
+        recipient = GROUP_BROADCAST_RECIPIENT
+    else:
+        recipient = require_valid_fingerprint(raw_to, field="recipient fingerprint")
     if frame_type is FrameType.GACK:
         message_id = str(obj["id"])
         if not is_valid_message_id(message_id):
@@ -243,6 +326,22 @@ def parse_inner_frame(data: bytes, *, max_bytes: int = GROUP_MSG_MAX_BYTES * 3) 
         if upto < 0:
             raise GroupMessageError("GREAD cursor must be ≥ 0.", hint="")
         return GroupInnerFrame(frame_type, group_id, epoch, sender, recipient, gseq=upto)
+    if frame_type is FrameType.GSK:
+        try:
+            gen = int(str(obj["gen"]))
+            index = int(str(obj["index"]))
+        except ValueError as exc:
+            raise GroupMessageError("GSK gen/index are not integers.", hint="") from exc
+        root = str(obj["root"])
+        if gen < 1 or index < 1:
+            raise GroupMessageError("GSK gen/index must be ≥ 1.", hint="")
+        if not (0 < len(root) <= 128):
+            raise GroupMessageError("GSK root is malformed.", hint="")
+        return GroupInnerFrame(
+            frame_type, group_id, epoch, sender, recipient, gen=gen, root=root, index=index
+        )
+    if frame_type is FrameType.GSKREQ:
+        return GroupInnerFrame(frame_type, group_id, epoch, sender, recipient)
     # GMSG
     message_id = str(obj["id"])
     if not is_valid_message_id(message_id):
@@ -436,11 +535,14 @@ class GroupMessageLedger:
 
 
 __all__ = [
+    "GROUP_BROADCAST_RECIPIENT",
     "GROUP_FORWARD_KINDS",
     "KEX_HELLO",
     "KEX_REPLY",
     "KIND_KEX",
     "KIND_MSG",
+    "KIND_SK",
+    "KIND_SKMSG",
     "DeliveryState",
     "FrameType",
     "GroupInnerFrame",
@@ -451,6 +553,8 @@ __all__ = [
     "generate_message_id",
     "gmsg_frame",
     "gread_frame",
+    "gsk_frame",
+    "gskreq_frame",
     "is_valid_message_id",
     "parse_inner_frame",
 ]

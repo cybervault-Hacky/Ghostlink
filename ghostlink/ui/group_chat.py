@@ -243,7 +243,10 @@ class GroupChatApp:
         grid.add_column(style="gl.muted", no_wrap=True)
         grid.add_column(style="gl.text", no_wrap=True)
         grid.add_row("Status:", state, "Latency:", latency)
-        grid.add_row("Encryption:", "E2E pairwise mesh", "Epoch:", str(record.epoch))
+        encryption = (
+            "E2E sender-key" if record.crypto_suite == "senderkey-v1" else "E2E pairwise mesh"
+        )
+        grid.add_row("Encryption:", encryption, "Epoch:", str(record.epoch))
         grid.add_row(
             "Group:",
             f"{record.name} ({record.group_id})",
@@ -337,6 +340,8 @@ class GroupChatApp:
             await self._cmd_invite(argument)
         elif command == "/leave":
             await self._cmd_leave()
+        elif command == "/security":
+            self._show_security()
         elif command == "/history":
             self._show_history()
         elif command == "/export":
@@ -358,6 +363,7 @@ class GroupChatApp:
             ("/delivery", "recent per-recipient delivery states"),
             ("/invite", "mint a group invite link (owner only)"),
             ("/leave", "leave this group permanently"),
+            ("/security", "encryption mode, sender-key and delivery state"),
             ("/history", "show messages retained this session"),
             ("/export [file]", "write retained history to a plaintext file"),
             ("/quit", "close the chat (you stay a member)"),
@@ -411,6 +417,49 @@ class GroupChatApp:
                 padding=(0, 2),
             )
         )
+
+    def _show_security(self) -> None:
+        """Security-relevant metadata (never any key material)."""
+        record = self._record()
+        suite = record.crypto_suite
+        if suite == "senderkey-v1":
+            mode = "E2E sender-key (O(1) per message)"
+            receiver_keys = self._service._sk.incoming_count()
+            detail = (
+                "Each sender broadcasts one ciphertext per message; the relay "
+                "routes it opaque. Sender keys are epoch-scoped and rotate on "
+                "every roster change; a removed member loses the new epoch's "
+                "keys, a joiner gains no past epoch."
+            )
+            key_line = f"{receiver_keys} incoming chain(s) held in memory"
+        else:
+            mode = "E2E pairwise mesh (per-recipient seal)"
+            receiver_keys = 0
+            detail = (
+                "Each message is sealed separately per recipient over an "
+                "identity-bound pairwise link; the relay routes opaque "
+                "ciphertext only."
+            )
+            key_line = "pairwise session keys only (no sender keys)"
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="gl.muted", no_wrap=True)
+        grid.add_column(style="gl.text")
+        grid.add_row("Group", f"{record.name} ({record.group_id})")
+        grid.add_row("Epoch", str(record.epoch))
+        grid.add_row("Encryption", mode)
+        grid.add_row("Crypto suite", suite)
+        grid.add_row("Members", f"{record.member_count()}/8")
+        grid.add_row("Key state", key_line)
+        self._console.print(
+            Panel(
+                grid,
+                title="[gl.title]Security status — no secrets shown[/]",
+                box=box.DOUBLE,
+                border_style="gl.accent",
+                padding=(0, 2),
+            )
+        )
+        self._print_system(detail, style="gl.muted")
 
     def _show_members(self) -> None:
         record = self._record()

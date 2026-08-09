@@ -136,6 +136,27 @@ class TestBannerAndCommands:
         matches = re.findall(r"GLFP-[0-9A-F]{4}", output)
         assert len(set(matches)) >= expected
 
+    def test_security_command_shows_suite_no_secrets(
+        self, console_manager: ConsoleManager, tmp_path: Path
+    ) -> None:
+        """Phase 7 /security renders suite state without ever leaking keys."""
+
+        async def scenario() -> None:
+            async with running_relay() as server:
+                owner, members, gid = await build_world(tmp_path, server.url, 2)
+                app = _app(console_manager, owner, gid, ["/security", None])
+                await app.run()
+                await owner.close()
+                await members[0].close()
+
+        run(scenario())
+        output = console_manager.export_text()
+        assert "Crypto suite" in output
+        assert "mesh-v1" in output  # default suite on a mesh group
+        assert "Security status" in output
+        # no secret material ever renders
+        assert "chain_root" not in output and "message_key" not in output
+
     def test_narrow_terminal_renders(self, tmp_path: Path) -> None:
         console = ConsoleManager(ThemeEngine().get("phantom"), record=True, width=44)
 

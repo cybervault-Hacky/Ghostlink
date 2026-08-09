@@ -232,7 +232,7 @@ built entirely on this foundation.
   failures, restart/defunct, storage corruption, log/store secret-hygiene
   audits, and full CLI end-to-end runs against a live relay
 
-## Phase 6C — Group Messaging + Pairwise-Mesh Encryption ✅ (latest implemented)
+## Phase 6C — Group Messaging + Pairwise-Mesh Encryption ✅
 
 **STATUS: IMPLEMENTED** — end-to-end group messaging exactly as
 docs/GROUPS.md specifies: pairwise mesh, no sender keys (Phase 7).
@@ -292,6 +292,173 @@ recipient; the relay routes opaque ciphertext envelopes only.
   hygiene, full eight-member loopback fanout, and the CLI/TUI surfaces
   against a live relay
 
+## Phase 7 — Sender-Key Hardening ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — O(1) group-message encryption on opt-in
+`senderkey-v1` groups, exactly as docs/GROUPS.md §36 specifies: a
+per-sender forward-evolving hash-ratchet chain per (group, epoch),
+distributed over the existing pairwise mesh, one ChaCha20-Poly1305 seal
+per sender message broadcast to the whole roster.
+
+- **Sender-key chains** reuse the Phase 3 stack only (X25519 for the mesh
+  distribution channel, HKDF-SHA256 for the one-way ratchet, ChaCha20-
+  Poly1305 for sealing) with the `ghostlink/group/senderkey/v1` domain
+  separation; message-key derivation binds group/epoch/sender/gen/index
+- **Distribution** is a `GSK` inner frame sealed over an identity-bound
+  pairwise link (AAD binds group/epoch/sender/recipient/gen), generation-
+  scoped, with a `GSKREQ` pull path; the relay never sees a chain key,
+  message key, or plaintext
+- **Epoch scoping** is authoritative: any roster mutation prunes every
+  old-epoch chain and mints + redistributes fresh ones; removed members
+  get no new-epoch keys, joiners get no history (one-way ratchet)
+- **Replay / out-of-order**: per-(sender, epoch, generation) index
+  monotonicity rejects replays; a bounded skipped-key cache (≤ 64/sender)
+  heals 10→8→9 delivery; jumps beyond the window are rejected, not
+  allocated; id-LRU + gseq gates still run on the decrypted frame
+- **Relay behavior** unchanged: routes opaque `sk`/`skmsg` envelopes, enforces
+  ACL/rate, never inspects content
+- **Suite negotiation**: relay-authoritative `crypto_suite` (`mesh-v1`
+  default for backward compatibility, `senderkey-v1` opt-in) minted at
+  creation and advertised on redeem/attest/roster; a mismatch on an
+  established group is refused (no silent downgrade)
+- **CLI/UI**: `ghostlink group create --crypto-suite senderkey-v1`, an
+  in-chat `/security` command, and suite-aware banners — no secrets shown
+- **Hygiene**: sender keys live in zeroizable `bytearray` slots in memory
+  only; never logged, stored, or in exceptions; honest §36.7 forward/
+  backward-secrecy statement (no overclaiming)
+- **New tests**: 17 sender-key unit tests (chain, window, distribution,
+  store) + 18 sender-key loopback e2e tests (fanout/broadcast, removal,
+  joiner isolation, reconnect, replay/tamper, offline retry, suite wiring,
+  relay-opaqueness) — full suite green at 1318 passing
+
+## Phase 8 — Reliability, Security Hardening & Adversarial Validation ✅
+
+**STATUS: IMPLEMENTED** — makes GhostLink substantially harder to break,
+corrupt, desynchronize, abuse, or silently fail, without adding features
+or new crypto.
+
+- **Recovery coordinator** (`ghostlink/core/recovery.py`): a single
+  authoritative `RecoveryState` machine (`CONNECTED/DEGRADED/RECONNECTING/
+  RESYNC_REQUIRED/RECOVERING/READY/FAILED/CLOSED`) with a closed
+  transition table, plus `RecoveryLease`-guaranteed **exactly-one in-flight
+  resync/install per group** — no competing recovery loops.
+- **Group resync hardening**: `RESYNC_REQUIRED` on epoch gap / stale roster
+  / invalid event / missing generation / incompatible suite; snapshot
+  verification, epoch monotonicity, owner-signed roster checks, sender-key
+  reconciliation; never guesses state, fails closed into suspect.
+- **Sender-key recovery hardening**: deterministic rejection of
+  stale/future/wrong-epoch/wrong-sender/duplicate/corrupted `GSK`;
+  bounded skipped-key + pending-buffer caches; a `GSKREQ` abuse brake
+  (both directions) prevents key-pull amplification.
+- **Relay abuse controls**: hard connection cap + per-source-IP connection
+  token bucket (in-memory, fail-closed, swept) on top of the existing
+  forward/event brakes.
+- **Log hygiene backstop**: a `SecretRedactor`/`RedactingFilter` scrubs
+  registered secrets + token shapes from every log record; sender-key code
+  contains no logger; regression tests inject secrets and assert absence.
+- **CLI/TUI diagnostics**: `ghostlink security-status` (read-only summary
+  of suite, identity, relay, groups — no secrets) and an extended
+  `--doctor` (dependency availability, OpenSSL backend, data-directory
+  health, crypto suites).
+- **Testing**: recovery state-machine + lease tests, deterministic fuzz/
+  property tests (packet decode, frames, ids, fingerprints, invites,
+  sender-key frames), crash-consistency tests, adversarial loopback tests
+  (stale/duplicate GSK, out-of-order & future-epoch messages, GSKREQ
+  abuse, concurrent membership, resync, relay abuse), plus CLI tests.
+- Full suite green at 1379 passing; no new cryptographic primitive.
+
+## Phase 9 — Production Readiness, Compatibility & Release Engineering ✅
+
+**STATUS: IMPLEMENTED** — makes GhostLink production-release ready without
+weakening the security model.
+
+- **Python compatibility (evidence-backed)**: the declared floor is now
+  **Python 3.11+** (`requires-python`, `MIN_PYTHON`), matching the syntax/
+  API the code actually uses and verified green on 3.11.2. A compatibility
+  matrix lives in [docs/COMPATIBILITY.md](COMPATIBILITY.md); the README,
+  Termux/Linux install instructions, `run.sh`, and `requirements.txt` no
+  longer overstate 3.12.
+- **Config & state migration**: `ghostlink/core/migration.py` introduces an
+  explicit schema version for config (`[meta].config_version`) and state
+  (`"v"` on each stored record). GhostLink **fails closed** on a document
+  written by a *newer* version rather than silently reinterpreting it; the
+  default config template now carries the version marker. Rules documented
+  (no silent data destruction, idempotent, atomic, clear status).
+- **Release tooling**: `scripts/release_check.sh` — a one-shot release
+  candidate gate (clean tree → version sync → compileall → ruff → format →
+  mypy → pytest → wheel+sdist build → archive inspection → clean-install
+  CLI smoke → secret scan → banned-claim scan). `scripts/scan_secrets.py` —
+  a deterministic offline secret-leak tripwire (PEM keys, invite tokens,
+  join links, key-shaped 64-hex in production source).
+- **Backup/recovery guidance**: [docs/BACKUP.md](BACKUP.md) separates
+  backupable metadata from sensitive key material and documents recovery.
+- **Compatibility & regression tests**: new coverage for the Python floor,
+  config/state migration (future-version fail-closed), package contents &
+  secret scan as part of the suite, protocol version / downgrade-attempt
+  rejection (unit + loopback), CLI exit codes, Ctrl+C (130), Termux path
+  detection, and read-only/malformed config handling.
+- Full suite green at 1416 passing; no new cryptographic primitive.
+
+## Phase 10A — Developer Account & Credential Infrastructure ✅
+
+**STATUS: IMPLEMENTED** — a local, production-grade Developer Account
+system that a future developer portal (Phase 10B) can authenticate against,
+without exposing the local secret. **Phase 10A is local-only: no website, no
+remote service, no secret upload, zero network requests.**
+
+- **`ghostlink/developer/`** module — CSPRNG credential generation
+  (`gl_dev_<key_id>_<secret>`, 256-bit secrets, never derived from
+  predictable identifiers), salted-HKDF-SHA256 verification material
+  (constant-time compare, never plaintext on disk), versioned + fail-closed
+  storage (atomic `0600`/`0700`, symlink-refusing).
+- **Lifecycle** — `ghostlink developer init | status | key create | key
+  list | key rotate | key revoke | export-info`; the raw key is shown once;
+  rotation is atomic; revocation is persistent and irreversible; bounded at
+  `MAX_ACTIVE_CREDENTIALS = 4`.
+- **Local abuse control** — in-memory rate limiting on verification,
+  thread-locked mutations, metadata-only audit logging with a redaction
+  backstop.
+- **Diagnostics** — `--doctor` and `security-status` report developer
+  account/credential health and metadata, never the secret.
+- **Documentation** — `docs/DEVELOPER_ACCOUNTS.md` (architecture, threat
+  model, Phase 10B contract) and `docs/SECURITY.md`.
+- **Tests** — 49 new tests (generation, uniqueness, verification,
+  revocation, rotation, atomic/corrupt/future-schema storage, permission &
+  symlink safety, redaction, rate limit, concurrency, network boundary,
+  CLI, doctor/security-status, packaging).
+- Full suite green at 1465 passing.
+
+## Phase 10B — Developer Portal ✅
+
+**STATUS: IMPLEMENTED** — a secure web application for GhostLink
+developers, built as a real, tested, security-focused portal (not a mock).
+
+- **Backend** (`portal/backend/portal_server/`): a dependency-light Python
+  WSGI app (stdlib + `cryptography`). PBKDF2 password hashing, HttpOnly/
+  SameSite session cookies with per-session CSRF, single-use hashed email
+  verification and password-reset tokens, rate limiting (IP + account),
+  metadata-only audit events, security headers.
+- **Credentials**: create / list / rotate / revoke / verify, reusing the
+  Phase 10A CSPRNG key generator; the secret is shown once and stored only
+  as salted verification material. Rotation and revocation are
+  authenticated, confirmed, atomic, and audited.
+- **MFA & WebAuthn**: TOTP (RFC 6238) with hashed recovery codes; passkey
+  (WebAuthn ES256) challenge + assertion verification. No biometric data is
+  ever collected or stored.
+- **Frontend** (`portal/web/`): React + TypeScript + Vite with a
+  white-first glassmorphism design system, an antigravity particle
+  background (respects `prefers-reduced-motion`), and protected routes for
+  dashboard, credentials, projects, sessions, activity, security, settings.
+- **Database**: SQLite (dev) with a PostgreSQL-ready schema; versioned
+  migrations via `schema_meta`.
+- **Tests**: 38 backend security tests (auth, authorization, credential
+  lifecycle, tokens, rate limits, MFA, WebAuthn, secret hygiene) + 4
+  frontend tests; full suite green at 1502 passing.
+- Docs: `docs/DEVELOPER_PORTAL.md`, `docs/API.md`, `docs/DEPLOYMENT.md`.
+- This is a local-first foundation; live email, full WebAuthn breadth, and
+  HTTPS deployment are documented production configuration, not shipped
+  live services.
+
 ## Phase 6D — Rich Communication
 
 - Friend system: adding, verifying safety numbers, blocking
@@ -299,12 +466,147 @@ recipient; the relay routes opaque ciphertext envelopes only.
 - Contact cards and room metadata panels
 - Settings screen becomes editable; notification center gains unread state
 
-## Phase 7 — Hardening & Polish
+## Phase 11 — Production Portal Hardening & Launch Readiness ✅
 
-- Full security review and threat-model document
-- Offline message queue and multi-device sync design
-- Localization framework activation (beyond `en`)
-- Plugin hooks for room automations
+**STATUS: IMPLEMENTED** — hardened the Phase 10B portal into a
+launch-ready architecture.
+
+- **Production configuration** (`portal_server/config.py`): an
+  environment-driven, fail-closed config layer (`APP_ENV` = development/
+  staging/production); production rejects development conveniences and
+  requires `SESSION_SECRET`, `DATABASE_URL`, `EMAIL_*`, and `WEBAUTHN_*`.
+- **Database** (`portal_server/db.py`): versioned, transactional
+  migrations (v1 schema + v2 indexes), foreign-key/uniqueness enforcement,
+  and future-schema fail-closed. Docs: `docs/DATABASE.md`.
+- **Authentication/session hardening**: idle + absolute session lifetime,
+  session rotation, password-change session invalidation, revoke-all.
+- **WebAuthn hardening**: single-use/expiring challenges and origin
+  validation; no biometric data ever collected or stored.
+- **Email abstraction** (`portal_server/emailing.py`): dev + SMTP providers.
+- **Security tooling**: `scripts/security_check.sh` (deterministic audit)
+  and metadata-only operational logging (`ghostlink.portal.request`).
+- **Docs**: `PRODUCTION_CONFIG.md`, `DATABASE.md`, `DISASTER_RECOVERY.md`,
+  `OPERATIONS.md`, `SECURITY_MODEL.md`; updated `API.md`, `DEPLOYMENT.md`,
+  `DEVELOPER_PORTAL.md`, `SECURITY.md`, `ARCHITECTURE.md`.
+- Full suite green at 1502+ portal-aware tests; no new crypto, no
+  payments, no telemetry.
+
+## Phase 12 — Developer API Platform & Termux Integration ✅
+
+**STATUS: IMPLEMENTED** — a narrowly scoped, authenticated, auditable,
+revocable developer API and a Termux client.
+
+- **Developer API** (`/api/v1/developer/*`): least-privilege scopes,
+  short-lived bearer access + rotating refresh tokens, cryptographically
+  random device identity, server-side project binding, persistent
+  credential/device revocation.
+- **Secure pairing**: short-lived, single-use, random pairing codes; the
+  permanent credential is revealed once and never stored by the CLI.
+- **Termux CLI**: `ghostlink developer login/logout/whoami/device/project/
+  credential/security-status/doctor`, with a 0600 local token store
+  (symlink-refusing, atomic, versioned, corruption-detected).
+- **Owner rule**: exactly one Owner; developer accounts can never become
+  Owner or transfer ownership; no owner scope/endpoint exists.
+- **Security**: metadata-only API activity; no token/credential logging;
+  network failure never treated as auth success; expanded security-check
+  coverage.
+- **Tests**: 24 new developer-API + store tests and a real-socket E2E
+  journey; full suite green at 1563 passing.
+- Docs: `API_V1.md`, `TERMUX_INTEGRATION.md`, `DEVICE_SECURITY.md`,
+  `PROJECTS.md`, `API_SECURITY.md`, `PAIRING.md`, `DEVELOPER_AUTH.md`.
+
+## Phase 13 — Production Infrastructure, Database & Deployment Hardening ✅
+
+**STATUS: IMPLEMENTED** — transforms the portal into a production-deployable
+infrastructure foundation while preserving Phases 1–12.
+
+- **PostgreSQL backend** — first-class `psycopg3` + `psycopg_pool` backend
+  (pooling, connect/statement/idle timeouts, transaction safety) with SQLite
+  retained for local/Termux.
+- **Migrations** — numbered, checksummed, advisory-lock-serialised,
+  future-version-rejected; `ghostlink db status|migrate|verify`.
+- **Distributed rate limiting** — `RateLimiter` interface with in-memory and
+  PostgreSQL backends; fail-closed for multi-process PostgreSQL.
+- **Production HTTP/deployment** — gunicorn + reverse proxy, HTTPS/HSTS,
+  trusted-proxy & Host validation, health/readiness/liveness, structured JSON
+  observability with request correlation and secret scrubbing.
+- **Backups & retention** — encrypted, checksummed, verifiable backups
+  (`ghostlink backup create|verify|list|restore`); bounded retention cleanup.
+- **CI/CD & supply-chain** — test/security/build/release workflows, Docker
+  images, secret + dependency audits, manual-approval release gate.
+- Docs: `PRODUCTION.md`, `DATABASE_PRODUCTION.md`, `MIGRATIONS.md`,
+  `BACKUPS.md`, `DISASTER_RECOVERY.md`, `OBSERVABILITY.md`, `RATE_LIMITING.md`,
+  `DEPLOYMENT.md`, `SECURITY_MODEL.md`, `OPERATIONS.md`, `CI_CD.md`.
+
+## Phase 14 — Public Production Launch & Reliability ✅
+
+**STATUS: IMPLEMENTED** — operational environment model, production config
+fail-closed, PostgreSQL production path (env-gated runtime), observability
+extensions, Termux reliability, owner-invariant regression suite, extended
+security tooling, frontend loading/error/empty + accessibility, and
+release/incident/runbook documentation.
+
+- **Environment model** — `development`/`staging`/`production` with fail-closed
+  validation; `.env.*.example` templates in `deployment/env/`.
+- **Production config** — rejects SQLite, memory rate limiting, insecure
+  cookies, wildcard hosts, dev email/secret, non-HTTPS `PUBLIC_BASE_URL`;
+  `DB_POOL_*`/`DB_*`, `BACKUP_ENCRYPTION_KEY`, `EMAIL_SMTP_USERNAME`.
+- **Observability** — `event`, `environment`, `error_class`, startup/shutdown
+  lifecycle events in structured JSON logs.
+- **Termux reliability** — client fails closed on malformed responses; clear
+  errors for 401/429/500/503/network.
+- **Owner invariant** — `TestSingleOwnerInvariant` permanent regression suite.
+- **Security tooling** — extended `scripts/security_check.py` (Docker, prod env,
+  CORS, CI auto-deploy) with tests.
+- **Frontend** — `Loading` (`role=status`), `ErrorState` (`role=alert`),
+  empty states, reduced-motion.
+- Docs: `PRODUCTION_RUNBOOK.md`, `INCIDENT_RESPONSE.md`, `RELEASE.md`,
+  `TERMUX.md`, `CHANGELOG.md`.
+
+## Phase 15 — Production Operations & Platform Maturity ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — operational tooling (production check, release
+management), security severity model, hardened secret scanning, deterministic
+DR drill, API contract, gated PostgreSQL integration suite, Docker static
+verification, concurrency/failure tests, and extended Owner-invariant tests.
+
+- **`ghostlink production check`** — PASS/WARN/FAIL readiness; non-zero on
+  mandatory failure; never prints secrets.
+- **`ghostlink release check|verify|manifest`** — fail-closed release gates and
+  a machine-readable manifest.
+- **Security severity model** — INFO/NOTICE/WARNING/HIGH/CRITICAL classification.
+- **Secret scanning hardened** — pairing codes, dk_ credentials, Bearer/JWT,
+  assigned secrets, DB-URL passwords; placeholder/example/test aware.
+- **Deterministic DR drill** — restore never reactivates revoked state or
+  creates an Owner; corruption/wrong-key/incomplete/schema tests.
+- **API contract** — machine-readable developer-API contract + stability tests.
+- **Gated PostgreSQL integration suite** (12 tests) — runs in CI; env-gated here.
+- **Docker static check** (`scripts/docker_check.py`) — validates all prod
+  Docker artifacts; runtime reported honestly.
+- **Concurrency/failure tests** — rate limits, rotation, backup, replay, DB
+  locked/duplicate/rollback.
+- **Extended Owner invariant** — project/device/credential/CLI/DB/restore paths.
+- **Observability** — `severity` field, security event emission, operational
+  event categories.
+- Docs updated: `PRODUCTION_RUNBOOK.md`, `RELEASE.md`, `OPERATIONS.md`,
+  `SECURITY_MODEL.md`, `CI_CD.md`, `DISASTER_RECOVERY.md`.
+
+### Planned (not started)
+
+- Live public deployment (not performed).
+
+## Roadmap complete at Phase 15
+
+**GhostLink's development roadmap is complete at Phase 15.** Phase 15 is the
+final development phase; Phase 16 is **not planned** and will not be created.
+
+Future work is maintenance, bug fixes, security patches, dependency updates,
+compatibility fixes, performance fixes, documentation corrections, and
+operational releases — **not additional development phases**.
+
+Historical "planned" ideas (offline message queue, multi-device sync,
+localization beyond `en`, plugin hooks) are intentionally **deferred and out of
+scope** for the shipped product; they are not scheduled development phases.
 
 ## Explicitly out of scope
 

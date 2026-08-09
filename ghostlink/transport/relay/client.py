@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
-from ghostlink.constants.net import PROTOCOL_VERSION
+from ghostlink.constants.net import DEFAULT_CRYPTO_SUITE, PROTOCOL_VERSION
 from ghostlink.core.logging import get_logger
 from ghostlink.exceptions.groups import (
     GroupConflictError,
@@ -115,6 +115,7 @@ class GroupAttested:
     epoch: int
     members: tuple[dict[str, Any], ...]
     events: tuple[dict[str, Any], ...]
+    crypto_suite: str = DEFAULT_CRYPTO_SUITE
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +127,7 @@ class GroupRoster:
     state: str
     members: tuple[dict[str, Any], ...]
     events: tuple[dict[str, Any], ...]
+    crypto_suite: str = DEFAULT_CRYPTO_SUITE
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +142,7 @@ class GroupRedemption:
     owner_public_key_hex: str
     members: tuple[dict[str, Any], ...]
     epoch: int
+    crypto_suite: str = DEFAULT_CRYPTO_SUITE
 
 
 @dataclass(frozen=True, slots=True)
@@ -611,6 +614,7 @@ class RelayClient:
             owner_public_key_hex=str(packet.payload["owner_key"]),
             members=members,
             epoch=int(str(packet.payload["epoch"])),
+            crypto_suite=str(packet.payload.get("suite", DEFAULT_CRYPTO_SUITE)),
         )
 
     # ------------------------------------------------------------- groups (v4)
@@ -679,12 +683,20 @@ class RelayClient:
         pop_signature_b64: str,
         handle: str,
         display_name: str,
+        crypto_suite: str = DEFAULT_CRYPTO_SUITE,
         timeout_seconds: float = 10.0,
     ) -> tuple[str, int]:
         """Create a group (owner PoP); returns (group_id, epoch=1)."""
 
         packet = await self._group_roundtrip(
-            group_create_packet(name, public_key_hex, pop_signature_b64, handle, display_name),
+            group_create_packet(
+                name,
+                public_key_hex,
+                pop_signature_b64,
+                handle,
+                display_name,
+                crypto_suite=crypto_suite,
+            ),
             timeout_seconds,
         )
         if packet.type is not PacketType.GROUP_GRANTED:
@@ -723,6 +735,7 @@ class RelayClient:
             epoch=int(str(packet.payload["epoch"])),
             members=tuple(packet.payload.get("members", [])),
             events=tuple(packet.payload.get("events", [])),
+            crypto_suite=str(packet.payload.get("suite", DEFAULT_CRYPTO_SUITE)),
         )
 
     async def group_state(self, group_id: str, *, timeout_seconds: float = 10.0) -> GroupRoster:
@@ -740,6 +753,7 @@ class RelayClient:
             state=str(packet.payload["state"]),
             members=tuple(packet.payload.get("members", [])),
             events=tuple(packet.payload.get("events", [])),
+            crypto_suite=str(packet.payload.get("suite", DEFAULT_CRYPTO_SUITE)),
         )
 
     async def wait_group_event(

@@ -21,7 +21,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import Enum
 
-from ghostlink.constants.net import GROUP_DISPLAY_NAME_MAX_LEN, GROUP_EVENTS_KEPT
+from ghostlink.constants.net import (
+    DEFAULT_CRYPTO_SUITE,
+    GROUP_CRYPTO_SUITES,
+    GROUP_DISPLAY_NAME_MAX_LEN,
+    GROUP_EVENTS_KEPT,
+)
 from ghostlink.exceptions.config import ConfigValidationError
 from ghostlink.exceptions.groups import (
     GroupEpochError,
@@ -178,6 +183,7 @@ class LocalGroupRecord:
 
     __slots__ = (
         "created_at",
+        "crypto_suite",
         "epoch",
         "epoch_leap_at",
         "events",
@@ -210,6 +216,7 @@ class LocalGroupRecord:
         epoch_leap_at: datetime | None = None,
         events: list[GroupEvent] | None = None,
         suspect: bool = False,
+        crypto_suite: str = DEFAULT_CRYPTO_SUITE,
     ) -> None:
         if not is_valid_group_id(group_id):
             raise GroupValidationError(
@@ -220,6 +227,11 @@ class LocalGroupRecord:
             raise GroupValidationError(
                 f"Group epoch must be ≥ 1, got {epoch}.",
                 hint="Epochs start at 1 at creation.",
+            )
+        if crypto_suite not in GROUP_CRYPTO_SUITES:
+            raise GroupValidationError(
+                f"Unknown crypto suite '{crypto_suite}'.",
+                hint="Choose one of: " + ", ".join(sorted(GROUP_CRYPTO_SUITES)) + ".",
             )
         self.group_id = group_id
         self.name = validate_group_name(name)
@@ -237,6 +249,7 @@ class LocalGroupRecord:
         )
         self.events: list[GroupEvent] = list(events) if events else []
         self.suspect = suspect
+        self.crypto_suite = crypto_suite
 
     @staticmethod
     def _aware(moment: datetime, field: str) -> datetime:
@@ -427,6 +440,7 @@ class LocalGroupRecord:
             "epoch": self.epoch,
             "state": self.state.value,
             "suspect": self.suspect,
+            "crypto_suite": self.crypto_suite,
             "relay_url": self.relay_url,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -437,6 +451,10 @@ class LocalGroupRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> LocalGroupRecord:
+        from ghostlink.core.migration import validate_state_version
+
+        # Phase 9: fail closed on a state document written by a newer version.
+        validate_state_version(data.get("v"))
         expected = {
             "group_id",
             "name",
@@ -492,6 +510,7 @@ class LocalGroupRecord:
             members=members,
             state=state,
             relay_url=str(data.get("relay_url", "")),
+            crypto_suite=str(data.get("crypto_suite", DEFAULT_CRYPTO_SUITE)),
             created_at=created_raw,
             updated_at=updated_raw,
             epoch_leap_at=datetime.fromisoformat(str(leap_raw)) if leap_raw else None,

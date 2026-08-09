@@ -138,7 +138,7 @@ AppSettings (immutable for the whole run)
 | Exception | Exit code | Raised when |
 | --- | --- | --- |
 | `ConfigurationError` family | 2 | TOML invalid, unknown keys, bad values, unwritable config dir |
-| `UnsupportedPlatformError` family | 3 | Non-Linux platform, Python below 3.12 (hard gate) |
+| `UnsupportedPlatformError` family | 3 | Non-Linux platform, Python below 3.11 (hard gate) |
 | `StorageError` family | 4 | Corrupt JSON, write failures, invalid namespaces |
 | `HistoryError` family | 4 | Locked/unreadable/wrong-passphrase encrypted history |
 | `ThemeNotFoundError` | 5 | Theme name not registered |
@@ -506,7 +506,8 @@ or routes group content.
 ## 14A. Group messaging (Phase 6C)
 
 End-to-end group conversations per docs/GROUPS.md §17–§33, on the
-pairwise mesh (no sender keys — Phase 7 hardening candidate):
+pairwise mesh (the Phase 6C data plane; Phase 7 adds sender keys as an
+opt-in suite on top — §14B):
 
 - `ghostlink/groups/mesh.py` — `GroupMeshManager`: one identity-bound
   pairwise link per (group, peer) at the current epoch. Handshakes
@@ -557,3 +558,152 @@ pairwise mesh (no sender keys — Phase 7 hardening candidate):
   /export /quit`. No key material is ever rendered. Group history
   reuses the existing history backends (off / session / encrypted) with
   `record_group` entries keyed by group id.
+
+## 14B. Sender-key group messaging (Phase 7)
+
+Opt-in O(1) group encryption per docs/GROUPS.md §36, chosen at creation
+by the group's `crypto_suite` (`mesh-v1` default, or `senderkey-v1`):
+
+- `ghostlink/groups/senderkeys.py` — the cryptographic core: a one-way
+  HKDF-SHA256 hash ratchet (`ghostlink/group/senderkey/v1` domain
+  separation) with per-message keys bound to group/epoch/sender/
+  generation/index; `OutgoingChain` (sender) and `ReceiverChain`
+  (recipient, with a bounded skipped-key cache ≤ 64 for out-of-order
+  delivery); `SenderKeyStore` for per-(group,epoch) outgoing and
+  per-(group,sender) incoming chains with epoch pruning, sender-drop and
+  full zeroization. Secrets live in `bytearray` slots; nothing is logged,
+  stored, or put in exceptions.
+- `ghostlink/groups/frames.py` — new inner frame types `GSK`
+  (distribution: chain root + generation + index) and `GSKREQ` (pull);
+  broadcast `GMSG` uses the recipient sentinel `"*"`.
+- `ghostlink/groups/mesh.py` — AAD helpers `group-sk-key/v1` (GSK
+  distribution) and `group-sk-msg/v1` (broadcast message, recipient-free).
+- `ghostlink/groups/service.py` — the `senderkey-v1` path: on send, seal
+  the message **once** (`KIND_SKMSG` with a public `{gen, seq}` header)
+  and fan the identical ciphertext to every roster member, distributing
+  the sender's chain (`KIND_SK`) over the live pairwise link first and
+  answering `GSKREQ` pulls. On receive, resolve the message key (replay/
+  gap rejected; missing key → buffer ≤ 16/sender and pull), open with the
+  recipient-free AAD, then run the same dedupe/gseq/attribution pipeline.
+  Epoch mutations prune all chains and force re-distribution; offline
+  members get a bounded re-transmission queue for the already-sealed
+  envelopes. `GROUP_FORWARD` kinds `sk`/`skmsg` are relay-opaque.
+- CLI/UI — `ghostlink group create --crypto-suite senderkey-v1`, and an
+  in-chat `/security` command showing suite/epoch/key-state without ever
+  rendering key material; the banner advertises the active suite.
+
+## 15. Reliability & adversarial hardening (Phase 8)
+
+- `ghostlink/core/recovery.py` — the single authoritative recovery
+  authority. `RecoveryState` enumerates `CONNECTED/DEGRADED/RECONNECTING/
+  RESYNC_REQUIRED/RECOVERING/READY/FAILED/CLOSED` with a closed transition
+  table; `RecoveryCoordinator` hands out exclusive `RecoveryLease`s so
+  exactly-one resync/install/reconnect runs per key (no competing loops).
+  The group service wires it into its resync path.
+- `ghostlink/core/logging.py` — a `SecretRedactor`/`RedactingFilter`
+  backstop scrubs registered secrets and invite-token shapes from every
+  log record; `register_secret()` is called at invite mint time.
+- `ghostlink/groups/service.py` — sender-key recovery hardening: a
+  `GSKREQ` abuse brake per (group, requester) in both directions, bounded
+  pending-buffer constants, and coordinator-backed resync dedup.
+- `ghostlink/transport/relay/server.py` — connection-cap + per-source-IP
+  connection token bucket (in-memory, fail-closed, swept), on top of the
+  existing forward/event brakes.
+- `ghostlink/cli/doctor.py` — extended `--doctor` now reports dependency
+  availability, the OpenSSL/crypto backend, data-directory health, and the
+  available crypto suites (read-only, no state writes).
+- `ghostlink/cli/commands/security_status.py` — `ghostlink security-status`
+  renders a read-only security & recovery summary (suite, identity
+  fingerprint, relay, group recovery) with no secrets, keys, or tokens.
+
+## 16. Production readiness & compatibility (Phase 9)
+
+- **Python floor = 3.11** — the declared minimum (`requires-python`,
+  `MIN_PYTHON`) is what the code actually uses and is verified green on
+  3.11.2; the matrix lives in `docs/COMPATIBILITY.md`. The parser never
+  uses PEP 695 type-alias syntax, so it parses cleanly on 3.11.
+- **Schema versioning** — `ghostlink/core/migration.py` defines
+  `CONFIG_SCHEMA_VERSION` and `STATE_SCHEMA_VERSION`. Config carries
+  `[meta].config_version`; each stored group record carries `"v"`. A
+  *newer* version is rejected (fail closed) rather than reinterpreted.
+- **Release engineering** — `scripts/release_check.sh` (the release-candidate
+  gate) and `scripts/scan_secrets.py` (offline secret-leak tripwire) are
+  invoked by the CI/release process and are also covered by tests.
+- **Backup guidance** — `docs/BACKUP.md` distinguishes backupable metadata
+  from sensitive key material and documents recovery behavior.
+
+## 17. Developer accounts (Phase 10A)
+
+- `ghostlink/developer/` — the local Developer Account & Credential
+  infrastructure:
+  - `keys.py` — CSPRNG generation (`secrets.token_bytes`), the
+    `gl_dev_<key_id>_<secret>` format, parsing, and salted-HKDF-SHA256
+    verification material with constant-time comparison.
+  - `models.py` — `DeveloperAccount` / `DeveloperCredential` dataclasses,
+    versioned, fail-closed on future schema.
+  - `storage.py` — atomic `0600`/`0700`, symlink-refusing, versioned
+    `account.json` + `credentials.json` under `<data-dir>/developer/`.
+  - `account.py` — `DeveloperManager` lifecycle (init/create/rotate/revoke/
+    list/verify), `MAX_ACTIVE_CREDENTIALS = 4` ceiling, in-memory rate
+    limiting, thread-locked mutations, metadata-only audit logging.
+  - `validation.py` — best-effort permission/symlink/corruption inspection.
+- `ghostlink/cli/commands/developer.py` + `ghostlink developer …` — the
+  terminal surface (init, status, key create/list/rotate/revoke,
+  export-info); the full key is shown once, then only redacted metadata.
+- `ghostlink --doctor` and `ghostlink security-status` report developer
+  account/credential health and metadata — never the secret.
+- Phase 10A makes **zero network requests** (tested); Phase 10B integrates
+  via the documented contract (`docs/DEVELOPER_ACCOUNTS.md` §12).
+
+## 18. Developer Portal (Phase 10B)
+
+- `portal/backend/portal_server/` — a dependency-light Python WSGI backend
+  (stdlib + `cryptography`): `app.py` (router + handlers), `auth.py`
+  (PBKDF2 password hashing, sessions, tokens, CSRF), `db.py` (SQLite schema,
+  PostgreSQL-ready), `mfa.py` (TOTP), `webauthn.py` (ES256 passkey
+  verification), `security.py` (rate limiting, security headers), `http.py`
+  (WSGI helpers). Runs under `wsgiref` for dev; gunicorn/waitress for
+  production.
+- `portal/web/` — React + TypeScript + Vite frontend with a white-first
+  glassmorphism design system, an antigravity particle background (respects
+  `prefers-reduced-motion`), and protected routes for dashboard,
+  credentials, projects, sessions, activity, security, and settings.
+- Credential lifecycle (create/rotate/revoke/verify) reuses
+  `ghostlink.developer.keys` for CSPRNG generation and salted verification.
+- Docs: `docs/DEVELOPER_PORTAL.md`, `docs/API.md`, `docs/DEPLOYMENT.md`.
+
+## 19. Portal production hardening (Phase 11)
+
+- `portal_server/config.py` — environment-driven, fail-closed config
+  (`APP_ENV` development/staging/production). Production requires
+  `SESSION_SECRET`, `DATABASE_URL`, `EMAIL_*`, and `WEBAUTHN_*`, and rejects
+  dev conveniences. Docs: `docs/PRODUCTION_CONFIG.md`.
+- `portal_server/db.py` — versioned, transactional migrations (v1 schema +
+  v2 indexes), FK/uniqueness enforcement, future-schema fail-closed. Docs:
+  `docs/DATABASE.md`.
+- Session hardening — idle + absolute lifetime, session rotation,
+  password-change session invalidation, revoke-all.
+- WebAuthn hardening — single-use/expiring challenges, origin validation,
+  ES256 verification (no biometric data).
+- `portal_server/emailing.py` — email provider abstraction (dev + SMTP).
+- `scripts/security_check.sh` / `scripts/security_check.py` — deterministic
+  security audit (secrets, headers, telemetry, outbound-HTTP, config).
+- Metadata-only operational logging (`ghostlink.portal.request`).
+- Docs: `docs/DATABASE.md`, `docs/DISASTER_RECOVERY.md`, `docs/OPERATIONS.md`,
+  `docs/SECURITY_MODEL.md`, `docs/PRODUCTION_CONFIG.md`.
+
+## 20. Developer API & Termux integration (Phase 12)
+
+- `portal_server/devapi.py` — scopes, tokens, device/pairing/credential
+  primitives. `portal_server/devapi_handlers.py` — the
+  `/api/v1/developer/*` handlers.
+- `ghostlink/developer_portal/` — the Termux client: `store.py` (0600,
+  atomic, symlink-refusing local token store) and `client.py` (stdlib HTTP,
+  no token-in-URL, fail-closed on network errors).
+- `ghostlink/cli/commands/developer_portal.py` — the `ghostlink developer
+  login/device/project/credential/security-status/doctor` commands.
+- Database migration v3 adds `developer_devices`, `pairing_codes`,
+  `api_credentials`, `api_tokens`, `api_activity`, and a `users.role`
+  column. One Owner; developer accounts can never become Owner.
+- Docs: `API_V1.md`, `TERMUX_INTEGRATION.md`, `DEVICE_SECURITY.md`,
+  `PROJECTS.md`, `API_SECURITY.md`, `PAIRING.md`, `DEVELOPER_AUTH.md`.

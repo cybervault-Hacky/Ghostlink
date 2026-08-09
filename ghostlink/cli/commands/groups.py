@@ -22,7 +22,7 @@ from ghostlink.cli.commands.base import (
     relay_config_from,
     resolve_relay_url,
 )
-from ghostlink.constants.net import MAX_GROUP_MEMBERS
+from ghostlink.constants.net import DEFAULT_CRYPTO_SUITE, MAX_GROUP_MEMBERS
 from ghostlink.core.logging import get_logger
 from ghostlink.exceptions.base import ExitCode
 from ghostlink.exceptions.groups import GroupValidationError
@@ -241,7 +241,10 @@ async def _run_create(runtime: CommandRuntime, options: CLIOptions) -> int:
     try:
         await client.connect()
         record = await runtime.groups.create_group(
-            client, name, display_name=options.chat_name or ""
+            client,
+            name,
+            display_name=options.chat_name or "",
+            crypto_suite=options.crypto_suite or DEFAULT_CRYPTO_SUITE,
         )
     finally:
         await client.aclose()

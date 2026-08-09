@@ -24,6 +24,7 @@ from typing import cast
 
 from ghostlink.constants.net import (
     CHANNEL_CAPACITY,
+    DEFAULT_CRYPTO_SUITE,
     DEFAULT_RELAY_PORT,
     GROUP_EVENT_RATE_OPS,
     GROUP_EVENT_RATE_WINDOW_SECONDS,
@@ -33,6 +34,9 @@ from ghostlink.constants.net import (
     GROUP_PROTOCOL_VERSION,
     HEARTBEAT_INTERVAL_SECONDS,
     INVITE_PROTOCOL_VERSION,
+    RELAY_CONNECT_BURST,
+    RELAY_CONNECT_RATE_PER_SECOND,
+    RELAY_MAX_CONNECTIONS,
     RELAY_SESSION_TTL_SECONDS,
     SERVER_NAME,
     SESSION_SWEEP_INTERVAL_SECONDS,
@@ -145,12 +149,21 @@ class RelayServer:
         server_name: str = SERVER_NAME,
         invite_authority: InviteAuthority | None = None,
         group_authority: GroupAuthority | None = None,
+        max_connections: int = RELAY_MAX_CONNECTIONS,
+        connect_rate_per_second: float = RELAY_CONNECT_RATE_PER_SECOND,
+        connect_burst: int = RELAY_CONNECT_BURST,
     ) -> None:
         self._host = host
         self._requested_port = port
         self._session_ttl = session_ttl_seconds
         self._heartbeat_interval = heartbeat_interval_seconds
         self._server_name = server_name
+        self._max_connections = max_connections
+        self._connect_rate = connect_rate_per_second
+        self._connect_burst = connect_burst
+        # Phase 8 — per-source-IP token bucket for new connections (abuse
+        # brake); bounded, in-memory, pruned on sweep.
+        self._connect_tokens: dict[str, tuple[float, float]] = {}
         self._logger = get_logger("transport.relay.server")
         self._server: asyncio.AbstractServer | None = None
         self._clients: dict[int, _ClientContext] = {}
@@ -269,11 +282,40 @@ class RelayServer:
 
     # -------------------------------------------------------------- accept loop
 
+    def _connection_admitted(self, remote: str, writer: asyncio.StreamWriter) -> bool:
+        """Phase 8 abuse brake: refuse connections beyond caps.
+
+        Two independent bounds, both fail-closed and in-memory:
+
+        * a hard cap on concurrent live clients (``max_connections``), and
+        * a per-source-IP token bucket (``connect_rate_per_second`` with
+          ``connect_burst``) so one abusive host cannot flood the loop.
+        """
+        if len(self._clients) >= self._max_connections:
+            self._logger.info("relay at connection cap — refusing %s", remote)
+            return False
+        host = remote.rsplit(":", 1)[0] if ":" in remote else remote
+        now = asyncio.get_running_loop().time()
+        tokens, stamped = self._connect_tokens.get(host, (float(self._connect_burst), now))
+        tokens = min(
+            float(self._connect_burst),
+            tokens + (now - stamped) * self._connect_rate,
+        )
+        if tokens < 1.0:
+            self._connect_tokens[host] = (tokens, now)
+            self._logger.info("relay connection rate-limit — %s", remote)
+            return False
+        self._connect_tokens[host] = (tokens - 1.0, now)
+        return True
+
     def _on_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        self._next_client_id += 1
-        client_id = self._next_client_id
         peer = writer.get_extra_info("peername")
         remote = f"{peer[0]}:{peer[1]}" if peer else "unknown"
+        if not self._connection_admitted(remote, writer):
+            writer.close()
+            return
+        self._next_client_id += 1
+        client_id = self._next_client_id
         context = _ClientContext(reader=reader, writer=writer, remote=remote)
         self._clients[client_id] = context
         task = asyncio.create_task(
@@ -764,6 +806,7 @@ class RelayServer:
                 owner_public_key_hex=snapshot.owner_public_key_hex,
                 members=snapshot.members_payload(),
                 epoch=snapshot.epoch,
+                crypto_suite=snapshot.crypto_suite,
             ),
         )
         self._logger.info(
@@ -855,11 +898,15 @@ class RelayServer:
                 attest_nonce=context.attest_nonce,
                 handle=str(packet.payload["handle"]),
                 display_name=str(packet.payload["display"]),
+                crypto_suite=str(packet.payload.get("suite", DEFAULT_CRYPTO_SUITE)),
             )
         except GroupError as exc:
             await self._group_error(context, self._group_error_code(exc), exc.message)
             return
-        await self._send(context, group_granted_packet(snapshot.group_id, snapshot.epoch))
+        await self._send(
+            context,
+            group_granted_packet(snapshot.group_id, snapshot.epoch, snapshot.crypto_suite),
+        )
 
     async def _handle_group_attest(
         self, client_id: int, context: _ClientContext, packet: Packet
@@ -886,6 +933,9 @@ class RelayServer:
             if outcome.snapshot is not None
             else None
         )
+        suite = (
+            outcome.snapshot.crypto_suite if outcome.snapshot is not None else DEFAULT_CRYPTO_SUITE
+        )
         await self._send(
             context,
             group_attested_packet(
@@ -894,6 +944,7 @@ class RelayServer:
                 outcome.epoch,
                 members=members,
                 events=events,
+                crypto_suite=suite,
             ),
         )
         # A signer (owner/candidate) may now be reachable for pending ops.
@@ -918,6 +969,7 @@ class RelayServer:
                 snapshot.state,
                 snapshot.members_payload(),
                 [dict(event) for event in snapshot.events],
+                snapshot.crypto_suite,
             ),
         )
 
@@ -1084,6 +1136,17 @@ class RelayServer:
         self._forward_tokens[key] = (tokens - 1.0, now)
         return True
 
+    def _prune_connect_tokens(self) -> None:
+        """Bound the per-IP connection-bucket map (remote-controlled keys)."""
+        if len(self._connect_tokens) <= 4096:
+            return
+        now = asyncio.get_running_loop().time()
+        for host, (tokens, stamped) in list(self._connect_tokens.items()):
+            if tokens >= float(self._connect_burst) and now - stamped > 300.0:
+                self._connect_tokens.pop(host, None)
+            if len(self._connect_tokens) <= 2048:
+                break
+
     def _event_rate_allowed(self, session_id: str) -> bool:
         """Sliding window: 4 membership ops per 10 s per session — §32."""
 
@@ -1187,6 +1250,8 @@ class RelayServer:
                     if age is not None and age > GROUP_SIGN_REOFFER_SECONDS:
                         self._last_sign_delivery.pop(group_id, None)
                         await self._deliver_sign_task(group_id)
+                # Phase 8: prune stale connection-rate buckets (bounded memory).
+                self._prune_connect_tokens()
         except asyncio.CancelledError:
             raise
 

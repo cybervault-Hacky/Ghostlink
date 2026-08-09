@@ -1,0 +1,21 @@
+# Exclude everything not needed in the portal image (Phase 13Q).
+**
+!portal/backend/**
+!portal/backend/portal_server/**
+!portal/backend/requirements.txt
+
+# Never ship local state, secrets, or dev/build artifacts.
+**/*.pyc
+**/__pycache__/
+**/.venv/
+**/node_modules/
+**/dist/
+**/*.db
+**/*.sqlite3
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.crt
+**/backups/
+**/.git/

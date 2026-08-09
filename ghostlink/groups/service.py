@@ -50,8 +50,14 @@ from ghostlink.constants.net import (
     GROUP_MSG_MAX_BYTES,
     GROUP_OFFLINE_QUEUE_PER_MEMBER,
     GROUP_SEEN_IDS_PER_SENDER,
+    GROUP_SK_DISTRIBUTION_BODY_MAX,
+    GROUP_SK_PENDING_BUCKETS,
+    GROUP_SK_PENDING_PER_SENDER,
+    GROUP_SKREQ_RATE_OPS,
+    GROUP_SKREQ_RATE_WINDOW_SECONDS,
 )
 from ghostlink.core.logging import get_logger
+from ghostlink.core.recovery import RecoveryCoordinator, RecoveryState
 from ghostlink.exceptions.groups import (
     GroupError,
     GroupMessageError,
@@ -63,10 +69,13 @@ from ghostlink.exceptions.messaging import DecryptionError, HandshakeFailedError
 from ghostlink.exceptions.transport import TransportError
 from ghostlink.groups.events import GroupEvent, GroupEventKind
 from ghostlink.groups.frames import (
+    GROUP_BROADCAST_RECIPIENT,
     KEX_HELLO,
     KEX_REPLY,
     KIND_KEX,
     KIND_MSG,
+    KIND_SK,
+    KIND_SKMSG,
     DeliveryState,
     FrameType,
     GroupInnerFrame,
@@ -77,11 +86,33 @@ from ghostlink.groups.frames import (
     generate_message_id,
     gmsg_frame,
     gread_frame,
+    gsk_frame,
+    gskreq_frame,
     parse_inner_frame,
 )
 from ghostlink.groups.lifecycle import LocalGroupManager
-from ghostlink.groups.mesh import GroupMeshManager, PairwiseLink, group_message_aad
+from ghostlink.groups.mesh import (
+    GroupMeshManager,
+    PairwiseLink,
+    group_message_aad,
+    group_sk_key_aad,
+    group_sk_msg_aad,
+)
 from ghostlink.groups.models import LocalGroupRecord, LocalGroupState
+from ghostlink.groups.senderkeys import (
+    ExcessiveGapError,
+    MissingSenderKeyError,
+    ReplayError,
+    SenderKeyError,
+    SenderKeyStore,
+    distribution_root_b64,
+    open_message,
+    parse_distribution_root,
+    parse_sk_control_body,
+    parse_skmsg_body,
+    sk_control_body,
+    skmsg_body,
+)
 from ghostlink.identity.lifecycle import IdentityManager, fingerprint_for_hex
 from ghostlink.messaging.history import BaseHistory
 
@@ -96,6 +127,9 @@ _TX_BUCKET_CAPACITY: float = 20.0  # mirror of the relay burst (§32)
 _TX_REFILL_PER_SECOND: float = 18.0  # sustained rate just inside the relay brake
 _SWEEP_SECONDS: float = 5.0
 _RESYNC_MIN_INTERVAL_SECONDS: float = 5.0
+# Phase 7 sender-key: bounded per-recipient retry queue for sealed SKMSG
+# envelopes (mirrors the §29 offline bound; never unlimited).
+_SK_RETRY_PER_MEMBER: int = GROUP_OFFLINE_QUEUE_PER_MEMBER
 
 
 class GroupChatEventKind(str, Enum):
@@ -180,6 +214,26 @@ class GroupMessagingService:
         self._listeners: list[Callable[[GroupChatEvent], None]] = []
         self._link_waiters: dict[tuple[str, str], asyncio.Future[PairwiseLink]] = {}
         self._resync_at: dict[str, float] = {}
+        # Phase 8 — one authoritative recovery state + resync coordinator:
+        # exactly one in-flight resync per group (no competing loops).
+        self._recovery = RecoveryCoordinator()
+        # (group, requester) -> deque[monotonic] — GSKREQ abuse brake.
+        self._skreq_windows: dict[tuple[str, str], deque[float]] = {}
+        # Phase 7 sender-key state (memory-only, zeroizable, bounded).
+        self._sk = SenderKeyStore()
+        # (group, recipient) -> (epoch, gen, index) — the distribution state
+        # we last handed that recipient, so we only re-distribute when needed.
+        self._sk_distributed: dict[tuple[str, str], tuple[int, int, int]] = {}
+        # (group, recipient) -> deque[(gen, gseq, message_id, sealed_skmsg)] —
+        # the bounded offline retry queue for already-sealed sender-key
+        # messages (gen is the generation the envelope was sealed under).
+        self._sk_retry: dict[tuple[str, str], deque[tuple[int, int, str, bytes]]] = {}
+        # message_id -> (gen, seq, sealed_skmsg) — bounded cache of recent
+        # sealed envelopes so an async relay `group/offline` can queue them.
+        self._sk_sealed: OrderedDict[str, tuple[int, int, bytes]] = OrderedDict()
+        # (group, sender) -> list[raw SKMSG body] awaiting a distribution
+        # (an SKMSG can race ahead of the GSK that installs its chain).
+        self._sk_pending: OrderedDict[tuple[str, str], list[bytes]] = OrderedDict()
         self._tx_lock = asyncio.Lock()
         self._tx_tokens = _TX_BUCKET_CAPACITY
         self._tx_stamp = time.monotonic()
@@ -245,6 +299,16 @@ class GroupMessagingService:
                 hint="Links are re-established lazily on next use.",
             )
         )
+        # §27.2/§27.3: a fresh session must re-establish sender-key
+        # distribution state — peers may have restarted and lost their
+        # copies. Chains themselves are epoch-scoped (memory) and survive;
+        # only the per-recipient "already distributed" bookkeeping resets so
+        # the next send re-distributes to everyone reachable.
+        self._sk_distributed.clear()
+        # Phase 8 — a new session resets the recovery coordinator: no stale
+        # in-flight leases survive a re-attach.
+        self._recovery.reset()
+        self._recovery.transition(RecoveryState.CONNECTED, reason="attach")
         client.set_group_forward_listener(self._on_forward)
         client.set_group_forward_error_listener(self._on_forward_error)
         self._client = client
@@ -273,6 +337,13 @@ class GroupMessagingService:
             )
         )
         self._mesh.teardown_all()
+        self._sk.teardown_all()  # zeroize every sender/chain/message key
+        self._sk_distributed.clear()
+        self._sk_retry.clear()
+        self._sk_sealed.clear()
+        self._sk_pending.clear()
+        self._skreq_windows.clear()
+        self._recovery.transition(RecoveryState.CLOSED, reason="close")
 
     # ------------------------------------------------------------- records
 
@@ -358,6 +429,9 @@ class GroupMessagingService:
             )
         if len(recipients) > GROUP_FANOUT_MAX:  # pragma: no cover - roster cap
             raise GroupMessageError("Fanout would exceed the member cap.", hint="")
+        if record.crypto_suite == "senderkey-v1":
+            # Phase 7: O(1) per-message seal, broadcast to the roster.
+            return await self._send_sender_key(record, text)
         runtime = self._runtime(group_id)
         message_id = generate_message_id()
         gseq = runtime.next_gseq
@@ -544,6 +618,277 @@ class GroupMessagingService:
             )
         )
 
+    # ------------------------------------------------- sender-key send (7)
+
+    def _sk_uses_sender_key(self, record: LocalGroupRecord) -> bool:
+        return record.crypto_suite == "senderkey-v1"
+
+    async def _send_sender_key(self, record: LocalGroupRecord, text: str) -> GroupMessageLedger:
+        """Phase 7: seal the message **once** and fan the same ciphertext out.
+
+        Each recipient needs (a) a live pairwise link for control traffic and
+        (b) the sender's chain distribution; then one AEAD seal per message
+        serves the whole roster (O(1) instead of O(n) — the §36 benefit).
+        """
+        group_id = record.group_id
+        epoch = record.epoch
+        my_fingerprint, _ = self._my_identity_material()
+        recipients = sorted(fp for fp in record.members if fp != my_fingerprint)
+        if not recipients:
+            raise GroupMessageError(
+                "You are the only member — there is nobody to deliver to.",
+                hint="Invite members first (ghostlink group invite).",
+            )
+        runtime = self._runtime(group_id)
+        message_id = generate_message_id()
+        seq = runtime.next_gseq
+        runtime.next_gseq += 1
+        ledger = GroupMessageLedger(
+            message_id=message_id,
+            group_id=group_id,
+            gseq=seq,
+            text=text,
+            ts=datetime.now(UTC).timestamp(),
+        )
+        ledger.recipients = {fp: DeliveryState.QUEUED for fp in recipients}
+        runtime.keep_ledger(ledger)
+        # Align a fresh per-epoch chain with the persistent transcript counter
+        # so the message index (== gseq) stays in sync across epoch rotations.
+        chain = self._sk.ensure_outgoing(group_id, epoch, my_fingerprint, start_index=seq)
+        gen = chain.gen
+        try:
+            frame = gmsg_frame(
+                group_id,
+                epoch,
+                my_fingerprint,
+                GROUP_BROADCAST_RECIPIENT,
+                message_id=message_id,
+                gseq=seq,
+                display_name=self._name_of(group_id, my_fingerprint),
+                text=text,
+                ts=ledger.ts,
+                broadcast=True,
+            )
+            aad = group_sk_msg_aad(group_id, epoch, my_fingerprint, gen, seq)
+            sealed = chain.seal(
+                group_id=group_id,
+                epoch=epoch,
+                sender=my_fingerprint,
+                index=seq,
+                plaintext=frame,
+                aad=aad,
+            )
+        except (GroupError, SenderKeyError) as exc:
+            raise GroupMessageError(
+                getattr(exc, "message", str(exc)), hint="Could not build the sender-key frame."
+            ) from exc
+        body = skmsg_body(gen, seq, sealed)
+        self._sk_sealed[message_id] = (gen, seq, sealed)
+        self._sk_sealed.move_to_end(message_id)
+        while len(self._sk_sealed) > GROUP_LEDGER_KEPT:
+            self._sk_sealed.popitem(last=False)
+        client = self._require_client()
+        for fingerprint in recipients:
+            ledger.recipients[fingerprint] = DeliveryState.SENDING
+            try:
+                link = await self._ensure_link(record, fingerprint)
+                record = self._require_sendable(group_id)  # epoch may have leaped
+                if link.epoch != record.epoch:
+                    continue  # epoch moved mid-send; drop this fanout leg
+                await self._send_sk_distribution(record, fingerprint, link, index=seq)
+                await self._regulated()
+                await client.group_forward(
+                    group_id,
+                    record.epoch,
+                    from_fingerprint=record.my_fingerprint,
+                    to_fingerprint=fingerprint,
+                    kind=KIND_SKMSG,
+                    body_b64=base64.b64encode(body).decode("ascii"),
+                )
+                ledger.recipients[fingerprint] = DeliveryState.SENT
+            except GroupOfflineError:
+                # Offline: hold the already-sealed envelope for retry (§29).
+                self._sk_retry_add(group_id, fingerprint, gen, seq, message_id, sealed)
+                ledger.recipients[fingerprint] = DeliveryState.QUEUED
+                self._emit(
+                    GroupChatEvent(
+                        GroupChatEventKind.NOTICE,
+                        group_id,
+                        f"{self._name_of(group_id, fingerprint)} is offline — "
+                        "undelivered (retrying within the bounded queue).",
+                    )
+                )
+            except GroupError as exc:
+                ledger.recipients[fingerprint] = DeliveryState.FAILED
+                label = f" — {exc.message}" if exc.message else ""
+                self._emit(
+                    GroupChatEvent(
+                        GroupChatEventKind.NOTICE,
+                        group_id,
+                        f"Delivery to {self._name_of(group_id, fingerprint)} failed{label}.",
+                        ledger=ledger,
+                    )
+                )
+            except TransportError as exc:
+                ledger.recipients[fingerprint] = DeliveryState.FAILED
+                self._emit(
+                    GroupChatEvent(
+                        GroupChatEventKind.NOTICE,
+                        group_id,
+                        f"Delivery to {self._name_of(group_id, fingerprint)} failed "
+                        f"— {exc.message}",
+                        ledger=ledger,
+                    )
+                )
+            self._emit_delivery(ledger)
+        self._record_history(record, ledger, outgoing=True)
+        return ledger
+
+    # ------------------------------------------------- sender-key distribution
+
+    async def _send_sk_distribution(
+        self, record: LocalGroupRecord, recipient: str, link: PairwiseLink, *, index: int
+    ) -> None:
+        """Send the recipient our current chain distribution if it is behind.
+
+        ``index`` is the live chain index to advertise (the message about to
+        be sent, or the current head when answering a key request).
+        """
+        group_id = record.group_id
+        epoch = record.epoch
+        my_fingerprint, _ = self._my_identity_material()
+        key = (group_id, recipient)
+        distribution = self._sk.outgoing_distribution(group_id, epoch, my_fingerprint, index=index)
+        last = self._sk_distributed.get(key)
+        if (
+            last is not None
+            and last[0] == epoch
+            and last[1] == distribution.gen
+            and last[2] >= distribution.index
+        ):
+            return  # already current — nothing to hand out
+        try:
+            inner = gsk_frame(
+                group_id,
+                epoch,
+                my_fingerprint,
+                recipient,
+                gen=distribution.gen,
+                root=distribution_root_b64(distribution.root),
+                index=distribution.index,
+            )
+        except GroupError as exc:
+            _logger.info("group %s — could not build GSK: %s", group_id, exc.message)
+            return
+        aad = group_sk_key_aad(group_id, epoch, my_fingerprint, recipient, distribution.gen)
+        sealed = link.seal(inner, aad)
+        body = sk_control_body(distribution.gen, sealed)
+        try:
+            await self._regulated()
+            await self._require_client().group_forward(
+                group_id,
+                epoch,
+                from_fingerprint=my_fingerprint,
+                to_fingerprint=recipient,
+                kind=KIND_SK,
+                body_b64=base64.b64encode(body).decode("ascii"),
+            )
+            self._sk_distributed[key] = (epoch, distribution.gen, distribution.index)
+        except TransportError as exc:
+            _logger.debug("group %s — GSK could not be sent: %s", group_id, exc)
+
+    def _sk_retry_add(
+        self, group_id: str, recipient: str, gen: int, seq: int, message_id: str, sealed: bytes
+    ) -> None:
+        """Queue one sealed SKMSG for a reconnecting member (bounded FIFO)."""
+        key = (group_id, recipient)
+        queue = self._sk_retry.setdefault(key, deque())
+        queue.append((gen, seq, message_id, sealed))
+        while len(queue) > _SK_RETRY_PER_MEMBER:
+            _gen, _dropped_seq, dropped_id, _sealed = queue.popleft()
+            runtime = self._runtimes.get(group_id)
+            if runtime is not None:
+                ledger = runtime.ledgers.get(dropped_id)
+                if ledger is not None and recipient in ledger.recipients:
+                    ledger.recipients[recipient] = DeliveryState.FAILED
+                self._emit_delivery(ledger)
+            self._emit(
+                GroupChatEvent(
+                    GroupChatEventKind.NOTICE,
+                    group_id,
+                    f"Offline queue for {self._name_of(group_id, recipient)} is full — "
+                    "the oldest undelivered message was dropped (FIFO bound).",
+                )
+            )
+
+    def _sk_offline_requeue(self, group_id: str, member: str) -> None:
+        """Move in-flight sender-key envelopes for an offline member to retry.
+
+        Mirrors §29's offline handling for the already-sealed sender-key
+        path: the envelope is re-transmitted verbatim after reconnect (no
+        re-seal — the ciphertext is fixed), bounded per member.
+        """
+        runtime = self._runtimes.get(group_id)
+        if runtime is None:
+            return
+        for ledger in runtime.ledgers.values():
+            state = ledger.recipients.get(member)
+            if state not in (DeliveryState.SENDING, DeliveryState.SENT):
+                continue
+            sealed_entry = self._sk_sealed.get(ledger.message_id)
+            if sealed_entry is None:
+                ledger.recipients[member] = DeliveryState.FAILED
+                continue
+            gen, seq, sealed = sealed_entry
+            self._sk_retry_add(group_id, member, gen, seq, ledger.message_id, sealed)
+            ledger.recipients[member] = DeliveryState.QUEUED
+            self._emit_delivery(ledger)
+
+    async def _drain_sk_retry(self, group_id: str, recipient: str) -> None:
+        """Resend queued sealed SKMSG envelopes to a reconnected member."""
+        key = (group_id, recipient)
+        queue = self._sk_retry.get(key)
+        if not queue:
+            return
+        runtime = self._runtimes.get(group_id)
+        try:
+            record = self._require_sendable(group_id)
+        except GroupError:
+            return
+        try:
+            link = await self._ensure_link(record, recipient)
+        except GroupError:
+            return  # not linked yet — will retry on a later trigger
+        # Re-advertise the chain at the head so the reconnecting member can
+        # derive keys for all queued indexes.
+        await self._send_sk_distribution(record, recipient, link, index=queue[-1][1])
+        client = self._require_client()
+        while queue:
+            gen, seq, message_id, sealed = queue[0]
+            try:
+                record = self._require_sendable(group_id)
+                if link.epoch != record.epoch:
+                    return
+                await self._regulated()
+                await client.group_forward(
+                    group_id,
+                    record.epoch,
+                    from_fingerprint=record.my_fingerprint,
+                    to_fingerprint=recipient,
+                    kind=KIND_SKMSG,
+                    body_b64=base64.b64encode(skmsg_body(gen, seq, sealed)).decode("ascii"),
+                )
+                queue.popleft()
+                if runtime is not None:
+                    ledger = runtime.ledgers.get(message_id)
+                    if ledger is not None and recipient in ledger.recipients:
+                        ledger.recipients[recipient] = DeliveryState.SENT
+                    self._emit_delivery(ledger)
+            except TransportError:
+                return  # connection-level failure — stop draining this round
+            except GroupError:
+                return
+
     # ------------------------------------------------------ link management
 
     async def _ensure_link(self, record: LocalGroupRecord, peer: str) -> PairwiseLink:
@@ -683,6 +1028,14 @@ class GroupMessagingService:
             return
         if kind == KIND_KEX:
             await self._handle_kex(record, member.public_key_hex, sender, epoch, body)
+        elif kind in (KIND_SK, KIND_SKMSG):
+            if not self._sk_uses_sender_key(record):
+                _logger.info("group %s — sender-key frame on a mesh group dropped", group_id)
+                return
+            if kind == KIND_SK:
+                await self._handle_sender_key_distribution(record, sender, epoch, body)
+            else:
+                await self._handle_sender_key_message(record, sender, epoch, body)
         else:
             await self._handle_message(record, sender, epoch, body)
 
@@ -804,6 +1157,281 @@ class GroupMessagingService:
             return
         _logger.info("group %s — unknown kex scheme dropped: %.24r", group_id, scheme)
 
+    # ------------------------------------------------- sender-key receive (7)
+
+    def _mesh_open_control(
+        self, group_id: str, epoch: int, sender: str, sealed: bytes, *, key_aad: bool, gen: int = 0
+    ) -> bytes | None:
+        """Open a mesh-sealed control frame; None on any failure (never raises).
+
+        ``key_aad=True`` uses the sender-key distribution AAD (GSK frames);
+        otherwise the §20.2 control AAD (GSKREQ rides with the mesh control
+        frames). Returns the plaintext or None (dropped, counted only when
+        it was a genuine integrity failure on a live link).
+        """
+        try:
+            link = self._mesh.accepting_link(group_id, epoch, sender)
+            if link is None:
+                return None
+            if key_aad:
+                my_fp, _ = self._my_identity_material()
+                aad = group_sk_key_aad(group_id, epoch, sender, my_fp, gen)
+                return link.open(sealed, aad)
+            aad = group_message_aad(group_id, epoch, sender, self._my_identity_material()[0])
+            return link.open(sealed, aad)
+        except DecryptionError:
+            return None
+        except GroupMessageError:
+            return None
+
+    async def _handle_sender_key_distribution(
+        self, record: LocalGroupRecord, sender: str, epoch: int, body: bytes
+    ) -> None:
+        """A GSK distribution over a pairwise link — install the sender's chain."""
+        group_id = record.group_id
+        if epoch != record.epoch:
+            if epoch > record.epoch:
+                self._trigger_resync(record, f"epoch {epoch} > local {record.epoch}")
+            _logger.info("group %s — stale-epoch GSK dropped", group_id)
+            return
+        try:
+            gen, sealed = parse_sk_control_body(body, max_sealed=GROUP_SK_DISTRIBUTION_BODY_MAX)
+        except SenderKeyError:
+            _logger.info("group %s — malformed GSK envelope dropped", group_id)
+            return
+        plaintext = self._mesh_open_control(group_id, epoch, sender, sealed, key_aad=True, gen=gen)
+        if plaintext is None:
+            _logger.info("group %s — GSK could not be opened — dropped", group_id)
+            return
+        try:
+            frame = parse_inner_frame(plaintext)
+        except GroupMessageError:
+            _logger.info("group %s — GSK failed schema validation", group_id)
+            return
+        if (
+            frame.group_id != group_id
+            or frame.epoch != epoch
+            or frame.sender != sender
+            or frame.frame_type is not FrameType.GSK
+            or frame.gen != gen
+        ):
+            _logger.info("group %s — GSK context mismatch — rejected", group_id)
+            return
+        try:
+            root = parse_distribution_root(frame.root)
+        except SenderKeyError:
+            _logger.info("group %s — GSK root malformed — dropped", group_id)
+            return
+        try:
+            self._sk.install_incoming(
+                group_id=group_id,
+                sender=sender,
+                epoch=epoch,
+                gen=frame.gen,
+                root=root,
+                index=frame.index,
+            )
+        except SenderKeyError as exc:
+            _logger.info("group %s — GSK install refused: %s", group_id, exc.message)
+            return
+        self._emit_notice_once(
+            group_id,
+            f"{record.name}: received a fresh sender key from "
+            f"{self._name_of(group_id, sender)} (generation {frame.gen}).",
+        )
+        self._flush_member(group_id, sender)
+        # Retry any SKMSG that raced ahead of this distribution.
+        self._sk_flush_pending(group_id, sender)
+
+    async def _handle_sender_key_message(
+        self, record: LocalGroupRecord, sender: str, epoch: int, body: bytes
+    ) -> None:
+        """A sender-key-sealed broadcast GMSG — O(1) open with the sender key."""
+        group_id = record.group_id
+        _, _ = self._my_identity_material()
+        try:
+            gen, seq, sealed = parse_skmsg_body(body, max_sealed=GROUP_MSG_MAX_BYTES + 64)
+        except SenderKeyError:
+            _logger.info("group %s — malformed SKMSG envelope dropped", group_id)
+            return
+        try:
+            message_key, _was_skipped = self._sk.message_key_for(group_id, sender, epoch, gen, seq)
+        except MissingSenderKeyError:
+            # We don't hold the sender's current chain — buffer the frame and
+            # ask for a distribution; it will be retried once the key lands
+            # (§36 pull, with a bounded pending buffer for GSK/SKMSG races).
+            _logger.info(
+                "group %s — no sender key for %s; requesting distribution", group_id, sender
+            )
+            self._sk_buffer_pending(group_id, sender, body)
+            await self._send_skreq(record, sender)
+            return
+        except ReplayError:
+            _logger.info(
+                "group %s — replayed sender-key index %s from %s dropped",
+                group_id,
+                seq,
+                sender,
+            )
+            return
+        except ExcessiveGapError:
+            self._emit_notice_once(
+                group_id,
+                f"{record.name}: {self._name_of(group_id, sender)} jumped sender-key "
+                f"index by too much — frame dropped (request fresh key).",
+            )
+            self._sk_buffer_pending(group_id, sender, body)
+            await self._send_skreq(record, sender)
+            return
+        aad = group_sk_msg_aad(group_id, epoch, sender, gen, seq)
+        try:
+            plaintext = open_message(message_key, sealed, aad)
+        except SenderKeyError:
+            _logger.info("group %s — SKMSG integrity failure — dropped", group_id)
+            return
+        try:
+            frame = parse_inner_frame(plaintext)
+        except GroupMessageError:
+            _logger.info("group %s — SKMSG failed schema validation", group_id)
+            return
+        if (
+            frame.group_id != group_id
+            or frame.epoch != epoch
+            or frame.sender != sender
+            or frame.recipient != GROUP_BROADCAST_RECIPIENT
+            or frame.frame_type is not FrameType.GMSG
+            or frame.gseq != seq
+        ):
+            _logger.info("group %s — SKMSG context mismatch — rejected", group_id)
+            return
+        runtime = self._runtime(group_id)
+        if runtime.seen.seen(sender, frame.message_id):
+            await self._send_gack(record, sender, frame)
+            return
+        verdict = runtime.gseq.observe(sender, frame.gseq)
+        if verdict == "duplicate":
+            _logger.info("group %s — SKMSG gseq rollback dropped", group_id)
+            return
+        if verdict == "excessive-gap":
+            self._emit_notice_once(
+                group_id,
+                f"{record.name}: {self._name_of(group_id, sender)} jumped gseq by more "
+                f"than {GROUP_GSEQ_MAX_GAP} — frame dropped (suspect).",
+            )
+            return
+        self._record_history_frame(record, frame)
+        self._emit(
+            GroupChatEvent(
+                GroupChatEventKind.MESSAGE,
+                group_id,
+                frame=frame,
+                gap=verdict == "gap",
+            )
+        )
+        await self._send_gack(record, sender, frame)
+        self._flush_member(group_id, sender)
+
+    def _sk_buffer_pending(self, group_id: str, sender: str, body: bytes) -> None:
+        """Buffer one SKMSG body awaiting its chain (bounded, drop-oldest)."""
+        key = (group_id, sender)
+        queue = self._sk_pending.get(key)
+        if queue is None:
+            if len(self._sk_pending) >= GROUP_SK_PENDING_BUCKETS:
+                self._sk_pending.popitem(last=False)
+            queue = []
+            self._sk_pending[key] = queue
+        if len(queue) >= GROUP_SK_PENDING_PER_SENDER:
+            queue.pop(0)  # bounded; drop the oldest pending frame
+        queue.append(body)
+        self._sk_pending.move_to_end(key)
+
+    def _sk_flush_pending(self, group_id: str, sender: str) -> None:
+        """Re-process buffered SKMSG bodies now that a distribution installed."""
+        key = (group_id, sender)
+        queue = self._sk_pending.pop(key, None)
+        if not queue:
+            return
+        for body in queue:
+            record = self._groups.get(group_id)
+            if record is None:
+                continue
+            task = asyncio.ensure_future(
+                self._handle_sender_key_message(record, sender, record.epoch, body)
+            )
+            task.add_done_callback(self._observe_pump)
+
+    def _skreq_allowed(self, group_id: str, sender: str) -> bool:
+        """Sliding-window GSKREQ brake per (group, requester) (§ Phase 8).
+
+        Bounds both *outbound* pull requests and *responding* distributions,
+        so a malicious peer cannot amplify sender-key traffic. Memory is
+        bounded by the roster cap; stale windows are pruned on access.
+        """
+        key = (group_id, sender)
+        now = time.monotonic()
+        window = self._skreq_windows.get(key)
+        if window is None:
+            if len(self._skreq_windows) >= 64:
+                self._skreq_windows.pop(next(iter(self._skreq_windows)))
+            window = deque()
+            self._skreq_windows[key] = window
+        while window and now - window[0] > GROUP_SKREQ_RATE_WINDOW_SECONDS:
+            window.popleft()
+        if len(window) >= GROUP_SKREQ_RATE_OPS:
+            return False
+        window.append(now)
+        return True
+
+    async def _send_skreq(self, record: LocalGroupRecord, sender: str) -> None:
+        """Ask a sender to re-distribute its chain (mesh-sealed control frame).
+
+        Rate-limited: repeated pulls for the same (group, requester) are
+        dropped beyond the §-8 brake, so a hostile peer cannot force us into
+        an amplification loop.
+        """
+        group_id = record.group_id
+        if not self._skreq_allowed(group_id, sender):
+            _logger.info("group %s — GSKREQ to %s rate-limited", group_id, sender)
+            return
+        link = self._mesh.accepting_link(group_id, record.epoch, sender)
+        if link is None:
+            return
+        my_fingerprint, _ = self._my_identity_material()
+        try:
+            inner = gskreq_frame(group_id, record.epoch, my_fingerprint, sender)
+        except GroupError:
+            return
+        sealed = link.seal(inner, group_message_aad(group_id, record.epoch, my_fingerprint, sender))
+        try:
+            await self._regulated()
+            await self._require_client().group_forward(
+                group_id,
+                record.epoch,
+                from_fingerprint=my_fingerprint,
+                to_fingerprint=sender,
+                kind=KIND_SK,
+                body_b64=base64.b64encode(sealed).decode("ascii"),
+            )
+        except TransportError:
+            return
+
+    async def _respond_sk_distribution(self, record: LocalGroupRecord, sender: str) -> None:
+        """Answer a GSKREQ: hand the requester our current chain distribution.
+
+        Also rate-limited, so repeated key-requests cannot amplify our
+        outbound distribution traffic.
+        """
+        group_id = record.group_id
+        if not self._skreq_allowed(group_id, sender):
+            return
+        link = self._mesh.accepting_link(group_id, record.epoch, sender)
+        if link is None:
+            return
+        chain = self._sk.outgoing_chain(group_id, record.epoch)
+        if chain is None:
+            return  # we have not sent anything yet — nothing to distribute
+        await self._send_sk_distribution(record, sender, link, index=chain.next_index)
+
     async def _handle_message(
         self, record: LocalGroupRecord, sender: str, epoch: int, sealed: bytes
     ) -> None:
@@ -845,6 +1473,11 @@ class GroupMessagingService:
         ):
             _logger.info("group %s — sealed context ≠ envelope context — rejected", group_id)
             return
+        if frame.frame_type is FrameType.GSKREQ:
+            # Sender-key pull: a peer needs our chain (control frame, §36).
+            if self._sk_uses_sender_key(record):
+                await self._respond_sk_distribution(record, sender)
+            return
         if frame.frame_type is FrameType.GACK:
             self._apply_gack(record, sender, frame)
             self._flush_member(group_id, sender)
@@ -852,6 +1485,11 @@ class GroupMessagingService:
         if frame.frame_type is FrameType.GREAD:
             self._apply_gread(record, sender, frame)
             self._flush_member(group_id, sender)
+            return
+        if self._sk_uses_sender_key(record) and frame.frame_type is FrameType.GMSG:
+            # A mesh-sealed GMSG has no place on a sender-key group — data
+            # frames there arrive as KIND_SKMSG (cross-suite injection).
+            _logger.info("group %s — mesh GMSG on a sender-key group rejected", group_id)
             return
         runtime = self._runtime(group_id)
         if runtime.seen.seen(sender, frame.message_id):
@@ -987,6 +1625,12 @@ class GroupMessagingService:
                 member,
                 GroupOfflineError(message or "Member offline.", hint=""),
             )
+            record = self._groups.get(group_id)
+            if record is not None and self._sk_uses_sender_key(record):
+                # Phase 7: the message was already sealed once; queue the
+                # exact envelope so it can be re-sent after reconnect.
+                self._sk_offline_requeue(group_id, member)
+                return
             self._requeue_sent(group_id, member)
             return
         if code == "group/rate":
@@ -1097,14 +1741,27 @@ class GroupMessagingService:
                     hint="Links are re-established at the current epoch.",
                 ),
             )
+        # Phase 7 epoch scoping (§36): a roster mutation invalidates every
+        # old-epoch sender chain; drop them and force re-distribution.
+        self._sk.prune_epoch(group_id, record.epoch)
+        for key in [k for k in self._sk_distributed if k[0] == group_id]:
+            self._sk_distributed.pop(key, None)
         subject = event.subject_fingerprint
         if event.kind in (GroupEventKind.LEFT, GroupEventKind.REMOVED):
             self._mesh.teardown_link(group_id, subject)
+            self._sk.drop_sender(group_id, subject)
+            self._sk_retry.pop((group_id, subject), None)
+            self._sk_pending.pop((group_id, subject), None)
             runtime = self._runtimes.get(group_id)
             if runtime is not None and subject != record.my_fingerprint:
                 self._fail_queue(group_id, subject, "no longer a roster member")
         if event.kind is GroupEventKind.DISSOLVED or subject == record.my_fingerprint:
             self._mesh.teardown_group(group_id)
+            self._sk.teardown_group(group_id)
+            for key in [k for k in self._sk_retry if k[0] == group_id]:
+                self._sk_retry.pop(key, None)
+            for key in [k for k in self._sk_pending if k[0] == group_id]:
+                self._sk_pending.pop(key, None)
         self._emit(
             GroupChatEvent(
                 GroupChatEventKind.MEMBERSHIP,
@@ -1133,6 +1790,9 @@ class GroupMessagingService:
         outbox = runtime.outboxes.get(fingerprint)
         if outbox is not None and outbox.queue:
             self._ensure_pump(group_id, fingerprint)
+        if (group_id, fingerprint) in self._sk_retry:
+            task = asyncio.ensure_future(self._drain_sk_retry(group_id, fingerprint))
+            task.add_done_callback(self._observe_pump)
 
     def _touch_members_online(self, record: LocalGroupRecord) -> None:
         for fingerprint in record.members:
@@ -1144,7 +1804,12 @@ class GroupMessagingService:
         now = time.monotonic()
         if now - self._resync_at.get(f"sync:{group_id}", 0.0) < _RESYNC_MIN_INTERVAL_SECONDS:
             return
+        # Exactly-one authority: if a resync for this group is already in
+        # flight, do not schedule a competing loop (§ Phase 8 recovery).
+        if self._recovery.has_in_flight(f"resync:{group_id}"):
+            return
         self._resync_at[f"sync:{group_id}"] = now
+        self._recovery.transition(RecoveryState.RESYNC_REQUIRED, reason=reason)
         self._emit(
             GroupChatEvent(
                 GroupChatEventKind.NOTICE,
@@ -1156,6 +1821,17 @@ class GroupMessagingService:
         task.add_done_callback(self._observe_pump)
 
     async def _resync(self, group_id: str) -> None:
+        lease = self._recovery.begin(f"resync:{group_id}")
+        if lease is None:
+            return  # another resync for this group is already running
+        try:
+            self._recovery.transition(RecoveryState.RECOVERING, reason=f"resync {group_id}")
+            await self._resync_locked(group_id)
+        finally:
+            lease.release()
+            self._recovery.transition(RecoveryState.READY, reason=f"resync done {group_id}")
+
+    async def _resync_locked(self, group_id: str) -> None:
         try:
             record = await self.sync(group_id)
         except GroupError as exc:
@@ -1254,6 +1930,15 @@ class GroupMessagingService:
     def ledgers_for(self, group_id: str) -> list[GroupMessageLedger]:
         runtime = self._runtimes.get(group_id)
         return list(runtime.ledgers.values()) if runtime is not None else []
+
+    # Phase 8 — recovery observability (metadata only, no secrets).
+
+    @property
+    def recovery(self) -> RecoveryCoordinator:
+        return self._recovery
+
+    def recovery_state_label(self) -> str:
+        return self._recovery.state.value
 
     def link_states(self, group_id: str) -> dict[str, str]:
         """Per-member link state for UI status lines (metadata only)."""

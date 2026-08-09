@@ -22,3 +22,12 @@ dist/
 .idea/
 .vscode/
 .DS_Store
+
+# Developer Portal (Phase 10B)
+portal/web/node_modules/
+portal/web/dist/
+portal/backend/**/__pycache__/
+portal/**/*.pyc
+portal/*.db
+portal/.env
+portal/web/*.tsbuildinfo

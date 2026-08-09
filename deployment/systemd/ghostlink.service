@@ -1,0 +1,49 @@
+# GhostLink Developer Portal — systemd unit (Phase 13G).
+#
+# Run the portal under gunicorn as a dedicated, non-root user. The database,
+# session secret and other configuration are read from /etc/ghostlink/portal.env
+# (chmod 600, owned by root:ghostlink). See deployment/README.md.
+#
+#   sudo cp deployment/systemd/ghostlink.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ghostlink
+
+[Unit]
+Description=GhostLink Developer Portal
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ghostlink
+Group=ghostlink
+WorkingDirectory=/srv/ghostlink/portal/backend
+EnvironmentFile=/etc/ghostlink/portal.env
+# Production WSGI server: 2 workers, threads, structured JSON logs.
+ExecStart=/srv/ghostlink/.venv/bin/python -m gunicorn \
+    portal_server.app:create_wsgi_app \
+    --bind 127.0.0.1:8788 \
+    --workers 2 \
+    --threads 4 \
+    --timeout 30 \
+    --access-logfile - \
+    --error-logfile -
+Restart=on-failure
+RestartSec=5
+
+# Hardening: no privileges beyond the dedicated user.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/
+ReadWritePaths=/srv/ghostlink/runtime
+CapabilityBoundingSet=
+LimitNOFILE=65536
+
+# Graceful shutdown on SIGTERM (gunicorn drains in-flight requests).
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

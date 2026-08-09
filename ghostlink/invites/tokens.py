@@ -55,7 +55,7 @@ def normalize_invite_token(candidate: str) -> str:
     if not _TOKEN_PATTERN.fullmatch(cleaned):
         raise InviteValidationError(
             "That does not look like a GhostLink invite token.",
-            hint="Tokens are 20 letters/digits, e.g. gl://join/8F7K2MQ3W2J4X6B9DZP4.",
+            hint="Tokens are 20 letters/digits, e.g. gl://join/<token>.",
         )
     return cleaned
 
@@ -111,7 +111,7 @@ def parse_invite_link(candidate: str) -> str:
     if not separator or scheme_part.lower() != INVITE_LINK_SCHEME:
         raise InviteValidationError(
             "Invite links must start with 'gl://'.",
-            hint="Paste the full link your peer shared, e.g. gl://join/8F7K2MQ3…",
+            hint="Paste the full link your peer shared, e.g. gl://join/<token>…",
         )
     host_part, separator, _token_part = remainder.partition("/")
     if not separator or host_part.lower() != INVITE_LINK_HOST:

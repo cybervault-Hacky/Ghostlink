@@ -372,6 +372,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("session", help="show the session dashboard (history, rooms, invites)")
     subparsers.add_parser("doctor", help="run environment diagnostics and exit")
+    subparsers.add_parser(
+        "security-status",
+        help="show a read-only security, crypto-suite and group-recovery summary",
+    )
     return parser
 
 

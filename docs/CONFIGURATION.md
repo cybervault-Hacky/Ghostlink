@@ -108,6 +108,22 @@ Two cross-checks apply: `max_file_size_mb / chunk_size_kb` must not exceed
 must be able to hold what your concurrency cap allows. Invalid combinations
 abort launch with a hint naming both keys.
 
+## Fixed hardening constants (Phase 8)
+
+These are compile-time limits in `ghostlink/constants/net.py` (not user
+tunable, so they cannot be weakened by misconfiguration):
+
+| Constant | Value | Purpose |
+| --- | --- | --- |
+| `GROUP_SKREQ_RATE_OPS` | 4 | Max sender-key pull requests per 10 s per (group, requester) |
+| `GROUP_SK_PENDING_BUCKETS` / `_PER_SENDER` | 64 / 16 | Bounded sender-key race buffer |
+| `RELAY_MAX_CONNECTIONS` | 1024 | Hard relay connection cap |
+| `RELAY_CONNECT_RATE_PER_SECOND` / `BURST` | 40 / 80 | Per-source-IP connection token bucket |
+
+The relay runs with these bounds by default; they are in-memory and reset
+on restart. They are not exposed as user configuration to avoid accidental
+weakening.
+
 ## Precedence
 
 ```

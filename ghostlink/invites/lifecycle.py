@@ -23,7 +23,7 @@ from ghostlink.constants.net import (
     INVITE_DEFAULT_TTL_SECONDS,
     INVITE_PROTOCOL_VERSION,
 )
-from ghostlink.core.logging import get_logger
+from ghostlink.core.logging import get_logger, register_secret
 from ghostlink.exceptions.invites import InviteStateError, InviteUnknownError
 from ghostlink.invites.authority import InviteGrant
 from ghostlink.invites.expiration import expiry_from_now
@@ -84,6 +84,8 @@ class SecureInviteManager:
         )
         self._tokens[invite_id] = token
         link = format_invite_link(token)
+        register_secret(token)  # Phase 8: scrub this token from any log output
+        register_secret(link)
         target = group_id if kind == "group" else bound_room
         _logger.info(
             "invite minted — %s for %s (kind=%s ttl=%ds uses=%d)",

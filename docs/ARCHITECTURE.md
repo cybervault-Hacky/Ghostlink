@@ -591,3 +591,27 @@ by the group's `crypto_suite` (`mesh-v1` default, or `senderkey-v1`):
 - CLI/UI — `ghostlink group create --crypto-suite senderkey-v1`, and an
   in-chat `/security` command showing suite/epoch/key-state without ever
   rendering key material; the banner advertises the active suite.
+
+## 15. Reliability & adversarial hardening (Phase 8)
+
+- `ghostlink/core/recovery.py` — the single authoritative recovery
+  authority. `RecoveryState` enumerates `CONNECTED/DEGRADED/RECONNECTING/
+  RESYNC_REQUIRED/RECOVERING/READY/FAILED/CLOSED` with a closed transition
+  table; `RecoveryCoordinator` hands out exclusive `RecoveryLease`s so
+  exactly-one resync/install/reconnect runs per key (no competing loops).
+  The group service wires it into its resync path.
+- `ghostlink/core/logging.py` — a `SecretRedactor`/`RedactingFilter`
+  backstop scrubs registered secrets and invite-token shapes from every
+  log record; `register_secret()` is called at invite mint time.
+- `ghostlink/groups/service.py` — sender-key recovery hardening: a
+  `GSKREQ` abuse brake per (group, requester) in both directions, bounded
+  pending-buffer constants, and coordinator-backed resync dedup.
+- `ghostlink/transport/relay/server.py` — connection-cap + per-source-IP
+  connection token bucket (in-memory, fail-closed, swept), on top of the
+  existing forward/event brakes.
+- `ghostlink/cli/doctor.py` — extended `--doctor` now reports dependency
+  availability, the OpenSSL/crypto backend, data-directory health, and the
+  available crypto suites (read-only, no state writes).
+- `ghostlink/cli/commands/security_status.py` — `ghostlink security-status`
+  renders a read-only security & recovery summary (suite, identity
+  fingerprint, relay, group recovery) with no secrets, keys, or tokens.

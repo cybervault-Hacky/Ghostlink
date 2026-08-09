@@ -1,9 +1,10 @@
 # GhostLink Groups — Phase 6A Security & Design Specification
 
 > **STATUS: IMPLEMENTED.** Phases 6B (lifecycle), 6C (pairwise-mesh
-> messaging) and 7 (sender-key hardening, §36-§37) are implemented and
-> tested. This document is the authoritative security model; §36's sender-key
-> design is no longer "future" — it is the implemented Phase 7 model.
+> messaging), 7 (sender-key hardening, §36-§37) and 8 (reliability &
+> adversarial hardening, §41-§42) are implemented and tested. This document
+> is the authoritative security model; §36's sender-key design and §41's
+> recovery model are the implemented design.
 >
 > This document is the complete security model for secure groups. It exists
 > so that implementation never invents security rules during coding. Every
@@ -1121,6 +1122,11 @@ implementation; documented in [CONFIGURATION.md](CONFIGURATION.md)):
 | Receiver-chain state | `GROUP_SK_MAX_RECEIVER_STATE` = **64** total | Defensive cap on incoming chains |
 | Sender-key offline retry | **8** envelopes / member (FIFO) | Mirrors §29 offline bound |
 | Sealed-envelope cache | **64** / group | For async offline requeue; pruned oldest-first |
+| GSKREQ rate | `GROUP_SKREQ_RATE_OPS` = **4** / 10 s / (group, requester) | §41: key-pull abuse brake, both directions |
+| Sender-key pending buckets | `GROUP_SK_PENDING_BUCKETS` = **64** | Bounded GSK/SKMSG race buffer keys |
+| Sender-key pending per sender | `GROUP_SK_PENDING_PER_SENDER` = **16** | Bounded per-sender buffered frames |
+| Relay live clients | `RELAY_MAX_CONNECTIONS` = **1024** | §41: hard connection cap |
+| Relay connect rate | `RELAY_CONNECT_RATE_PER_SECOND` = **40** / burst **80** per IP | §41: per-source token bucket |
 
 **Why exactly 8 members:** (1) mesh arithmetic is quadratic —
 n(n−1)/2 links — and 8 keeps the worst case at 28 links / 7 sessions /
@@ -1424,6 +1430,102 @@ Implementation must deliver, at minimum:
     plaintext/chain-root; tampered/wrong-sender/wrong-epoch SKMSG
     rejection; offline requeue after reconnect; suite negotiation +
     no-downgrade; log/storage secret-hygiene; bounded resource tests.
+
+## 41. Reliability & adversarial hardening (Phase 8 — IMPLEMENTED)
+
+### 41.1 Recovery state machine
+
+`ghostlink/core/recovery.py` provides the single authoritative recovery
+authority:
+
+* :class:`RecoveryState` — `CONNECTED / DEGRADED / RECONNECTING /
+  RESYNC_REQUIRED / RECOVERING / READY / FAILED / CLOSED` with a closed,
+  deterministic transition table (illegal jumps raise
+  `IllegalRecoveryTransition`).
+* :class:`RecoveryCoordinator` — exactly-**one** in-flight operation per
+  key. `begin(op_key)` returns an exclusive `RecoveryLease` only when no
+  operation for that key is running; a competing resync / install /
+  reconnect for the same key is refused, not merely throttled. This
+  prevents the classic "competing recovery loop" failure.
+
+The group messaging service wires the coordinator into its resync path:
+at most one in-flight resync per group, guaranteed by lease, with the
+throttle map as a second (coarser) layer.
+
+### 41.2 Group resync model
+
+When a member detects an epoch gap, stale roster, invalid event, missing
+sender-key generation, incompatible suite, or a reconnect after a long
+offline period, it enters `RESYNC_REQUIRED`. It does **not** guess state.
+Recovery is:
+
+1. re-attest + fetch the authoritative `GROUP_STATE` snapshot,
+2. verify epoch monotonicity (never regress; a gap marks the record
+   suspect and refuses sends until repaired),
+3. verify the owner-signed roster/event tail against the pinned owner key,
+4. reconcile sender-key state (prune old epochs, request distributions),
+5. only then transition `RECOVERING → READY`.
+
+The relay is never trusted blindly: mismatched crypto-suite, regressed
+epoch, or unverifiable signatures fail closed and mark the record suspect.
+
+### 41.3 Sender-key recovery hardening
+
+* Missing/skipped/stale/future/wrong-epoch/wrong-sender/wrong-recipient/
+  wrong-group/replayed/corrupted `GSK` frames are rejected or ignored
+  deterministically; a duplicate `GSK` does not reset a live chain.
+* `GSKREQ` is rate-limited per (group, requester) in **both** directions
+  (outbound pulls and responding distributions) so a hostile peer cannot
+  force an amplification loop (`GROUP_SKREQ_RATE_OPS`).
+* The skipped-key cache, pending-frame buffer, offline retry queue and
+  sealed-envelope cache are all bounded (§32). Sender-key stores remain
+  memory-only, epoch-scoped, generation-scoped, never logged, never
+  persisted; teardown zeroizes `bytearray` slots best-effort (Python
+  cannot guarantee secure memory erasure — stated honestly).
+
+### 41.4 Relay abuse controls
+
+The relay stays a lightweight in-memory routing/authority component. On
+top of the §32 forward/event brakes it now enforces:
+
+* a hard concurrent-connection cap (`RELAY_MAX_CONNECTIONS`), and
+* a per-source-IP connection token bucket
+  (`RELAY_CONNECT_RATE_PER_SECOND` / `RELAY_CONNECT_BURST`).
+
+Both are fail-closed, in-memory, and pruned on the sweep. No database,
+cloud, or web-service dependency is added.
+
+### 41.5 Log & exception hygiene
+
+`ghostlink/core/logging.py` now carries a `SecretRedactor` + `RedactingFilter`
+backstop: exact secrets registered at runtime (e.g. invite tokens at mint
+time) and well-known token shapes are scrubbed from every log record,
+even if a code path slips. Sender-key material is never logged or placed
+in exceptions; `senderkeys.py` contains no logger at all. Regression
+tests inject secrets and assert absence.
+
+### 41.6 Known limitations
+
+* Relay connection limits are per-process and per-source-IP; a truly
+  distributed flood across many IPs is bounded only by the global cap.
+* Log redaction is a backstop, not a substitute for the code discipline
+  that already avoids logging secrets.
+* As elsewhere in GhostLink: no anonymity, no endpoint-compromise
+  protection, no absolute guarantees — only the precise, tested claims
+  above.
+
+## 42. Adversarial validation (Phase 8 — IMPLEMENTED)
+
+Deterministic fuzz/property tests cover packet decoding, inner-frame
+validation, group ids, identity fingerprints, invite parsing, and
+sender-key frame parsing (fixed seeds, bounded runs, fail-closed only).
+Adversarial loopback tests over the real relay cover stale/wrong-epoch/
+duplicate `GSK`, out-of-order and future-epoch sender-key messages,
+`GSKREQ` abuse, concurrent membership + message flows, epoch-advance
+determinism, group resync, and removed-member send refusal. Crash
+consistency tests prove atomic storage survives interruption (leftover
+temp files ignored, corrupt active files surface typed errors, identity
+stores survive restart).
 
 ## 39. Implementation checklist
 

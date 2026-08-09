@@ -54,11 +54,20 @@ distribution envelope; the relay still sees ciphertext only. Removal,
 re-join and reconnects rotate and re-distribute chains; out-of-order
 delivery uses a bounded skipped-key cache; replay and cross-context
 reuse are rejected.
+
+Phase 8 (Reliability, Security Hardening & Adversarial Validation) hardens
+GhostLink against hostile networks, relays, peers, storage, packets, clocks,
+and delivery order. It adds a deterministic recovery coordinator (one
+authoritative state and exactly-one in-flight resync/install per group), a
+bounded GSKREQ abuse brake and sender-key recovery hardening, relay
+connection-cap and per-source rate limits, a log-secret redaction backstop,
+an extended ``--doctor``, a read-only ``ghostlink security-status``
+diagnostic, and comprehensive adversarial / fuzz / crash-consistency tests.
 """
 
 from __future__ import annotations
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 __all__ = ["__version__", "version_info"]
 
 _major, _minor, _patch = (int(part) for part in __version__.split("."))

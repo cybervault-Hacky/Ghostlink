@@ -14,6 +14,7 @@ returned :class:`LoggingReport`.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -27,6 +28,61 @@ LOG_MAX_BYTES = 512 * 1024
 LOG_BACKUP_COUNT = 3
 _FILE_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+class SecretRedactor:
+    """Defense-in-depth log scrubbing (Phase 8).
+
+    GhostLink already never *intentionally* logs secrets; this is a
+    backstop so that even a slip in some code path cannot leak key material,
+    invite tokens, or other registered secrets into logs or debug output.
+
+    Two scrubbing layers:
+
+    * exact values registered at runtime via :meth:`register_secret` (e.g.
+      the invite token at mint time) are replaced everywhere they appear;
+    * well-known secret *shapes* — one-time invite tokens and join links —
+      are scrubbed by pattern so unregistered tokens are still protected.
+    """
+
+    _TOKEN_PATTERN = re.compile(r"\bgli_[A-Za-z0-9]{20}\b")
+
+    def __init__(self) -> None:
+        self._exact: set[str] = set()
+
+    def register_secret(self, value: str) -> None:
+        if isinstance(value, str) and value:
+            self._exact.add(value)
+
+    def redact(self, text: str) -> str:
+        for value in self._exact:
+            text = text.replace(value, "<redacted>")
+        return self._TOKEN_PATTERN.sub("<redacted-token>", text)
+
+
+_secret_redactor = SecretRedactor()
+
+
+def register_secret(value: str) -> None:
+    """Register a runtime secret (e.g. an invite token) for log scrubbing."""
+    _secret_redactor.register_secret(value)
+
+
+def redact_secrets(text: str) -> str:
+    """Public scrubbing helper (also usable in exception formatting)."""
+    return _secret_redactor.redact(text)
+
+
+class RedactingFilter(logging.Filter):
+    """A logging filter that scrubs secrets from every record it passes."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        redacted = _secret_redactor.redact(message)
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +138,8 @@ def setup_logging(*, log_dir: Path, debug: bool, echo_debug: bool = True) -> Log
         file_handler = logging.NullHandler()
 
     file_handler.setLevel(file_level)
+    # Phase 8 backstop: scrub registered secrets + token shapes from all logs.
+    root.addFilter(RedactingFilter())
     root.addHandler(file_handler)
 
     if debug and echo_debug:

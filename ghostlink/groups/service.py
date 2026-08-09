@@ -51,8 +51,13 @@ from ghostlink.constants.net import (
     GROUP_OFFLINE_QUEUE_PER_MEMBER,
     GROUP_SEEN_IDS_PER_SENDER,
     GROUP_SK_DISTRIBUTION_BODY_MAX,
+    GROUP_SK_PENDING_BUCKETS,
+    GROUP_SK_PENDING_PER_SENDER,
+    GROUP_SKREQ_RATE_OPS,
+    GROUP_SKREQ_RATE_WINDOW_SECONDS,
 )
 from ghostlink.core.logging import get_logger
+from ghostlink.core.recovery import RecoveryCoordinator, RecoveryState
 from ghostlink.exceptions.groups import (
     GroupError,
     GroupMessageError,
@@ -209,6 +214,11 @@ class GroupMessagingService:
         self._listeners: list[Callable[[GroupChatEvent], None]] = []
         self._link_waiters: dict[tuple[str, str], asyncio.Future[PairwiseLink]] = {}
         self._resync_at: dict[str, float] = {}
+        # Phase 8 — one authoritative recovery state + resync coordinator:
+        # exactly one in-flight resync per group (no competing loops).
+        self._recovery = RecoveryCoordinator()
+        # (group, requester) -> deque[monotonic] — GSKREQ abuse brake.
+        self._skreq_windows: dict[tuple[str, str], deque[float]] = {}
         # Phase 7 sender-key state (memory-only, zeroizable, bounded).
         self._sk = SenderKeyStore()
         # (group, recipient) -> (epoch, gen, index) — the distribution state
@@ -295,6 +305,10 @@ class GroupMessagingService:
         # only the per-recipient "already distributed" bookkeeping resets so
         # the next send re-distributes to everyone reachable.
         self._sk_distributed.clear()
+        # Phase 8 — a new session resets the recovery coordinator: no stale
+        # in-flight leases survive a re-attach.
+        self._recovery.reset()
+        self._recovery.transition(RecoveryState.CONNECTED, reason="attach")
         client.set_group_forward_listener(self._on_forward)
         client.set_group_forward_error_listener(self._on_forward_error)
         self._client = client
@@ -328,6 +342,8 @@ class GroupMessagingService:
         self._sk_retry.clear()
         self._sk_sealed.clear()
         self._sk_pending.clear()
+        self._skreq_windows.clear()
+        self._recovery.transition(RecoveryState.CLOSED, reason="close")
 
     # ------------------------------------------------------------- records
 
@@ -1320,11 +1336,11 @@ class GroupMessagingService:
         key = (group_id, sender)
         queue = self._sk_pending.get(key)
         if queue is None:
-            if len(self._sk_pending) >= 64:
+            if len(self._sk_pending) >= GROUP_SK_PENDING_BUCKETS:
                 self._sk_pending.popitem(last=False)
             queue = []
             self._sk_pending[key] = queue
-        if len(queue) >= 16:
+        if len(queue) >= GROUP_SK_PENDING_PER_SENDER:
             queue.pop(0)  # bounded; drop the oldest pending frame
         queue.append(body)
         self._sk_pending.move_to_end(key)
@@ -1344,9 +1360,39 @@ class GroupMessagingService:
             )
             task.add_done_callback(self._observe_pump)
 
+    def _skreq_allowed(self, group_id: str, sender: str) -> bool:
+        """Sliding-window GSKREQ brake per (group, requester) (§ Phase 8).
+
+        Bounds both *outbound* pull requests and *responding* distributions,
+        so a malicious peer cannot amplify sender-key traffic. Memory is
+        bounded by the roster cap; stale windows are pruned on access.
+        """
+        key = (group_id, sender)
+        now = time.monotonic()
+        window = self._skreq_windows.get(key)
+        if window is None:
+            if len(self._skreq_windows) >= 64:
+                self._skreq_windows.pop(next(iter(self._skreq_windows)))
+            window = deque()
+            self._skreq_windows[key] = window
+        while window and now - window[0] > GROUP_SKREQ_RATE_WINDOW_SECONDS:
+            window.popleft()
+        if len(window) >= GROUP_SKREQ_RATE_OPS:
+            return False
+        window.append(now)
+        return True
+
     async def _send_skreq(self, record: LocalGroupRecord, sender: str) -> None:
-        """Ask a sender to re-distribute its chain (mesh-sealed control frame)."""
+        """Ask a sender to re-distribute its chain (mesh-sealed control frame).
+
+        Rate-limited: repeated pulls for the same (group, requester) are
+        dropped beyond the §-8 brake, so a hostile peer cannot force us into
+        an amplification loop.
+        """
         group_id = record.group_id
+        if not self._skreq_allowed(group_id, sender):
+            _logger.info("group %s — GSKREQ to %s rate-limited", group_id, sender)
+            return
         link = self._mesh.accepting_link(group_id, record.epoch, sender)
         if link is None:
             return
@@ -1370,8 +1416,14 @@ class GroupMessagingService:
             return
 
     async def _respond_sk_distribution(self, record: LocalGroupRecord, sender: str) -> None:
-        """Answer a GSKREQ: hand the requester our current chain distribution."""
+        """Answer a GSKREQ: hand the requester our current chain distribution.
+
+        Also rate-limited, so repeated key-requests cannot amplify our
+        outbound distribution traffic.
+        """
         group_id = record.group_id
+        if not self._skreq_allowed(group_id, sender):
+            return
         link = self._mesh.accepting_link(group_id, record.epoch, sender)
         if link is None:
             return
@@ -1752,7 +1804,12 @@ class GroupMessagingService:
         now = time.monotonic()
         if now - self._resync_at.get(f"sync:{group_id}", 0.0) < _RESYNC_MIN_INTERVAL_SECONDS:
             return
+        # Exactly-one authority: if a resync for this group is already in
+        # flight, do not schedule a competing loop (§ Phase 8 recovery).
+        if self._recovery.has_in_flight(f"resync:{group_id}"):
+            return
         self._resync_at[f"sync:{group_id}"] = now
+        self._recovery.transition(RecoveryState.RESYNC_REQUIRED, reason=reason)
         self._emit(
             GroupChatEvent(
                 GroupChatEventKind.NOTICE,
@@ -1764,6 +1821,17 @@ class GroupMessagingService:
         task.add_done_callback(self._observe_pump)
 
     async def _resync(self, group_id: str) -> None:
+        lease = self._recovery.begin(f"resync:{group_id}")
+        if lease is None:
+            return  # another resync for this group is already running
+        try:
+            self._recovery.transition(RecoveryState.RECOVERING, reason=f"resync {group_id}")
+            await self._resync_locked(group_id)
+        finally:
+            lease.release()
+            self._recovery.transition(RecoveryState.READY, reason=f"resync done {group_id}")
+
+    async def _resync_locked(self, group_id: str) -> None:
         try:
             record = await self.sync(group_id)
         except GroupError as exc:
@@ -1862,6 +1930,15 @@ class GroupMessagingService:
     def ledgers_for(self, group_id: str) -> list[GroupMessageLedger]:
         runtime = self._runtimes.get(group_id)
         return list(runtime.ledgers.values()) if runtime is not None else []
+
+    # Phase 8 — recovery observability (metadata only, no secrets).
+
+    @property
+    def recovery(self) -> RecoveryCoordinator:
+        return self._recovery
+
+    def recovery_state_label(self) -> str:
+        return self._recovery.state.value
 
     def link_states(self, group_id: str) -> dict[str, str]:
         """Per-member link state for UI status lines (metadata only)."""

@@ -133,10 +133,33 @@ lives in [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
-## Current release: Phase 7
+## Current release: Phase 8
 
-**Phase 7 — Sender-Key Hardening** is the latest implemented phase
-(version `0.8.0`).
+**Phase 8 — Reliability, Security Hardening & Adversarial Validation** is
+the latest implemented phase (version `0.9.0`).
+
+- **Deterministic recovery**: a single recovery state machine
+  (`CONNECTED/DEGRADED/RECONNECTING/RESYNC_REQUIRED/RECOVERING/READY/
+  FAILED/CLOSED`) and a coordinator that guarantees exactly-one in-flight
+  resync/install per group — no competing recovery loops.
+- **Group resync**: members enter `RESYNC_REQUIRED` on epoch gaps, stale
+  rosters, invalid events, or missing sender-key generations; recovered
+  state is cryptographically verified before becoming active.
+- **Sender-key recovery hardening**: deterministic rejection of stale /
+  future / wrong-epoch / duplicate / corrupted key frames, bounded caches,
+  and a `GSKREQ` abuse brake that prevents key-pull amplification.
+- **Relay abuse controls**: a connection cap and per-source-IP connection
+  rate limit (in-memory, fail-closed) on top of the existing forward/event
+  brakes.
+- **Log-hygiene backstop**: registered secrets and invite tokens are
+  scrubbed from every log record, even on a code-path slip.
+- **Diagnostics**: `ghostlink security-status` (read-only security &
+  recovery summary) and an extended `--doctor` (dependency availability,
+  OpenSSL backend, data-directory health, crypto suites).
+
+Phase 7's sender-key encryption is fully retained and hardened. Run
+`ghostlink security-status` to see your crypto-suite and group-recovery
+summary; `ghostlink --doctor` verifies the environment.
 
 - Group messaging is implemented on top of the Phase 6B group lifecycle.
 - Two encryption suites, chosen at group creation:
@@ -537,7 +560,8 @@ Every command below is defined by the argument parser in
 | `ghostlink group chat <gl-group-…>` | Open the encrypted group conversation |
 | `ghostlink relay-status` | Probe the relay and render the live status dashboard |
 | `ghostlink session` | Session dashboard: history, rooms, invites |
-| `ghostlink doctor` | Read-only environment diagnostics |
+| `ghostlink doctor` | Read-only environment diagnostics (dependencies, crypto, storage) |
+| `ghostlink security-status` | Read-only security, crypto-suite & recovery summary |
 
 Common options (where applicable): `--relay URL`, `--as NAME`,
 `--expires DURATION` (`900`, `30s`, `5m`, `1h`), `--uses N`,
@@ -726,9 +750,10 @@ GhostLink ships in deliberate, self-contained phases.
 | 6A | Group security design ([docs/GROUPS.md](docs/GROUPS.md)) | ✅ Design complete |
 | 6B | Group lifecycle — membership, signed roster events, epochs | ✅ Implemented |
 | 6C | Group messaging + pairwise-mesh encryption | ✅ Implemented |
-| 7 | Sender-key hardening — O(1) group encryption, epoch-scoped sender keys | ✅ Implemented (current) |
+| 7 | Sender-key hardening — O(1) group encryption, epoch-scoped sender keys | ✅ Implemented |
+| 8 | Reliability, security hardening & adversarial validation | ✅ Implemented (current) |
 | 6D | Rich communication — replies/edits/reactions, friend system, editable settings | Planned |
-| 8 | Hardening & polish — security review, offline queue design, localization | Planned |
+| 9 | Hardening & polish — security review, offline queue design, localization | Planned |
 
 Sender-key encryption is implemented as the opt-in `senderkey-v1` suite
 (docs/GROUPS.md §36); `mesh-v1` remains the default for full backward

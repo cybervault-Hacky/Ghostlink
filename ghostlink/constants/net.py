@@ -115,3 +115,18 @@ GROUP_SK_ROOT_BYTES: int = 32
 GROUP_SK_DISTRIBUTION_BODY_MAX: int = 1024  # GSK inner-frame body ceiling
 # Defensive cap on incoming receiver-chain state (groups x members upper bound).
 GROUP_SK_MAX_RECEIVER_STATE: int = 8 * 8
+# Phase 8 — sender-key request (GSKREQ) abuse brake: at most this many
+# key-pull requests per (group, requester) per window before drops.
+GROUP_SKREQ_RATE_OPS: int = 4
+GROUP_SKREQ_RATE_WINDOW_SECONDS: float = 10.0
+# Phase 8 — bounded pending-buffer ceilings for sender-key recovery.
+GROUP_SK_PENDING_BUCKETS: int = 64
+GROUP_SK_PENDING_PER_SENDER: int = 16
+
+# ---------------------------------------------------- relay abuse brakes (8)
+# In-memory, never persisted. The relay remains a lightweight routing /
+# authority component; these bounds prevent a single abusive source from
+# exhausting the process (docs/GROUPS.md §32, Phase 8 §10).
+RELAY_MAX_CONNECTIONS: int = 1024  # hard cap on concurrent live clients
+RELAY_CONNECT_RATE_PER_SECOND: float = 40.0  # per-source-IP token bucket
+RELAY_CONNECT_BURST: int = 80  # burst tolerance for legitimate bursts

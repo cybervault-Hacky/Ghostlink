@@ -9,6 +9,7 @@ from ghostlink.cli.commands.identity import run_identity
 from ghostlink.cli.commands.invites import run_invite
 from ghostlink.cli.commands.join import run_join
 from ghostlink.cli.commands.relay_status import run_relay_status
+from ghostlink.cli.commands.security_status import run_security_status
 from ghostlink.cli.commands.session import run_session
 from ghostlink.cli.doctor import run_doctor
 
@@ -32,4 +33,6 @@ def run_command(options: CLIOptions) -> int:
         return run_session(options)
     if options.command == "doctor":
         return run_doctor(options)
+    if options.command == "security-status":
+        return run_security_status(options)
     raise ValueError(f"Unknown command {options.command!r} passed argument parsing.")

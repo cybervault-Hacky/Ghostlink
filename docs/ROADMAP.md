@@ -331,6 +331,42 @@ per sender message broadcast to the whole roster.
   joiner isolation, reconnect, replay/tamper, offline retry, suite wiring,
   relay-opaqueness) — full suite green at 1318 passing
 
+## Phase 8 — Reliability, Security Hardening & Adversarial Validation ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — makes GhostLink substantially harder to break,
+corrupt, desynchronize, abuse, or silently fail, without adding features
+or new crypto.
+
+- **Recovery coordinator** (`ghostlink/core/recovery.py`): a single
+  authoritative `RecoveryState` machine (`CONNECTED/DEGRADED/RECONNECTING/
+  RESYNC_REQUIRED/RECOVERING/READY/FAILED/CLOSED`) with a closed
+  transition table, plus `RecoveryLease`-guaranteed **exactly-one in-flight
+  resync/install per group** — no competing recovery loops.
+- **Group resync hardening**: `RESYNC_REQUIRED` on epoch gap / stale roster
+  / invalid event / missing generation / incompatible suite; snapshot
+  verification, epoch monotonicity, owner-signed roster checks, sender-key
+  reconciliation; never guesses state, fails closed into suspect.
+- **Sender-key recovery hardening**: deterministic rejection of
+  stale/future/wrong-epoch/wrong-sender/duplicate/corrupted `GSK`;
+  bounded skipped-key + pending-buffer caches; a `GSKREQ` abuse brake
+  (both directions) prevents key-pull amplification.
+- **Relay abuse controls**: hard connection cap + per-source-IP connection
+  token bucket (in-memory, fail-closed, swept) on top of the existing
+  forward/event brakes.
+- **Log hygiene backstop**: a `SecretRedactor`/`RedactingFilter` scrubs
+  registered secrets + token shapes from every log record; sender-key code
+  contains no logger; regression tests inject secrets and assert absence.
+- **CLI/TUI diagnostics**: `ghostlink security-status` (read-only summary
+  of suite, identity, relay, groups — no secrets) and an extended
+  `--doctor` (dependency availability, OpenSSL backend, data-directory
+  health, crypto suites).
+- **Testing**: recovery state-machine + lease tests, deterministic fuzz/
+  property tests (packet decode, frames, ids, fingerprints, invites,
+  sender-key frames), crash-consistency tests, adversarial loopback tests
+  (stale/duplicate GSK, out-of-order & future-epoch messages, GSKREQ
+  abuse, concurrent membership, resync, relay abuse), plus CLI tests.
+- Full suite green at 1379 passing; no new cryptographic primitive.
+
 ## Phase 6D — Rich Communication
 
 - Friend system: adding, verifying safety numbers, blocking
@@ -338,7 +374,7 @@ per sender message broadcast to the whole roster.
 - Contact cards and room metadata panels
 - Settings screen becomes editable; notification center gains unread state
 
-## Phase 8 — Hardening & Polish
+## Phase 9 — Hardening & Polish
 
 - Full security review and threat-model document
 - Offline message queue and multi-device sync design

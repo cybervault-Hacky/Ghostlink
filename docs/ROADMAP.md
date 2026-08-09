@@ -399,7 +399,7 @@ weakening the security model.
   detection, and read-only/malformed config handling.
 - Full suite green at 1416 passing; no new cryptographic primitive.
 
-## Phase 10A — Developer Account & Credential Infrastructure ✅ (latest implemented)
+## Phase 10A — Developer Account & Credential Infrastructure ✅
 
 **STATUS: IMPLEMENTED** — a local, production-grade Developer Account
 system that a future developer portal (Phase 10B) can authenticate against,
@@ -428,10 +428,36 @@ remote service, no secret upload, zero network requests.**
   CLI, doctor/security-status, packaging).
 - Full suite green at 1465 passing.
 
-## Phase 10B — Developer Portal (future)
+## Phase 10B — Developer Portal ✅ (latest implemented)
 
-A developer portal website that authenticates against the Phase 10A
-credentials. **Not implemented in Phase 10A.**
+**STATUS: IMPLEMENTED** — a secure web application for GhostLink
+developers, built as a real, tested, security-focused portal (not a mock).
+
+- **Backend** (`portal/backend/portal_server/`): a dependency-light Python
+  WSGI app (stdlib + `cryptography`). PBKDF2 password hashing, HttpOnly/
+  SameSite session cookies with per-session CSRF, single-use hashed email
+  verification and password-reset tokens, rate limiting (IP + account),
+  metadata-only audit events, security headers.
+- **Credentials**: create / list / rotate / revoke / verify, reusing the
+  Phase 10A CSPRNG key generator; the secret is shown once and stored only
+  as salted verification material. Rotation and revocation are
+  authenticated, confirmed, atomic, and audited.
+- **MFA & WebAuthn**: TOTP (RFC 6238) with hashed recovery codes; passkey
+  (WebAuthn ES256) challenge + assertion verification. No biometric data is
+  ever collected or stored.
+- **Frontend** (`portal/web/`): React + TypeScript + Vite with a
+  white-first glassmorphism design system, an antigravity particle
+  background (respects `prefers-reduced-motion`), and protected routes for
+  dashboard, credentials, projects, sessions, activity, security, settings.
+- **Database**: SQLite (dev) with a PostgreSQL-ready schema; versioned
+  migrations via `schema_meta`.
+- **Tests**: 38 backend security tests (auth, authorization, credential
+  lifecycle, tokens, rate limits, MFA, WebAuthn, secret hygiene) + 4
+  frontend tests; full suite green at 1502 passing.
+- Docs: `docs/DEVELOPER_PORTAL.md`, `docs/API.md`, `docs/DEPLOYMENT.md`.
+- This is a local-first foundation; live email, full WebAuthn breadth, and
+  HTTPS deployment are documented production configuration, not shipped
+  live services.
 
 ## Phase 6D — Rich Communication
 

@@ -74,6 +74,17 @@ explicit compatibility matrix, and expands the test suite with
 compatibility, migration, package-content, protocol-downgrade and
 CLI-reliability coverage.
 
+Phase 10B (Developer Portal) adds a secure web application for GhostLink
+developers: remote developer accounts, developer credentials with a full
+lifecycle (create / rotate / revoke / verify), projects, sessions,
+security activity, and settings. It is a real, tested, security-focused
+portal: a dependency-light Python WSGI backend (stdlib + cryptography,
+SQLite with a PostgreSQL-ready schema) and a React + TypeScript + Vite
+frontend. Passwords are PBKDF2-hashed; developer secrets, recovery codes
+and session/token values are stored only as salted verifiers; sessions are
+revocable, requests are CSRF-protected and rate-limited, and audit logs are
+metadata-only. No telemetry, no secret upload, no biometric data.
+
 Phase 10A (Developer Account & Credential Infrastructure) adds a local,
 production-grade Developer Account system: a developer identity
 (``dev_…``) and cryptographically random API credentials (``gl_dev_…``)
@@ -89,7 +100,7 @@ makes **zero network requests** and uploads nothing.
 
 from __future__ import annotations
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 __all__ = ["__version__", "version_info"]
 
 _major, _minor, _patch = (int(part) for part in __version__.split("."))

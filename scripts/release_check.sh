@@ -57,18 +57,29 @@ step "Byte-compilation"
 # ------------------------------------------------------------ 4. ruff lint
 step "Ruff lint"
 ruff check ghostlink tests ghostlink.py
+ruff check portal/backend
 
 # ------------------------------------------------------- 5. ruff format check
 step "Ruff format (check)"
 ruff format --check ghostlink tests ghostlink.py
+ruff format --check portal/backend
 
 # ---------------------------------------------------------- 6. mypy --strict
 step "Mypy (strict)"
 "${PYTHON}" -m mypy --config-file pyproject.toml
+"${PYTHON}" -m mypy --strict portal/backend/portal_server
 
 # -------------------------------------------------------------- 7. pytest
 step "Test suite"
-"${PYTHON}" -m pytest tests/
+"${PYTHON}" -m pytest tests/ portal/backend/tests/
+
+# ------------------------------------------------- 7b. frontend (if npm present)
+step "Frontend build, typecheck & tests"
+if command -v npm >/dev/null 2>&1 && [ -f portal/web/package.json ]; then
+    (cd portal/web && npm run build && npm run test) || fail "frontend build/test failed"
+else
+    echo "npm not available — skipping frontend (backend gate still passed)"
+fi
 
 # ------------------------------------------------------------- 8. package build
 step "Package build (wheel + sdist)"

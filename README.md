@@ -21,7 +21,7 @@ Private conversations. End-to-end encryption. No browser required.
 ## Contents
 
 [Design principle](#design-principle) · [What is GhostLink?](#what-is-ghostlink) ·
-[Architecture](#architecture-overview) · [Current release](#current-release-phase-10a) ·
+[Architecture](#architecture-overview) · [Current release](#current-release-phase-10b) ·
 [Screenshots](#screenshots) · [Feature matrix](#feature-matrix) ·
 [Security model](#security-model) · [What the relay can see](#what-the-relay-can-see) ·
 [Identity & invites](#identity-and-invites) · [File transfer](#file-transfer) ·
@@ -133,31 +133,37 @@ lives in [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
-## Current release: Phase 10A
+## Current release: Phase 10B
 
-**Phase 10A — Developer Account & Credential Infrastructure** is the latest
-implemented phase (version `0.11.0`).
+**Phase 10B — Developer Portal** is the latest implemented phase (version
+`0.12.0`).
 
-- **Local Developer Account system** (`ghostlink developer …`): a developer
-  identity (`dev_…`) and cryptographically random API credentials
-  (`gl_dev_<key_id>_<secret>`, **256-bit CSPRNG** secrets) that a future
-  developer portal can authenticate against — without exposing the local
-  secret.
-- **Secure by design**: keys are never derived from predictable
-  identifiers, shown **once** at creation, stored only as salted
-  HKDF-SHA256 verification material (never plaintext), with atomic
-  `0600`/`0700`, symlink-refusing, versioned, fail-closed storage.
-- **Lifecycle**: `init`, `status`, `key create/list/rotate/revoke`,
-  `export-info`; rotation is atomic, revocation is persistent/irreversible,
-  capped at 4 active credentials, with local rate limiting.
-- **Local-only**: the module makes **zero network requests** and uploads
-  nothing. No website, no cloud service (Phase 10B is future work).
-- **Diagnostics**: `--doctor` and `security-status` report developer
-  account/credential health and metadata — never the secret.
-- Full docs: [docs/DEVELOPER_ACCOUNTS.md](docs/DEVELOPER_ACCOUNTS.md) and
-  [docs/SECURITY.md](docs/SECURITY.md).
+- **A real, tested, security-focused web portal** for GhostLink developers:
+  remote developer accounts, credentials (create / rotate / revoke /
+  verify), projects, sessions/devices, security activity, and settings.
+- **Backend** — a dependency-light Python WSGI app (stdlib +
+  `cryptography`). PBKDF2 password hashing, HttpOnly/SameSite session
+  cookies + per-session CSRF, single-use hashed email-verification and
+  password-reset tokens, IP+account rate limiting, metadata-only audit
+  events, and security headers.
+- **Credentials** — reuse the Phase 10A CSPRNG generator; the secret is
+  shown once and stored only as salted verification material. Rotation and
+  revocation are authenticated, confirmed, atomic, and audited.
+- **MFA & passkeys** — TOTP (RFC 6238) with hashed recovery codes; WebAuthn
+  ES256 challenge + assertion verification. No biometric data is collected
+  or stored.
+- **Frontend** — React + TypeScript + Vite with a white-first glassmorphism
+  design system, an antigravity particle background (respects
+  `prefers-reduced-motion`), and protected routes.
+- **Database** — SQLite (dev) with a PostgreSQL-ready schema.
+- Local-first foundation; live email, full WebAuthn breadth, and HTTPS
+  deployment are documented production configuration.
+- Docs: [docs/DEVELOPER_PORTAL.md](docs/DEVELOPER_PORTAL.md),
+  [docs/API.md](docs/API.md), [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-All of Phases 1–9 remain fully intact, including sender-key encryption and
+Phase 10A's **local** Developer Account system is fully retained and
+unchanged. All of Phases 1–9 remain fully intact, including sender-key
+encryption and
 the reliability/release hardening. Run `ghostlink security-status` for a
 read-only security & recovery summary and `ghostlink --doctor` to verify
 the environment.
@@ -760,9 +766,9 @@ GhostLink ships in deliberate, self-contained phases.
 | 7 | Sender-key hardening — O(1) group encryption, epoch-scoped sender keys | ✅ Implemented |
 | 8 | Reliability, security hardening & adversarial validation | ✅ Implemented |
 | 9 | Production readiness, compatibility & release engineering | ✅ Implemented |
-| 10A | Developer account & credential infrastructure | ✅ Implemented (current) |
+| 10A | Developer account & credential infrastructure | ✅ Implemented |
+| 10B | Developer portal (web) | ✅ Implemented (current) |
 | 6D | Rich communication — replies/edits/reactions, friend system, editable settings | Planned |
-| 10B | Developer portal (future) | Planned |
 | 11 | Hardening & polish — security review, offline queue design, localization | Planned |
 
 Sender-key encryption is implemented as the opt-in `senderkey-v1` suite

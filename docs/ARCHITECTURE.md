@@ -652,6 +652,22 @@ by the group's `crypto_suite` (`mesh-v1` default, or `senderkey-v1`):
   export-info); the full key is shown once, then only redacted metadata.
 - `ghostlink --doctor` and `ghostlink security-status` report developer
   account/credential health and metadata — never the secret.
-- Phase 10A makes **zero network requests** (tested); Phase 10B will add a
-  remote developer portal using the documented integration contract
-  (`docs/DEVELOPER_ACCOUNTS.md` §12).
+- Phase 10A makes **zero network requests** (tested); Phase 10B integrates
+  via the documented contract (`docs/DEVELOPER_ACCOUNTS.md` §12).
+
+## 18. Developer Portal (Phase 10B)
+
+- `portal/backend/portal_server/` — a dependency-light Python WSGI backend
+  (stdlib + `cryptography`): `app.py` (router + handlers), `auth.py`
+  (PBKDF2 password hashing, sessions, tokens, CSRF), `db.py` (SQLite schema,
+  PostgreSQL-ready), `mfa.py` (TOTP), `webauthn.py` (ES256 passkey
+  verification), `security.py` (rate limiting, security headers), `http.py`
+  (WSGI helpers). Runs under `wsgiref` for dev; gunicorn/waitress for
+  production.
+- `portal/web/` — React + TypeScript + Vite frontend with a white-first
+  glassmorphism design system, an antigravity particle background (respects
+  `prefers-reduced-motion`), and protected routes for dashboard,
+  credentials, projects, sessions, activity, security, and settings.
+- Credential lifecycle (create/rotate/revoke/verify) reuses
+  `ghostlink.developer.keys` for CSPRNG generation and salted verification.
+- Docs: `docs/DEVELOPER_PORTAL.md`, `docs/API.md`, `docs/DEPLOYMENT.md`.

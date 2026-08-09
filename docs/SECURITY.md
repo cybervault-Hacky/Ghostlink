@@ -46,9 +46,28 @@ GhostLink does **not** claim:
 * device security for local developer credentials once the OS is
   compromised.
 
+## Developer Portal (Phase 10B)
+
+The Developer Portal is a real, tested security-sensitive web application:
+
+* Passwords hashed with **PBKDF2-HMAC-SHA256** (per-user salt, 600k
+  iterations); never stored or returned in plaintext.
+* Developer secrets, recovery codes, and session/token values stored only
+  as **salted verifiers / hashes**; credentials shown once.
+* Sessions are HttpOnly/SameSite/Lax cookies (Secure in production),
+  revocable individually or globally; CSRF-protected; rate-limited.
+* MFA via **TOTP** (RFC 6238); **WebAuthn** ES256 assertion verification
+  (no biometric data collected or stored).
+* Security activity is **metadata-only** — no passwords, keys, tokens, or
+  session values are ever logged or returned.
+* No telemetry, no analytics, no tracking.
+
 ## Security model documents
 
 * **Groups / messaging** — [docs/GROUPS.md](GROUPS.md) (§5 threat model,
   §24 forward secrecy, §25 backward secrecy, §34 metadata, §41 recovery)
-* **Developer accounts** — [docs/DEVELOPER_ACCOUNTS.md](DEVELOPER_ACCOUNTS.md)
+* **Developer accounts (local)** — [docs/DEVELOPER_ACCOUNTS.md](DEVELOPER_ACCOUNTS.md)
+* **Developer portal (web)** — [docs/DEVELOPER_PORTAL.md](DEVELOPER_PORTAL.md)
+* **Portal API** — [docs/API.md](API.md)
+* **Deployment** — [docs/DEPLOYMENT.md](DEPLOYMENT.md)
 * **Architecture** — [docs/ARCHITECTURE.md](ARCHITECTURE.md)

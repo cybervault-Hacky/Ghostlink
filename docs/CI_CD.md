@@ -34,3 +34,15 @@ available here).
 - Docker image scanning and SBOM generation are **NOT IMPLEMENTED** (no
   tooling available in the offline environment); documented as a known
   limitation rather than claimed.
+
+## Repository-push note (this build)
+
+The workflow files in `.github/workflows/` are present in the repository
+working tree but could **not** be pushed to the remote during Phase 13: the
+connected GitHub App token lacks the `workflows` permission GitHub requires to
+create/update `.github/workflows/*.yml` (the push was rejected with
+`refusing to allow a GitHub App to create or update workflow ... without
+workflows permission`). Once that permission is granted (or the repository is
+pushed with a suitably scoped token), the files should be committed and pushed
+in one commit. The workflow *definitions* are written and validated by the
+quality gate but have not executed in this offline environment.

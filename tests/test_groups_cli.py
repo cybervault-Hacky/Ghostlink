@@ -81,6 +81,8 @@ class TestArgumentParsing:
         options = parse_args(["group", "info", "gl-group-AAAA-BBBB-CCCC"])
         assert options.group_action == "info"
         assert options.group_target == "gl-group-AAAA-BBBB-CCCC"
+        options = parse_args(["group", "create", "--name", "Ops", "--crypto-suite", "senderkey-v1"])
+        assert options.crypto_suite == "senderkey-v1"
         options = parse_args(["group", "remove", "gl-group-AAAA-BBBB-CCCC", "GLFP-AAAA-BBBB-CCCC"])
         assert options.group_action == "remove"
         assert options.group_subject == "GLFP-AAAA-BBBB-CCCC"
@@ -198,6 +200,54 @@ class TestCreateCommand:
         assert len(records) == 1
         assert records[0].epoch == 1
         assert records[0].my_role is GroupRole.OWNER
+
+    def test_create_over_relay_senderkey_suite(
+        self,
+        isolated_home: Path,
+        threaded_relay: object,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with threaded_relay() as relay:  # type: ignore[attr-defined]
+            code = main(
+                [
+                    *_data_args(isolated_home),
+                    "group",
+                    "create",
+                    "--name",
+                    "Ops",
+                    "--crypto-suite",
+                    "senderkey-v1",
+                    "--relay",
+                    relay.url,
+                ]
+            )
+        output = capsys.readouterr().out
+        assert code == int(ExitCode.OK), output
+        records = LocalGroupRegistry(StorageManager(_state_dir(isolated_home))).list_all()
+        assert len(records) == 1
+        assert records[0].crypto_suite == "senderkey-v1"
+
+    def test_create_rejects_unknown_suite(
+        self,
+        isolated_home: Path,
+        threaded_relay: object,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with threaded_relay() as relay:  # type: ignore[attr-defined]
+            code = main(
+                [
+                    *_data_args(isolated_home),
+                    "group",
+                    "create",
+                    "--name",
+                    "Ops",
+                    "--crypto-suite",
+                    "magic-unicorn",
+                    "--relay",
+                    relay.url,
+                ]
+            )
+        assert code == int(ExitCode.GROUP)  # GroupValidationError exit code
 
 
 class TestInviteCommand:

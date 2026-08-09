@@ -61,6 +61,28 @@ def group_message_aad(group_id: str, epoch: int, sender: str, recipient: str) ->
     return f"ghostlink/group-msg/v1|{group_id}|{epoch}|{sender}|{recipient}".encode()
 
 
+def group_sk_key_aad(group_id: str, epoch: int, sender: str, recipient: str, gen: int) -> bytes:
+    """AAD for a GSK distribution frame (sealed over a pairwise link).
+
+    Binds group, epoch, sender, recipient and generation so a distribution
+    minted for one pair/context can never be opened elsewhere (§37).
+    """
+
+    return f"ghostlink/group-sk-key/v1|{group_id}|{epoch}|{sender}|{recipient}|{gen}".encode()
+
+
+def group_sk_msg_aad(group_id: str, epoch: int, sender: str, gen: int, seq: int) -> bytes:
+    """AAD for a sender-key-sealed GMSG (the *same* for every recipient).
+
+    Deliberately excludes the recipient: one ciphertext is broadcast to the
+    whole roster, so every recipient must open it with the identical AAD.
+    Cross-recipient reuse is safe because the inner frame re-carries the
+    context and the sender key itself is epoch/sender/generation-bound.
+    """
+
+    return f"ghostlink/group-sk-msg/v1|{group_id}|{epoch}|{sender}|{gen}|{seq}".encode()
+
+
 class PairwiseLink:
     """One live or draining pairwise link (key in a zeroizable slot)."""
 
@@ -558,4 +580,6 @@ __all__ = [
     "PairwiseLink",
     "group_link_context",
     "group_message_aad",
+    "group_sk_key_aad",
+    "group_sk_msg_aad",
 ]

@@ -98,3 +98,20 @@ GROUP_EVENT_RATE_WINDOW_SECONDS: float = 10.0
 GROUP_KEX_TIMEOUT_SECONDS: float = 10.0
 GROUP_LEDGER_KEPT: int = 64  # delivery ledgers retained per group
 GROUP_SEQ_STATE_MAX: int = 8 * 4  # gseq cursors (defensive cap)
+
+# ------------------------------------------------- group sender keys (Phase 7)
+# Sender-key hardening (docs/GROUPS.md §36-§37). A group's `crypto_suite`
+# selects its message-encryption path: `mesh-v1` (Phase 6C pairwise fanout,
+# backward compatible) or `senderkey-v1` (O(1) per-message seal + sender-key
+# distribution over the pairwise mesh). The suite is relay-authoritative and
+# never downgrades silently (§37).
+GROUP_CRYPTO_SUITES: frozenset[str] = frozenset({"mesh-v1", "senderkey-v1"})
+DEFAULT_CRYPTO_SUITE: str = "mesh-v1"  # Phase 6C default; Phase 7 is additive
+# Max out-of-order message keys cached per sender (bounded skipped-key cache).
+GROUP_SK_SKIPPED_MAX: int = 64
+# Distribution carries the chain root + current index; the root is never sent
+# as plaintext — it rides a pairwise-link AEAD envelope.
+GROUP_SK_ROOT_BYTES: int = 32
+GROUP_SK_DISTRIBUTION_BODY_MAX: int = 1024  # GSK inner-frame body ceiling
+# Defensive cap on incoming receiver-chain state (groups x members upper bound).
+GROUP_SK_MAX_RECEIVER_STATE: int = 8 * 8

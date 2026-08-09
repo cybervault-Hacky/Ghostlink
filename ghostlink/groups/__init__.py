@@ -1,4 +1,4 @@
-"""Secure groups — lifecycle (Phase 6B) and pairwise-mesh messaging (Phase 6C).
+"""Secure groups — lifecycle (Phase 6B), pairwise mesh (6C), sender keys (7).
 
 Implements the Phase 6A design (docs/GROUPS.md): group identity, the
 relay-authoritative roster and epoch model, owner-signed membership
@@ -7,7 +7,9 @@ client-side lifecycle manager. Phase 6C adds end-to-end group messaging
 over the pairwise mesh (per-recipient sealing with Phase 3 session
 links, replay/gseq gates, epoch drains, bounded offline queues, and
 fanout-honest delivery ledgers) in the ``frames``, ``mesh`` and
-``service`` submodules.
+``service`` submodules. Phase 7 adds the opt-in ``senderkey-v1`` suite
+(O(1) per-message sealing with epoch-scoped sender-key chains) in the
+``senderkeys`` submodule.
 """
 
 from ghostlink.groups.authority import (

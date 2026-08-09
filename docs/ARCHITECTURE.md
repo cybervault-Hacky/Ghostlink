@@ -506,7 +506,8 @@ or routes group content.
 ## 14A. Group messaging (Phase 6C)
 
 End-to-end group conversations per docs/GROUPS.md §17–§33, on the
-pairwise mesh (no sender keys — Phase 7 hardening candidate):
+pairwise mesh (the Phase 6C data plane; Phase 7 adds sender keys as an
+opt-in suite on top — §14B):
 
 - `ghostlink/groups/mesh.py` — `GroupMeshManager`: one identity-bound
   pairwise link per (group, peer) at the current epoch. Handshakes
@@ -557,3 +558,36 @@ pairwise mesh (no sender keys — Phase 7 hardening candidate):
   /export /quit`. No key material is ever rendered. Group history
   reuses the existing history backends (off / session / encrypted) with
   `record_group` entries keyed by group id.
+
+## 14B. Sender-key group messaging (Phase 7)
+
+Opt-in O(1) group encryption per docs/GROUPS.md §36, chosen at creation
+by the group's `crypto_suite` (`mesh-v1` default, or `senderkey-v1`):
+
+- `ghostlink/groups/senderkeys.py` — the cryptographic core: a one-way
+  HKDF-SHA256 hash ratchet (`ghostlink/group/senderkey/v1` domain
+  separation) with per-message keys bound to group/epoch/sender/
+  generation/index; `OutgoingChain` (sender) and `ReceiverChain`
+  (recipient, with a bounded skipped-key cache ≤ 64 for out-of-order
+  delivery); `SenderKeyStore` for per-(group,epoch) outgoing and
+  per-(group,sender) incoming chains with epoch pruning, sender-drop and
+  full zeroization. Secrets live in `bytearray` slots; nothing is logged,
+  stored, or put in exceptions.
+- `ghostlink/groups/frames.py` — new inner frame types `GSK`
+  (distribution: chain root + generation + index) and `GSKREQ` (pull);
+  broadcast `GMSG` uses the recipient sentinel `"*"`.
+- `ghostlink/groups/mesh.py` — AAD helpers `group-sk-key/v1` (GSK
+  distribution) and `group-sk-msg/v1` (broadcast message, recipient-free).
+- `ghostlink/groups/service.py` — the `senderkey-v1` path: on send, seal
+  the message **once** (`KIND_SKMSG` with a public `{gen, seq}` header)
+  and fan the identical ciphertext to every roster member, distributing
+  the sender's chain (`KIND_SK`) over the live pairwise link first and
+  answering `GSKREQ` pulls. On receive, resolve the message key (replay/
+  gap rejected; missing key → buffer ≤ 16/sender and pull), open with the
+  recipient-free AAD, then run the same dedupe/gseq/attribution pipeline.
+  Epoch mutations prune all chains and force re-distribution; offline
+  members get a bounded re-transmission queue for the already-sealed
+  envelopes. `GROUP_FORWARD` kinds `sk`/`skmsg` are relay-opaque.
+- CLI/UI — `ghostlink group create --crypto-suite senderkey-v1`, and an
+  in-chat `/security` command showing suite/epoch/key-state without ever
+  rendering key material; the banner advertises the active suite.

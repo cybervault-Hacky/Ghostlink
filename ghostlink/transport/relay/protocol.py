@@ -44,6 +44,8 @@ from typing import Any, NoReturn
 
 from ghostlink.constants.net import (
     CHANNEL_ROLES,
+    DEFAULT_CRYPTO_SUITE,
+    GROUP_CRYPTO_SUITES,
     GROUP_DISPLAY_NAME_MAX_LEN,
     GROUP_EVENTS_KEPT,
     GROUP_FORWARD_BODY_MAX,
@@ -67,7 +69,7 @@ from ghostlink.constants.net import (
 from ghostlink.core.logging import get_logger
 from ghostlink.exceptions.transport import PacketValidationError
 from ghostlink.groups.events import EVENT_KINDS
-from ghostlink.groups.frames import GROUP_FORWARD_KINDS, KIND_MSG
+from ghostlink.groups.frames import GROUP_FORWARD_KINDS, KIND_MSG, KIND_SKMSG
 from ghostlink.groups.ids import is_valid_group_id
 from ghostlink.identity.fingerprint import is_valid_fingerprint
 from ghostlink.models.room import is_valid_room_id
@@ -312,6 +314,7 @@ def redeemed_packet(
     owner_public_key_hex: str = "",
     members: list[dict[str, Any]] | None = None,
     epoch: int = 0,
+    crypto_suite: str = DEFAULT_CRYPTO_SUITE,
 ) -> Packet:
     payload: dict[str, Any] = {"invite": invite_id, "expires_at": expires_at}
     if kind == "group":
@@ -324,6 +327,7 @@ def redeemed_packet(
         payload["owner_key"] = owner_public_key_hex
         payload["members"] = members or []
         payload["epoch"] = epoch
+        payload["suite"] = crypto_suite
     else:
         payload["room"] = room_id
     return Packet(PacketType.REDEEMED, payload)
@@ -341,6 +345,7 @@ def group_create_packet(
     pop_signature_b64: str,
     handle: str,
     display_name: str,
+    crypto_suite: str = DEFAULT_CRYPTO_SUITE,
 ) -> Packet:
     return Packet(
         PacketType.GROUP_CREATE,
@@ -350,12 +355,18 @@ def group_create_packet(
             "pop": pop_signature_b64,
             "handle": handle,
             "display": display_name,
+            "suite": crypto_suite,
         },
     )
 
 
-def group_granted_packet(group_id: str, epoch: int) -> Packet:
-    return Packet(PacketType.GROUP_GRANTED, {"group": group_id, "epoch": epoch})
+def group_granted_packet(
+    group_id: str, epoch: int, crypto_suite: str = DEFAULT_CRYPTO_SUITE
+) -> Packet:
+    return Packet(
+        PacketType.GROUP_GRANTED,
+        {"group": group_id, "epoch": epoch, "suite": crypto_suite},
+    )
 
 
 def group_attest_packet(
@@ -383,8 +394,14 @@ def group_attested_packet(
     epoch: int,
     members: list[dict[str, Any]] | None = None,
     events: list[dict[str, Any]] | None = None,
+    crypto_suite: str = DEFAULT_CRYPTO_SUITE,
 ) -> Packet:
-    payload: dict[str, Any] = {"group": group_id, "role": role, "epoch": epoch}
+    payload: dict[str, Any] = {
+        "group": group_id,
+        "role": role,
+        "epoch": epoch,
+        "suite": crypto_suite,
+    }
     if members is not None:
         payload["members"] = members
     if events is not None:
@@ -402,6 +419,7 @@ def group_roster_packet(
     state: str,
     members: list[dict[str, Any]],
     events: list[dict[str, Any]],
+    crypto_suite: str = DEFAULT_CRYPTO_SUITE,
 ) -> Packet:
     return Packet(
         PacketType.GROUP_ROSTER,
@@ -411,6 +429,7 @@ def group_roster_packet(
             "state": state,
             "members": members,
             "events": events,
+            "suite": crypto_suite,
         },
     )
 
@@ -656,6 +675,7 @@ def validate_packet(packet_type: PacketType, payload: dict[str, Any]) -> None:
             _require(len(key) == GROUP_PUBKEY_HEX_LENGTH, "'owner_key' must be 64 hex")
             _require_members_field(payload, "members")
             _require_int(payload, "epoch", minimum=1)
+            _require_suite_field(payload)
         else:
             _require_room_field(payload)
     elif packet_type in GROUP_PACKET_TYPES:
@@ -675,6 +695,19 @@ def _require_group_field(payload: dict[str, Any], field: str = "group") -> None:
 def _require_fingerprint_field(payload: dict[str, Any], field: str) -> None:
     value = _require_str(payload, field, max_length=40)
     _require(is_valid_fingerprint(value), f"'{field}' is not a valid GLFP fingerprint")
+
+
+def _require_suite_field(payload: dict[str, Any]) -> str:
+    """Validate an optional ``suite`` field; returns the resolved suite.
+
+    The field is additive and defaults to ``mesh-v1`` (Phase 6C) so older
+    peers and hand-built packets keep validating; if present it must name a
+    known crypto suite.
+    """
+    suite = payload.get("suite", DEFAULT_CRYPTO_SUITE)
+    if not (isinstance(suite, str) and suite in GROUP_CRYPTO_SUITES):
+        _fail(f"'suite' must be one of {sorted(GROUP_CRYPTO_SUITES)}")
+    return suite
 
 
 def _require_member_payload(member: Any) -> None:
@@ -753,8 +786,10 @@ def _validate_group_packet(packet_type: PacketType, payload: dict[str, Any]) -> 
         _require_str(payload, "pop", max_length=GROUP_SIGNATURE_B64_MAX)
         _require_str(payload, "handle", max_length=16)
         _require_str(payload, "display", max_length=GROUP_DISPLAY_NAME_MAX_LEN)
+        _require_suite_field(payload)
     elif packet_type is PacketType.GROUP_GRANTED:
         _require_int(payload, "epoch", minimum=1)
+        _require_suite_field(payload)
     elif packet_type is PacketType.GROUP_ATTEST:
         pubkey = _require_str(payload, "pubkey", max_length=GROUP_PUBKEY_HEX_LENGTH)
         _require(len(pubkey) == GROUP_PUBKEY_HEX_LENGTH, "'pubkey' must be 64 hex")
@@ -768,6 +803,7 @@ def _validate_group_packet(packet_type: PacketType, payload: dict[str, Any]) -> 
             f"'role' must be one of {sorted(GROUP_ATTEST_ROLES)}",
         )
         _require_int(payload, "epoch", minimum=0)
+        _require_suite_field(payload)
         if "members" in payload:
             _require_members_field(payload, "members")
         if "events" in payload:
@@ -778,6 +814,7 @@ def _validate_group_packet(packet_type: PacketType, payload: dict[str, Any]) -> 
         _require_int(payload, "epoch", minimum=1)
         state = _require_str(payload, "state", max_length=16)
         _require(state in GROUP_STATES, f"'state' must be one of {sorted(GROUP_STATES)}")
+        _require_suite_field(payload)
         _require_members_field(payload, "members")
         _require_events_field(payload, "events")
     elif packet_type is PacketType.GROUP_LEAVE or packet_type is PacketType.GROUP_DISSOLVE:
@@ -824,7 +861,10 @@ def _validate_group_packet(packet_type: PacketType, payload: dict[str, Any]) -> 
         body = _require_str(payload, "body", max_length=_GROUP_FORWARD_BODY_B64_MAX)
         _require_b64(
             body,
-            GROUP_FORWARD_BODY_MAX if kind == KIND_MSG else GROUP_KEX_BODY_MAX,
+            # KIND_MSG and KIND_SKMSG carry a sealed GMSG; KIND_KEX and
+            # KIND_SK (sender-key distribution) are small control payloads
+            # capped far below the message ceiling.
+            GROUP_FORWARD_BODY_MAX if kind in (KIND_MSG, KIND_SKMSG) else GROUP_KEX_BODY_MAX,
         )
 
 

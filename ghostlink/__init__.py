@@ -43,13 +43,22 @@ separately for each authorized recipient over an identity-bound,
 epoch-pinned pairwise link (Phase 3 X25519 + HKDF-SHA256 +
 ChaCha20-Poly1305, no new primitives). The relay routes opaque
 GROUP_FORWARD envelopes and never sees plaintext, keys, message ids, or
-sequence numbers. Sender keys are deliberately not implemented; they are
-the documented Phase 7 hardening candidate.
+sequence numbers.
+
+Phase 7 (Sender-Key Hardening) upgrades group messaging to O(1) per
+message on opt-in ``senderkey-v1`` groups: each sender derives an
+epoch-scoped hash-ratchet chain and distributes it over the existing
+pairwise mesh; one ChaCha20-Poly1305 seal per message is broadcast to the
+whole roster. Sender keys never leave memory except inside the mesh-AEAD
+distribution envelope; the relay still sees ciphertext only. Removal,
+re-join and reconnects rotate and re-distribute chains; out-of-order
+delivery uses a bounded skipped-key cache; replay and cross-context
+reuse are rejected.
 """
 
 from __future__ import annotations
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 __all__ = ["__version__", "version_info"]
 
 _major, _minor, _patch = (int(part) for part in __version__.split("."))

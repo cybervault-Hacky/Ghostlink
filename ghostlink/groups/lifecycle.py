@@ -35,7 +35,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ghostlink.constants.net import GROUP_JOIN_PENDING_SECONDS, MAX_GROUP_MEMBERS
+from ghostlink.constants.net import (
+    DEFAULT_CRYPTO_SUITE,
+    GROUP_CRYPTO_SUITES,
+    GROUP_JOIN_PENDING_SECONDS,
+    MAX_GROUP_MEMBERS,
+)
 from ghostlink.core.logging import get_logger
 from ghostlink.exceptions.groups import (
     GroupDefunctError,
@@ -171,12 +176,28 @@ class LocalGroupManager:
     # ---------------------------------------------------------------- create
 
     async def create_group(
-        self, client: RelayClient, name: str, *, display_name: str = ""
+        self,
+        client: RelayClient,
+        name: str,
+        *,
+        display_name: str = "",
+        crypto_suite: str = DEFAULT_CRYPTO_SUITE,
     ) -> LocalGroupRecord:
-        """Create a group on the relay; the caller becomes owner at epoch 1."""
+        """Create a group on the relay; the caller becomes owner at epoch 1.
+
+        ``crypto_suite`` selects the message-encryption path — ``mesh-v1``
+        (Phase 6C pairwise fanout) or ``senderkey-v1`` (Phase 7 O(1)
+        sender-key hardening). It is relay-authoritative and advertised to
+        every member on join/sync.
+        """
 
         self.attach(client)
         clean_name = validate_group_name(name)
+        if crypto_suite not in GROUP_CRYPTO_SUITES:
+            raise GroupValidationError(
+                f"Unknown crypto suite '{crypto_suite}'.",
+                hint="Choose one of: " + ", ".join(sorted(GROUP_CRYPTO_SUITES)) + ".",
+            )
         identity = self._identities.ensure()
         nonce = self._require_nonce(client)
         pop = base64.b64encode(identity.sign(canonical_create_form(clean_name, nonce))).decode(
@@ -189,6 +210,7 @@ class LocalGroupManager:
             pop_signature_b64=pop,
             handle=identity.identity_id,
             display_name=shown,
+            crypto_suite=crypto_suite,
         )
         my_fingerprint = self._identity_fingerprint(identity)
         owner = GroupMember(
@@ -212,6 +234,7 @@ class LocalGroupManager:
             relay_url=client.endpoint.display,
             created_at=now,
             updated_at=now,
+            crypto_suite=crypto_suite,
         )
         self._registry.assert_metadata_only(record)
         self._registry.save(record)
@@ -605,6 +628,7 @@ class LocalGroupManager:
             relay_url=client.endpoint.display,
             created_at=now,
             updated_at=now,
+            crypto_suite=redemption.crypto_suite,
         )
 
     def _record_from_attested(
@@ -624,6 +648,14 @@ class LocalGroupManager:
             raise GroupEpochError(
                 f"Relay epoch {attested.epoch} is behind the pinned epoch {base.epoch}.",
                 hint="Never regress an epoch — treat this relay as untrustworthy.",
+            )
+        if base.crypto_suite and attested.crypto_suite != base.crypto_suite:
+            # No silent crypto downgrade (§37): a relay that advertises a
+            # weaker suite for an established group is refused.
+            raise GroupStateError(
+                f"Relay crypto suite '{attested.crypto_suite}' differs from the "
+                f"pinned '{base.crypto_suite}'.",
+                hint="A crypto-suite change is an owner action, not a roster answer.",
             )
         members = self._verified_members(attested.members, base.group_id)
         owner = members.get(base.owner_fingerprint)
@@ -653,6 +685,7 @@ class LocalGroupManager:
             epoch_leap_at=now if attested.epoch > base.epoch else base.epoch_leap_at,
             events=list(base.events),
             suspect=False,
+            crypto_suite=base.crypto_suite,
         )
         known = {
             (event.epoch, event.kind.value, event.subject_fingerprint) for event in merged.events

@@ -24,6 +24,7 @@ from typing import cast
 
 from ghostlink.constants.net import (
     CHANNEL_CAPACITY,
+    DEFAULT_CRYPTO_SUITE,
     DEFAULT_RELAY_PORT,
     GROUP_EVENT_RATE_OPS,
     GROUP_EVENT_RATE_WINDOW_SECONDS,
@@ -764,6 +765,7 @@ class RelayServer:
                 owner_public_key_hex=snapshot.owner_public_key_hex,
                 members=snapshot.members_payload(),
                 epoch=snapshot.epoch,
+                crypto_suite=snapshot.crypto_suite,
             ),
         )
         self._logger.info(
@@ -855,11 +857,15 @@ class RelayServer:
                 attest_nonce=context.attest_nonce,
                 handle=str(packet.payload["handle"]),
                 display_name=str(packet.payload["display"]),
+                crypto_suite=str(packet.payload.get("suite", DEFAULT_CRYPTO_SUITE)),
             )
         except GroupError as exc:
             await self._group_error(context, self._group_error_code(exc), exc.message)
             return
-        await self._send(context, group_granted_packet(snapshot.group_id, snapshot.epoch))
+        await self._send(
+            context,
+            group_granted_packet(snapshot.group_id, snapshot.epoch, snapshot.crypto_suite),
+        )
 
     async def _handle_group_attest(
         self, client_id: int, context: _ClientContext, packet: Packet
@@ -886,6 +892,9 @@ class RelayServer:
             if outcome.snapshot is not None
             else None
         )
+        suite = (
+            outcome.snapshot.crypto_suite if outcome.snapshot is not None else DEFAULT_CRYPTO_SUITE
+        )
         await self._send(
             context,
             group_attested_packet(
@@ -894,6 +903,7 @@ class RelayServer:
                 outcome.epoch,
                 members=members,
                 events=events,
+                crypto_suite=suite,
             ),
         )
         # A signer (owner/candidate) may now be reachable for pending ops.
@@ -918,6 +928,7 @@ class RelayServer:
                 snapshot.state,
                 snapshot.members_payload(),
                 [dict(event) for event in snapshot.events],
+                snapshot.crypto_suite,
             ),
         )
 

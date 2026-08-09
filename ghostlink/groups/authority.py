@@ -40,6 +40,8 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 from ghostlink.constants.net import (
+    DEFAULT_CRYPTO_SUITE,
+    GROUP_CRYPTO_SUITES,
     GROUP_EVENTS_KEPT,
     GROUP_JOIN_PENDING_SECONDS,
     GROUP_MAX_PENDING_OPS,
@@ -118,7 +120,7 @@ class MemberView:
 
 @dataclass(frozen=True, slots=True)
 class GroupSnapshot:
-    """Roster + epoch view for join payloads and re-sync answers."""
+    """Roster + epoch + crypto-suite view for join/re-sync answers."""
 
     group_id: str
     name: str
@@ -126,6 +128,7 @@ class GroupSnapshot:
     epoch: int
     owner_fingerprint: str
     owner_public_key_hex: str
+    crypto_suite: str
     members: tuple[MemberView, ...]
     events: tuple[dict[str, object], ...]
 
@@ -229,6 +232,7 @@ class _Group:
     owner_fingerprint: str
     owner_public_key_hex: str
     epoch: int
+    crypto_suite: str = DEFAULT_CRYPTO_SUITE
     members: dict[str, _Member] = field(default_factory=dict)
     pending_joins: dict[str, _PendingJoin] = field(default_factory=dict)  # keyed by session
     ops: list[_Op] = field(default_factory=list)  # FIFO; only head may await signature
@@ -361,10 +365,16 @@ class GroupAuthority:
         attest_nonce: str,
         handle: str,
         display_name: str,
+        crypto_suite: str = DEFAULT_CRYPTO_SUITE,
     ) -> GroupSnapshot:
         """Create a group; the creator becomes owner at epoch 1 (atomic)."""
 
         clean_name = validate_group_name(name)
+        if crypto_suite not in GROUP_CRYPTO_SUITES:
+            raise GroupValidationError(
+                f"Unknown crypto suite '{crypto_suite}'.",
+                hint="Choose one of: " + ", ".join(sorted(GROUP_CRYPTO_SUITES)) + ".",
+            )
         fingerprint = self._verify_identity_material(public_key_hex, handle)
         pop = self._decode_signature(pop_signature_b64)
         message = canonical_create_form(clean_name, attest_nonce)
@@ -398,6 +408,7 @@ class GroupAuthority:
             owner_fingerprint=fingerprint,
             owner_public_key_hex=public_key_hex.lower(),
             epoch=1,
+            crypto_suite=crypto_suite,
             members={fingerprint: owner},
             created_at=self._wall(),
         )
@@ -845,6 +856,7 @@ class GroupAuthority:
             epoch=group.epoch,
             owner_fingerprint=group.owner_fingerprint,
             owner_public_key_hex=group.owner_public_key_hex,
+            crypto_suite=group.crypto_suite,
             members=members,
             events=events,
         )

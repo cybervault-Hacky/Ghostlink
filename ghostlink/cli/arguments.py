@@ -54,6 +54,7 @@ class CLIOptions:
     group_target: str | None = None
     group_subject: str | None = None
     group_name: str | None = None
+    crypto_suite: str | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -310,6 +311,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="group name for create (1..48 printable characters)",
     )
     group.add_argument(
+        "--crypto-suite",
+        dest="crypto_suite",
+        default=None,
+        metavar="SUITE",
+        help="group encryption suite for create: mesh-v1 (default) or senderkey-v1",
+    )
+    group.add_argument(
         "--expires",
         default=None,
         metavar="SECONDS|5m|1h",
@@ -413,4 +421,5 @@ def parse_args(argv: Sequence[str] | None = None) -> CLIOptions:
         group_target=getattr(namespace, "group_target", None),
         group_subject=getattr(namespace, "group_subject", None),
         group_name=getattr(namespace, "group_name", None),
+        crypto_suite=getattr(namespace, "crypto_suite", None),
     )

@@ -63,7 +63,8 @@ GhostLink provides:
 - **Ephemeral identities** — local Ed25519 keypairs, no accounts
 - **One-time invites** enforced by the relay authority
 - **Encrypted file transfer** with integrity verification and resume
-- **Encrypted group conversations** (up to 8 members) with pairwise-mesh encryption
+- **Encrypted group conversations** (up to 8 members) with pairwise-mesh
+  encryption and opt-in O(1) sender-key encryption
 - **Terminal-native controls** — menus, chat commands, live dashboards
 - **Relay-based rendezvous** — a reference relay ships with the project
 
@@ -132,27 +133,37 @@ lives in [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
-## Current release: Phase 6C
+## Current release: Phase 7
 
-**Phase 6C — Group Messaging + Pairwise-Mesh Encryption** is the latest
-implemented phase (version `0.7.0`).
+**Phase 7 — Sender-Key Hardening** is the latest implemented phase
+(version `0.8.0`).
 
 - Group messaging is implemented on top of the Phase 6B group lifecycle.
-- Every recipient receives an **independently sealed ciphertext** — there is
-  **no shared group key**.
+- Two encryption suites, chosen at group creation:
+  - **`mesh-v1`** (default, backward compatible): every recipient receives
+    an **independently sealed ciphertext** — there is **no shared group
+    key**.
+  - **`senderkey-v1`** (opt-in): each sender seals each message **once**
+    (O(1)) with a per-sender, epoch-scoped hash-ratchet chain, broadcast to
+    the whole roster. Sender keys are distributed over the authenticated
+    pairwise mesh and rotated on every membership change.
 - Encryption reuses the existing Phase 3 primitives verbatim: **X25519** key
   agreement, **HKDF-SHA256** derivation, **ChaCha20-Poly1305** AEAD. No new
-  primitives were introduced.
+  primitives or libraries were introduced.
 - Pairwise group links are **epoch-bound** and identity-bound; membership is
   controlled by **signed roster events**, and roster epochs increment on
   every membership change.
 - The relay forwards opaque `GROUP_FORWARD` envelopes only — it validates
-  framing and roster ACLs, never content.
-- Groups are limited to **8 members** (fanout ≤ 7 encryptions per message).
+  framing and roster ACLs, never content (no sender keys, message keys, or
+  plaintext).
+- Groups are limited to **8 members**. Sender keys give O(1) per-message
+  encryption; `mesh-v1` keeps per-recipient fanout for full backward
+  compatibility.
 
-Sender-key encryption is **not implemented**. It remains a documented future
-hardening direction (see [docs/ROADMAP.md](docs/ROADMAP.md) and
-[docs/GROUPS.md](docs/GROUPS.md)), not a property of the current release.
+Create a sender-key group with
+`ghostlink group create --name Team --crypto-suite senderkey-v1`. In-group,
+`/security` shows the active suite, epoch, and key state — never the keys
+themselves.
 
 ---
 
@@ -203,7 +214,8 @@ when they can be generated from the real application.
 | Group lifecycle (create/join/leave/remove/dissolve) | ✅ |
 | Group messaging | ✅ |
 | Pairwise-mesh group encryption | ✅ |
-| Shared sender keys | Planned (documented hardening candidate) |
+| Sender-key group encryption (O(1), opt-in) | ✅ |
+| Relay never sees keys or plaintext | ✅ |
 | Browser client | Out of scope — terminal-only by design |
 | GUI / Electron application | Out of scope — terminal-only by design |
 | Android APK | Not part of the project |
@@ -349,13 +361,15 @@ by the relay authority, not the UI). The workflow:
    never sign their own way in.
 4. The **epoch increments** on every committed membership change; clients
    cannot pick, skip, or roll back epochs.
-5. The **sender encrypts per recipient** — one sealed payload per authorized
-   member, over identity-bound pairwise links.
+5. The **sender encrypts** — on `mesh-v1` groups, one sealed payload per
+   authorized member over identity-bound pairwise links; on `senderkey-v1`
+   groups, one seal per message with an epoch-scoped sender key, broadcast
+   to the roster (O(1) per message).
 6. The **relay forwards opaque payloads** after framing/ACL checks.
-7. Each **recipient decrypts only their own payload**, cross-checking group,
-   epoch, sender, and recipient bindings.
+7. Each **recipient decrypts** the message, cross-checking group, epoch,
+   sender (and, on mesh, recipient) bindings.
 8. **Removed members cannot participate in future epochs** — they hold no
-   new-epoch links, and joiners gain no history.
+   new-epoch links and no new-epoch sender keys; joiners gain no history.
 
 Delivery is reported per recipient (`delivered k/m`); the interface never
 claims full delivery for a partial fanout. Open the group chat with:
@@ -363,6 +377,16 @@ claims full delivery for a partial fanout. Open the group chat with:
 ```bash
 ghostlink group chat gl-group-XXXX-XXXX-XXXX
 ```
+
+To create a group with the sender-key suite instead of the default pairwise
+mesh:
+
+```bash
+ghostlink group create --name Team --crypto-suite senderkey-v1
+```
+
+Inside any group chat, `/security` shows the active suite, current epoch,
+and key-state counters — never any key material.
 
 ---
 
@@ -701,12 +725,15 @@ GhostLink ships in deliberate, self-contained phases.
 | 5 | Ephemeral identity & one-time invites | ✅ Implemented |
 | 6A | Group security design ([docs/GROUPS.md](docs/GROUPS.md)) | ✅ Design complete |
 | 6B | Group lifecycle — membership, signed roster events, epochs | ✅ Implemented |
-| 6C | Group messaging + pairwise-mesh encryption | ✅ Implemented (current) |
+| 6C | Group messaging + pairwise-mesh encryption | ✅ Implemented |
+| 7 | Sender-key hardening — O(1) group encryption, epoch-scoped sender keys | ✅ Implemented (current) |
 | 6D | Rich communication — replies/edits/reactions, friend system, editable settings | Planned |
-| 7 | Hardening & polish — security review, offline queue design, localization | Planned |
+| 8 | Hardening & polish — security review, offline queue design, localization | Planned |
 
-The Phase 6A design documents sender keys as the Phase 7 hardening
-candidate; they are not part of any implemented phase.
+Sender-key encryption is implemented as the opt-in `senderkey-v1` suite
+(docs/GROUPS.md §36); `mesh-v1` remains the default for full backward
+compatibility. [docs/ROADMAP.md](docs/ROADMAP.md) is the authoritative
+roadmap.
 
 [docs/ROADMAP.md](docs/ROADMAP.md) is the authoritative roadmap, including
 what is explicitly out of scope (GUI/web clients, federated public rooms,

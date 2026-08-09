@@ -232,7 +232,7 @@ built entirely on this foundation.
   failures, restart/defunct, storage corruption, log/store secret-hygiene
   audits, and full CLI end-to-end runs against a live relay
 
-## Phase 6C — Group Messaging + Pairwise-Mesh Encryption ✅ (latest implemented)
+## Phase 6C — Group Messaging + Pairwise-Mesh Encryption ✅
 
 **STATUS: IMPLEMENTED** — end-to-end group messaging exactly as
 docs/GROUPS.md specifies: pairwise mesh, no sender keys (Phase 7).
@@ -292,6 +292,45 @@ recipient; the relay routes opaque ciphertext envelopes only.
   hygiene, full eight-member loopback fanout, and the CLI/TUI surfaces
   against a live relay
 
+## Phase 7 — Sender-Key Hardening ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — O(1) group-message encryption on opt-in
+`senderkey-v1` groups, exactly as docs/GROUPS.md §36 specifies: a
+per-sender forward-evolving hash-ratchet chain per (group, epoch),
+distributed over the existing pairwise mesh, one ChaCha20-Poly1305 seal
+per sender message broadcast to the whole roster.
+
+- **Sender-key chains** reuse the Phase 3 stack only (X25519 for the mesh
+  distribution channel, HKDF-SHA256 for the one-way ratchet, ChaCha20-
+  Poly1305 for sealing) with the `ghostlink/group/senderkey/v1` domain
+  separation; message-key derivation binds group/epoch/sender/gen/index
+- **Distribution** is a `GSK` inner frame sealed over an identity-bound
+  pairwise link (AAD binds group/epoch/sender/recipient/gen), generation-
+  scoped, with a `GSKREQ` pull path; the relay never sees a chain key,
+  message key, or plaintext
+- **Epoch scoping** is authoritative: any roster mutation prunes every
+  old-epoch chain and mints + redistributes fresh ones; removed members
+  get no new-epoch keys, joiners get no history (one-way ratchet)
+- **Replay / out-of-order**: per-(sender, epoch, generation) index
+  monotonicity rejects replays; a bounded skipped-key cache (≤ 64/sender)
+  heals 10→8→9 delivery; jumps beyond the window are rejected, not
+  allocated; id-LRU + gseq gates still run on the decrypted frame
+- **Relay behavior** unchanged: routes opaque `sk`/`skmsg` envelopes, enforces
+  ACL/rate, never inspects content
+- **Suite negotiation**: relay-authoritative `crypto_suite` (`mesh-v1`
+  default for backward compatibility, `senderkey-v1` opt-in) minted at
+  creation and advertised on redeem/attest/roster; a mismatch on an
+  established group is refused (no silent downgrade)
+- **CLI/UI**: `ghostlink group create --crypto-suite senderkey-v1`, an
+  in-chat `/security` command, and suite-aware banners — no secrets shown
+- **Hygiene**: sender keys live in zeroizable `bytearray` slots in memory
+  only; never logged, stored, or in exceptions; honest §36.7 forward/
+  backward-secrecy statement (no overclaiming)
+- **New tests**: 17 sender-key unit tests (chain, window, distribution,
+  store) + 18 sender-key loopback e2e tests (fanout/broadcast, removal,
+  joiner isolation, reconnect, replay/tamper, offline retry, suite wiring,
+  relay-opaqueness) — full suite green at 1318 passing
+
 ## Phase 6D — Rich Communication
 
 - Friend system: adding, verifying safety numbers, blocking
@@ -299,7 +338,7 @@ recipient; the relay routes opaque ciphertext envelopes only.
 - Contact cards and room metadata panels
 - Settings screen becomes editable; notification center gains unread state
 
-## Phase 7 — Hardening & Polish
+## Phase 8 — Hardening & Polish
 
 - Full security review and threat-model document
 - Offline message queue and multi-device sync design

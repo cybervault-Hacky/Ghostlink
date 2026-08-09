@@ -79,3 +79,12 @@ secret scan, security audit, Docker static check, dependency audit) is the
 deterministic verification path available here. PostgreSQL integration tests
 are environment-gated and run in the `postgres-integration` job once the
 workflow files are pushed.
+
+## Phase 15 — dependency audit status
+
+`npm audit` reports two advisory groups (react-router <7 and vite <8), both of
+which require breaking major upgrades and are non-exploitable in this
+deployment model (client-side SPA with no SSR; vite is build-time only). These
+are documented in `docs/DEPENDENCIES.md`; they are **not** claimed as fixed.
+No Python advisories were surfaced by `pip-audit` (which is not installed in
+this environment; the CI `security.yml` workflow runs it).

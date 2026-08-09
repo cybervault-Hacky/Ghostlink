@@ -11,7 +11,7 @@
 > security-critical decision is stated here explicitly, with its attacker
 > analysis, deterministic failure behavior, and test obligations.
 >
-> Scope anchors: GhostLink remains a **Python ≥ 3.12, terminal-only
+> Scope anchors: GhostLink remains a **Python ≥ 3.11, terminal-only
 > (TUI) project for Termux and Linux**. No APK, no Android app, no GUI, no
 > browser client, no web frontend is introduced or implied by this design.
 > No new cryptographic primitive and no new cryptographic library is

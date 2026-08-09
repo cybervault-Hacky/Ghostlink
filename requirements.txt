@@ -1,4 +1,4 @@
-# GhostLink — runtime dependencies (Python 3.12+)
+# GhostLink — runtime dependencies (Python 3.11+)
 # Install with: pip install -r requirements.txt
 
 rich>=13.7,<16            # terminal rendering engine (pure Python, Termux-safe)

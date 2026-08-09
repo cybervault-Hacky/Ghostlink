@@ -6,7 +6,7 @@
 git clone https://github.com/cybervault-Hacky/Ghostlink.git
 cd Ghostlink
 
-python3.12 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
@@ -21,6 +21,8 @@ venv if you prefer Termux's system site-packages).
 | Diagnose environment | `python ghostlink.py --doctor` |
 | Security & recovery summary | `python ghostlink.py security-status` |
 | Full quality gate | `scripts/dev_check.sh` |
+| Release-candidate gate | `scripts/release_check.sh` |
+| Secret scan | `python scripts/scan_secrets.py` |
 | Tests only | `pytest tests/` |
 | Lint / format | `ruff check .` / `ruff format .` |
 | Regenerate doc images | `python scripts/generate_screenshots.py` |
@@ -98,3 +100,18 @@ Namespaces map to `<data_dir>/state/<namespace>.json` with atomic writes and
 - `filterwarnings = ["error"]` is part of the contract: transports, tasks,
   and sockets must be torn down deterministically — a leaked socket or
   pending task fails the suite.
+
+## Releasing
+
+`scripts/release_check.sh` is the release-candidate gate. It requires a
+clean git tree and then verifies, in order: version synchronization,
+byte-compilation, Ruff lint, Ruff format, `mypy --strict`, the full pytest
+suite, a wheel+sdist build, archive inspection (no junk/secrets), a
+clean-install CLI smoke, a repository secret scan, and a banned security-
+claim scan. It is fully local and offline.
+
+`schema migration` — config and state documents carry an explicit schema
+version (`ghostlink/core/migration.py`). When you change the on-disk shape
+of any persisted document, bump the relevant `*_SCHEMA_VERSION`, write a
+forward-migration path, and add tests. GhostLink fails closed (rejects,
+never reinterprets) on documents from a newer version.

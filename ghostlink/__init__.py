@@ -63,11 +63,21 @@ bounded GSKREQ abuse brake and sender-key recovery hardening, relay
 connection-cap and per-source rate limits, a log-secret redaction backstop,
 an extended ``--doctor``, a read-only ``ghostlink security-status``
 diagnostic, and comprehensive adversarial / fuzz / crash-consistency tests.
+
+Phase 9 (Production Readiness, Compatibility & Release Engineering) makes
+GhostLink release-ready without weakening the security model. It lowers the
+declared Python floor to 3.11 (verified green on 3.11.2), adds a formal
+config/state schema-versioning layer that fails closed on documents from a
+newer GhostLink, adds release tooling (``scripts/release_check.sh`` and
+``scripts/scan_secrets.py``), documents backup/recovery guidance and an
+explicit compatibility matrix, and expands the test suite with
+compatibility, migration, package-content, protocol-downgrade and
+CLI-reliability coverage.
 """
 
 from __future__ import annotations
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 __all__ = ["__version__", "version_info"]
 
 _major, _minor, _patch = (int(part) for part in __version__.split("."))

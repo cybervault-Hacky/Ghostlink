@@ -11,9 +11,12 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from ghostlink.core.migration import validate_config_version
 from ghostlink.exceptions.config import ConfigParseError, ConfigValidationError
 
 ALLOWED_SCHEMA: dict[str, frozenset[str]] = {
+    # [meta] carries the schema version marker (Phase 9). Absent = v1.
+    "meta": frozenset({"config_version"}),
     "ui": frozenset({"theme", "language"}),
     "notifications": frozenset({"enabled"}),
     "storage": frozenset({"data_dir"}),
@@ -128,6 +131,10 @@ def validate_sections(
                 hint=f"This section accepts: {known}.",
             )
         cleaned[section] = dict(values)
+
+    # Phase 9: fail closed on a config written by a newer GhostLink.
+    if "meta" in cleaned:
+        validate_config_version(cleaned["meta"].get("config_version"))
     return cleaned
 
 

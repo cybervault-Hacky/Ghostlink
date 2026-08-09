@@ -6,6 +6,11 @@
 #  Command-line flags always take precedence over the values below.
 # ─────────────────────────────────────────────────────────────────────────────
 
+[meta]
+# Schema version marker. Absent = v1. A future GhostLink bumps this; an
+# older GhostLink refuses to read a *newer* document rather than misread it.
+config_version = 1
+
 [ui]
 # Color theme. Run `ghostlink --help` to list every registered theme.
 theme = "phantom"

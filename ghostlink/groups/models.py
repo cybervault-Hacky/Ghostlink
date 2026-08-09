@@ -451,6 +451,10 @@ class LocalGroupRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> LocalGroupRecord:
+        from ghostlink.core.migration import validate_state_version
+
+        # Phase 9: fail closed on a state document written by a newer version.
+        validate_state_version(data.get("v"))
         expected = {
             "group_id",
             "name",

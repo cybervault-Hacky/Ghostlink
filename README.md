@@ -6,7 +6,7 @@
 
 Private conversations. End-to-end encryption. No browser required.
 
-[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Termux%20%7C%20Linux-22D3EE)](https://termux.dev/)
 [![Release](https://img.shields.io/badge/Release-Phase%206C-A78BFA)](docs/ROADMAP.md)
 [![Tests](https://img.shields.io/badge/Tests-1283%20passing-34D399)](docs/DEVELOPMENT.md)
@@ -21,7 +21,7 @@ Private conversations. End-to-end encryption. No browser required.
 ## Contents
 
 [Design principle](#design-principle) · [What is GhostLink?](#what-is-ghostlink) ·
-[Architecture](#architecture-overview) · [Current release](#current-release-phase-6c) ·
+[Architecture](#architecture-overview) · [Current release](#current-release-phase-9) ·
 [Screenshots](#screenshots) · [Feature matrix](#feature-matrix) ·
 [Security model](#security-model) · [What the relay can see](#what-the-relay-can-see) ·
 [Identity & invites](#identity-and-invites) · [File transfer](#file-transfer) ·
@@ -133,33 +133,33 @@ lives in [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
-## Current release: Phase 8
+## Current release: Phase 9
 
-**Phase 8 — Reliability, Security Hardening & Adversarial Validation** is
-the latest implemented phase (version `0.9.0`).
+**Phase 9 — Production Readiness, Compatibility & Release Engineering** is
+the latest implemented phase (version `0.10.0`).
 
-- **Deterministic recovery**: a single recovery state machine
-  (`CONNECTED/DEGRADED/RECONNECTING/RESYNC_REQUIRED/RECOVERING/READY/
-  FAILED/CLOSED`) and a coordinator that guarantees exactly-one in-flight
-  resync/install per group — no competing recovery loops.
-- **Group resync**: members enter `RESYNC_REQUIRED` on epoch gaps, stale
-  rosters, invalid events, or missing sender-key generations; recovered
-  state is cryptographically verified before becoming active.
-- **Sender-key recovery hardening**: deterministic rejection of stale /
-  future / wrong-epoch / duplicate / corrupted key frames, bounded caches,
-  and a `GSKREQ` abuse brake that prevents key-pull amplification.
-- **Relay abuse controls**: a connection cap and per-source-IP connection
-  rate limit (in-memory, fail-closed) on top of the existing forward/event
-  brakes.
-- **Log-hygiene backstop**: registered secrets and invite tokens are
-  scrubbed from every log record, even on a code-path slip.
-- **Diagnostics**: `ghostlink security-status` (read-only security &
-  recovery summary) and an extended `--doctor` (dependency availability,
-  OpenSSL backend, data-directory health, crypto suites).
+- **Python compatibility**: GhostLink targets **Python 3.11+** — verified
+  green on 3.11.2 and matching the actual syntax/API floor used in the code
+  (see [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the matrix).
+- **State/config migration**: every config and state document now carries an
+  explicit schema version, and GhostLink **fails closed** on a document
+  written by a *newer* version rather than silently reinterpreting it.
+- **Release tooling**: `scripts/release_check.sh` runs the full release
+  candidate gate (clean tree, version sync, lint, format, mypy, tests,
+  wheel+sdist build and inspection, clean-install CLI smoke, and a
+  repository secret scan); `scripts/scan_secrets.py` is a deterministic
+  offline secret-leak tripwire.
+- **Backup/recovery guidance**: [docs/BACKUP.md](docs/BACKUP.md) clearly
+  separates what is safe to back up from what is sensitive, and how recovery
+  works on a loss.
+- **Compatibility & regression coverage**: new tests for the Python floor,
+  config/state migration, package contents, protocol downgrade attempts,
+  CLI exit codes, Ctrl+C, Termux path detection, and secret hygiene.
 
-Phase 7's sender-key encryption is fully retained and hardened. Run
-`ghostlink security-status` to see your crypto-suite and group-recovery
-summary; `ghostlink --doctor` verifies the environment.
+All of Phases 1–8 remain fully intact, including sender-key encryption and
+the reliability hardening. Run `ghostlink security-status` for a read-only
+security & recovery summary and `ghostlink --doctor` to verify the
+environment.
 
 - Group messaging is implemented on top of the Phase 6B group lifecycle.
 - Two encryption suites, chosen at group creation:
@@ -415,7 +415,7 @@ and key-state counters — never any key material.
 
 ## Installation: Termux
 
-GhostLink requires **Python 3.12 or newer** (Python 3.11 is not supported).
+GhostLink requires **Python 3.11 or newer**.
 
 ```bash
 pkg update
@@ -424,7 +424,7 @@ pkg install -y python git
 git clone https://github.com/cybervault-Hacky/Ghostlink.git
 cd Ghostlink
 
-python --version          # must report 3.12+
+python --version          # must report 3.11+
 pip install -r requirements.txt
 ```
 
@@ -448,11 +448,11 @@ Ed25519 primitives. Nothing is rooted, and nothing keeps running after exit.
 
 ## Installation: Linux
 
-Use your distribution's Python as long as it is **3.12 or newer**; check
+Use your distribution's Python as long as it is **3.11 or newer**; check
 first:
 
 ```bash
-python3 --version         # must report 3.12+
+python3 --version         # must report 3.11+
 ```
 
 Then clone and install:
@@ -665,12 +665,14 @@ Ghostlink/
 
 ## Development
 
-GhostLink targets **Python 3.12+**. Developer setup:
+GhostLink targets **Python 3.11+** (see
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the exact matrix).
+Developer setup:
 
 ```bash
 git clone https://github.com/cybervault-Hacky/Ghostlink.git
 cd Ghostlink
-python3.12 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"        # pytest, ruff, mypy
 ```
 
@@ -751,9 +753,10 @@ GhostLink ships in deliberate, self-contained phases.
 | 6B | Group lifecycle — membership, signed roster events, epochs | ✅ Implemented |
 | 6C | Group messaging + pairwise-mesh encryption | ✅ Implemented |
 | 7 | Sender-key hardening — O(1) group encryption, epoch-scoped sender keys | ✅ Implemented |
-| 8 | Reliability, security hardening & adversarial validation | ✅ Implemented (current) |
+| 8 | Reliability, security hardening & adversarial validation | ✅ Implemented |
+| 9 | Production readiness, compatibility & release engineering | ✅ Implemented (current) |
 | 6D | Rich communication — replies/edits/reactions, friend system, editable settings | Planned |
-| 9 | Hardening & polish — security review, offline queue design, localization | Planned |
+| 10 | Hardening & polish — security review, offline queue design, localization | Planned |
 
 Sender-key encryption is implemented as the opt-in `senderkey-v1` suite
 (docs/GROUPS.md §36); `mesh-v1` remains the default for full backward

@@ -138,7 +138,7 @@ AppSettings (immutable for the whole run)
 | Exception | Exit code | Raised when |
 | --- | --- | --- |
 | `ConfigurationError` family | 2 | TOML invalid, unknown keys, bad values, unwritable config dir |
-| `UnsupportedPlatformError` family | 3 | Non-Linux platform, Python below 3.12 (hard gate) |
+| `UnsupportedPlatformError` family | 3 | Non-Linux platform, Python below 3.11 (hard gate) |
 | `StorageError` family | 4 | Corrupt JSON, write failures, invalid namespaces |
 | `HistoryError` family | 4 | Locked/unreadable/wrong-passphrase encrypted history |
 | `ThemeNotFoundError` | 5 | Theme name not registered |
@@ -615,3 +615,20 @@ by the group's `crypto_suite` (`mesh-v1` default, or `senderkey-v1`):
 - `ghostlink/cli/commands/security_status.py` — `ghostlink security-status`
   renders a read-only security & recovery summary (suite, identity
   fingerprint, relay, group recovery) with no secrets, keys, or tokens.
+
+## 16. Production readiness & compatibility (Phase 9)
+
+- **Python floor = 3.11** — the declared minimum (`requires-python`,
+  `MIN_PYTHON`) is what the code actually uses and is verified green on
+  3.11.2; the matrix lives in `docs/COMPATIBILITY.md`. The parser never
+  uses PEP 695 type-alias syntax, so it parses cleanly on 3.11.
+- **Schema versioning** — `ghostlink/core/migration.py` defines
+  `CONFIG_SCHEMA_VERSION` and `STATE_SCHEMA_VERSION`. Config carries
+  `[meta].config_version`; each stored group record carries `"v"`. A
+  *newer* version is rejected (fail closed) rather than reinterpreted.
+- **Release engineering** — `scripts/release_check.sh` (the release-candidate
+  gate) and `scripts/scan_secrets.py` (offline secret-leak tripwire) are
+  invoked by the CI/release process and are also covered by tests.
+- **Backup guidance** — `docs/BACKUP.md` distinguishes backupable metadata
+  from sensitive key material and documents recovery behavior.
+

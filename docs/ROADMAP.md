@@ -331,7 +331,7 @@ per sender message broadcast to the whole roster.
   joiner isolation, reconnect, replay/tamper, offline retry, suite wiring,
   relay-opaqueness) — full suite green at 1318 passing
 
-## Phase 8 — Reliability, Security Hardening & Adversarial Validation ✅ (latest implemented)
+## Phase 8 — Reliability, Security Hardening & Adversarial Validation ✅
 
 **STATUS: IMPLEMENTED** — makes GhostLink substantially harder to break,
 corrupt, desynchronize, abuse, or silently fail, without adding features
@@ -367,6 +367,38 @@ or new crypto.
   abuse, concurrent membership, resync, relay abuse), plus CLI tests.
 - Full suite green at 1379 passing; no new cryptographic primitive.
 
+## Phase 9 — Production Readiness, Compatibility & Release Engineering ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — makes GhostLink production-release ready without
+weakening the security model.
+
+- **Python compatibility (evidence-backed)**: the declared floor is now
+  **Python 3.11+** (`requires-python`, `MIN_PYTHON`), matching the syntax/
+  API the code actually uses and verified green on 3.11.2. A compatibility
+  matrix lives in [docs/COMPATIBILITY.md](COMPATIBILITY.md); the README,
+  Termux/Linux install instructions, `run.sh`, and `requirements.txt` no
+  longer overstate 3.12.
+- **Config & state migration**: `ghostlink/core/migration.py` introduces an
+  explicit schema version for config (`[meta].config_version`) and state
+  (`"v"` on each stored record). GhostLink **fails closed** on a document
+  written by a *newer* version rather than silently reinterpreting it; the
+  default config template now carries the version marker. Rules documented
+  (no silent data destruction, idempotent, atomic, clear status).
+- **Release tooling**: `scripts/release_check.sh` — a one-shot release
+  candidate gate (clean tree → version sync → compileall → ruff → format →
+  mypy → pytest → wheel+sdist build → archive inspection → clean-install
+  CLI smoke → secret scan → banned-claim scan). `scripts/scan_secrets.py` —
+  a deterministic offline secret-leak tripwire (PEM keys, invite tokens,
+  join links, key-shaped 64-hex in production source).
+- **Backup/recovery guidance**: [docs/BACKUP.md](BACKUP.md) separates
+  backupable metadata from sensitive key material and documents recovery.
+- **Compatibility & regression tests**: new coverage for the Python floor,
+  config/state migration (future-version fail-closed), package contents &
+  secret scan as part of the suite, protocol version / downgrade-attempt
+  rejection (unit + loopback), CLI exit codes, Ctrl+C (130), Termux path
+  detection, and read-only/malformed config handling.
+- Full suite green at 1416 passing; no new cryptographic primitive.
+
 ## Phase 6D — Rich Communication
 
 - Friend system: adding, verifying safety numbers, blocking
@@ -374,7 +406,7 @@ or new crypto.
 - Contact cards and room metadata panels
 - Settings screen becomes editable; notification center gains unread state
 
-## Phase 9 — Hardening & Polish
+## Phase 10 — Hardening & Polish
 
 - Full security review and threat-model document
 - Offline message queue and multi-device sync design

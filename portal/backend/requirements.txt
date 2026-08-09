@@ -1,0 +1,6 @@
+# GhostLink Developer Portal — runtime dependencies (Phase 13).
+# Production runs the WSGI app under gunicorn against PostgreSQL.
+cryptography>=42,<47
+gunicorn>=22,<24
+psycopg[binary]>=3.1,<4
+psycopg_pool>=3.1,<4

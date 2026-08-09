@@ -458,11 +458,12 @@ def handle_device_revoke(portal: Any, request: Request, device_id: str) -> Respo
     )
     if row is None:
         return _resp(_err("Device not found.", code="not_found", status=404))
-    portal.db.execute("UPDATE developer_devices SET status='revoked' WHERE id=?", (row["id"],))
-    # Revoke all tokens bound to this device.
-    portal.db.execute(
-        "UPDATE api_tokens SET revoked_at=? WHERE device_id=?", (auth.now_iso(), row["id"])
-    )
+    with portal.db.transaction():
+        portal.db.execute("UPDATE developer_devices SET status='revoked' WHERE id=?", (row["id"],))
+        # Revoke all tokens bound to this device.
+        portal.db.execute(
+            "UPDATE api_tokens SET revoked_at=? WHERE device_id=?", (auth.now_iso(), row["id"])
+        )
     _record_api_activity(
         portal,
         user_id=ctx["user"]["id"],
@@ -600,13 +601,14 @@ def handle_credential_revoke(portal: Any, request: Request, credential_id: str) 
     )
     if row is None:
         return _resp(_err("Credential not found.", code="not_found", status=404))
-    portal.db.execute(
-        "UPDATE api_credentials SET status='revoked', revoked_at=? WHERE id=?",
-        (auth.now_iso(), row["id"]),
-    )
-    portal.db.execute(
-        "UPDATE api_tokens SET revoked_at=? WHERE credential_id=?", (auth.now_iso(), row["id"])
-    )
+    with portal.db.transaction():
+        portal.db.execute(
+            "UPDATE api_credentials SET status='revoked', revoked_at=? WHERE id=?",
+            (auth.now_iso(), row["id"]),
+        )
+        portal.db.execute(
+            "UPDATE api_tokens SET revoked_at=? WHERE credential_id=?", (auth.now_iso(), row["id"])
+        )
     _record_api_activity(
         portal,
         user_id=ctx["user"]["id"],

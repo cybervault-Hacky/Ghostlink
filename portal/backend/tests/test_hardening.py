@@ -162,13 +162,14 @@ class TestSecurityHeaders:
         cfg = load_config(
             {
                 "APP_ENV": "production",
-                "DATABASE_URL": "postgres://x",
+                "DATABASE_URL": "portal.db",
                 "SESSION_SECRET": "a-long-random-secret-123",
                 "EMAIL_PROVIDER": "smtp",
                 "EMAIL_SMTP_HOST": "smtp.example.com",
                 "PORTAL_SECURE_COOKIES": "true",
                 "WEBAUTHN_RP_ID": "portal.example.com",
                 "WEBAUTHN_ORIGIN": "https://portal.example.com",
+                "ALLOWED_HOSTS": "portal.example.com",
             }
         )
         app = __import__("portal_server.app", fromlist=["create_wsgi_app"]).create_wsgi_app(
@@ -185,6 +186,7 @@ class TestSecurityHeaders:
                 "PATH_INFO": "/health",
                 "QUERY_STRING": "",
                 "REMOTE_ADDR": "127.0.0.1",
+                "HTTP_HOST": "portal.example.com",
                 "wsgi.input": __import__("io").BytesIO(b""),
                 "CONTENT_LENGTH": "0",
             },

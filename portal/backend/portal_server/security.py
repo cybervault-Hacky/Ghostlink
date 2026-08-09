@@ -1,72 +1,16 @@
-"""Rate limiting, security headers, and CSRF helpers (Phase 10B).
+"""Security headers, CSRF helpers, and backward-compatible rate limiter re-exports.
 
-In-memory, deterministic, and clock-injectable for tests. Rate limits are
-both IP-based and account-based where appropriate; email-existence is never
-revealed by password-reset endpoints (generic responses).
+The rate limiter implementations moved to ``portal_server.ratelimit`` (Phase
+13F) which adds a distributed PostgreSQL backend. ``RateLimiter`` and
+``DEFAULT_LIMITS`` are re-exported here so Phase 10-12 imports keep working.
 """
 
 from __future__ import annotations
 
-import time
-from collections import defaultdict, deque
-from collections.abc import Callable
+from portal_server.ratelimit import DEFAULT_LIMITS, InMemoryRateLimiter, RateLimiter
 
-# (scope, key) -> deque[timestamps]; window-based.
-DEFAULT_LIMITS: dict[str, tuple[int, float]] = {
-    "sign_in": (10, 60.0),
-    "sign_up": (5, 3600.0),
-    "password_reset_request": (5, 3600.0),
-    "email_verify": (10, 300.0),
-    "mfa_verify": (5, 60.0),
-    "credential_create": (10, 300.0),
-    "credential_rotate": (10, 300.0),
-    "credential_revoke": (20, 300.0),
-    "session_action": (20, 300.0),
-    # Phase 12 developer-API platform limits.
-    "pair_begin": (10, 300.0),
-    "pair_approve": (10, 300.0),
-    "token_issue": (20, 300.0),
-    "token_refresh": (20, 300.0),
-}
-
-
-class RateLimiter:
-    """Sliding-window in-memory rate limiter with an injectable clock."""
-
-    def __init__(
-        self,
-        *,
-        limits: dict[str, tuple[int, float]] | None = None,
-        monotonic: Callable[[], float] = time.monotonic,
-        max_buckets: int = 4096,
-    ) -> None:
-        self._limits = limits if limits is not None else DEFAULT_LIMITS
-        self._clock = monotonic
-        self._buckets: dict[str, deque[float]] = defaultdict(deque)
-        self._max_buckets = max_buckets
-
-    def allow(self, scope: str, key: str) -> bool:
-        limit, window = self._limits.get(scope, (0, 1.0))
-        if limit <= 0:
-            return True
-        bucket_key = f"{scope}:{key}"
-        now = self._clock()
-        bucket = self._buckets[bucket_key]
-        while bucket and now - bucket[0] > window:
-            bucket.popleft()
-        if len(bucket) >= limit:
-            return False
-        bucket.append(now)
-        self._trim()
-        return True
-
-    def _trim(self) -> None:
-        if len(self._buckets) <= self._max_buckets:
-            return
-        # Drop oldest buckets to bound memory.
-        while len(self._buckets) > self._max_buckets // 2:
-            self._buckets.pop(next(iter(self._buckets)))
-
+# Backward-compatible alias: the historical in-memory limiter.
+RateLimiterInMemory = InMemoryRateLimiter
 
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",

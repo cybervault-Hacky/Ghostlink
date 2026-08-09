@@ -1,0 +1,26 @@
+# Docker build context exclusions for the GhostLink portal image (Phase 13Q).
+# The image only needs portal/backend; keep local state, secrets and dev/build
+# artifacts out of the build context.
+**/.git/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/node_modules/
+**/dist/
+**/.next/
+**/build/
+**/*.db
+**/*.sqlite3
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.crt
+**/backups/
+ghostlink/
+tests/
+scripts/
+portal/web/
+docs/
+deployment/nginx/
+deployment/systemd/

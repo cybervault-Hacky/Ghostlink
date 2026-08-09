@@ -86,3 +86,23 @@ The portal logs metadata-only security events to the database; application
 logs are emitted via Python logging (no secrets). Add structured logging and
 uptime/error-rate monitoring at the reverse proxy / WSGI layer as your
 infrastructure requires.
+
+---
+
+## Phase 13 — production deployment artifacts
+
+**IMPLEMENTED & DOCUMENTED** (not publicly deployed). Phase 13 adds concrete,
+security-hardened deployment artifacts in `deployment/`:
+
+- `deployment/docker/` — production + dev `Dockerfile`s, `docker-compose.yml`
+  and `docker-compose.prod.yml` (non-root, read-only FS, dropped capabilities,
+  no secrets baked in, explicit port, healthcheck, graceful SIGTERM).
+- `deployment/nginx/ghostlink.conf` — HTTPS/TLS (placeholder certs only),
+  HTTP→HTTPS redirect, HSTS + security headers, request-size/timeout/connection
+  limits, trusted-proxy headers, static-asset caching.
+- `deployment/systemd/ghostlink.service` — runs gunicorn as a non-root user
+  with systemd hardening and graceful shutdown.
+- `deployment/postgres/README.md` — PostgreSQL provisioning/operations.
+
+Recommended architecture: `Internet → HTTPS nginx → gunicorn → WSGI app →
+PostgreSQL`. **No public deployment has been performed.**

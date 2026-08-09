@@ -75,6 +75,8 @@ class TestConfigValidation:
                 EMAIL_SMTP_HOST="smtp.example.com",
                 WEBAUTHN_RP_ID="portal.example.com",
                 WEBAUTHN_ORIGIN="https://portal.example.com",
+                ALLOWED_HOSTS="portal.example.com",
+                RATE_LIMIT_BACKEND="postgresql",
             )
         )
         assert cfg.is_production

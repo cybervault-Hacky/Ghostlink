@@ -45,6 +45,32 @@ class PortalConfig:
     reset_token_ttl_seconds: int = 3600
     # Optional overrides (dev/testing).
     rate_limit_overrides: dict[str, tuple[int, float]] = field(default_factory=dict)
+    # ---- Phase 13 production infrastructure ---------------------------
+    database_backend: str = "sqlite"  # sqlite | postgresql (derived from db_url)
+    pool_min: int = 1
+    pool_max: int = 10
+    database_connect_timeout: int = 5
+    database_statement_timeout_ms: int = 15_000
+    rate_limit_backend: str = "memory"  # memory | postgresql
+    allowed_hosts: tuple[str, ...] = ()
+    trusted_proxies: tuple[str, ...] = ()
+    log_level: str = "info"
+    log_format: str = "json"
+    request_id_header: str = "X-Request-ID"
+    deployment_version: str = ""
+    # Data retention (days) — 0 disables that cleanup.
+    retention_sessions_days: int = 90
+    retention_expired_tokens_days: int = 7
+    retention_security_events_days: int = 365
+    retention_api_activity_days: int = 180
+    retention_pairing_days: int = 30
+    retention_webauthn_challenges_days: int = 1
+    retention_verification_tokens_days: int = 7
+    # Backup configuration.
+    backup_dir: str = "./backups"
+    backup_retention_count: int = 30
+    backup_encrypt: bool = False
+    backup_passphrase: str = ""
 
     @property
     def is_production(self) -> bool:
@@ -95,6 +121,64 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
         "yes",
     )
 
+    # ---- Phase 13 production infrastructure -----------------------------
+    def _csv(name: str) -> tuple[str, ...]:
+        return tuple(x.strip() for x in source.get(name, "").split(",") if x.strip())
+
+    allowed_hosts = _csv("ALLOWED_HOSTS")
+    trusted_proxies = _csv("TRUSTED_PROXIES")
+    rate_limit_backend = source.get("RATE_LIMIT_BACKEND", "memory").strip().lower() or "memory"
+    log_level = source.get("LOG_LEVEL", "info").strip().lower() or "info"
+    log_format = source.get("LOG_FORMAT", "json").strip().lower() or "json"
+    request_id_header = source.get("REQUEST_ID_HEADER", "X-Request-ID").strip() or "X-Request-ID"
+    deployment_version = source.get("DEPLOYMENT_VERSION", "").strip()
+
+    def _pool_int(name: str, default: int) -> int:
+        raw = source.get(name, "").strip()
+        try:
+            return int(raw) if raw else default
+        except ValueError as exc:
+            raise ConfigError(f"{name} must be an integer.") from exc
+
+    pool_min = _pool_int("DATABASE_POOL_MIN", 1)
+    pool_max = _pool_int("DATABASE_POOL_MAX", 10)
+    connect_timeout = _pool_int("DATABASE_CONNECT_TIMEOUT", 5)
+    statement_timeout_ms = _pool_int("DATABASE_STATEMENT_TIMEOUT", 15_000)
+
+    def _retention(name: str, default: int) -> int:
+        raw = source.get(name, "").strip()
+        try:
+            return int(raw) if raw else default
+        except ValueError as exc:
+            raise ConfigError(f"{name} must be an integer (days).") from exc
+
+    retention = {
+        "retention_sessions_days": _retention("RETENTION_SESSIONS_DAYS", 90),
+        "retention_expired_tokens_days": _retention("RETENTION_EXPIRED_TOKENS_DAYS", 7),
+        "retention_security_events_days": _retention("RETENTION_SECURITY_EVENTS_DAYS", 365),
+        "retention_api_activity_days": _retention("RETENTION_API_ACTIVITY_DAYS", 180),
+        "retention_pairing_days": _retention("RETENTION_PAIRING_DAYS", 30),
+        "retention_webauthn_challenges_days": _retention("RETENTION_WEBAUTHN_CHALLENGES_DAYS", 1),
+        "retention_verification_tokens_days": _retention("RETENTION_VERIFICATION_TOKENS_DAYS", 7),
+    }
+    backup_dir = source.get("BACKUP_DIR", "./backups").strip() or "./backups"
+    backup_retention_count = _pool_int("BACKUP_RETENTION_COUNT", 30)
+    backup_encrypt = source.get("BACKUP_ENCRYPT", "false").strip().lower() in ("1", "true", "yes")
+    backup_passphrase = source.get("BACKUP_PASSPHRASE", "").strip()
+
+    if rate_limit_backend not in ("memory", "postgresql"):
+        raise ConfigError("RATE_LIMIT_BACKEND must be 'memory' or 'postgresql'.")
+    if log_level not in ("debug", "info", "warning", "error", "critical"):
+        raise ConfigError("LOG_LEVEL must be one of debug/info/warning/error/critical.")
+    if log_format not in ("json", "text"):
+        raise ConfigError("LOG_FORMAT must be 'json' or 'text'.")
+    if pool_min < 1:
+        raise ConfigError("DATABASE_POOL_MIN must be >= 1.")
+    if pool_max < pool_min:
+        raise ConfigError("DATABASE_POOL_MAX must be >= DATABASE_POOL_MIN.")
+    if backup_retention_count < 1:
+        raise ConfigError("BACKUP_RETENTION_COUNT must be >= 1.")
+
     if is_prod:
         # Production must never run with development conveniences.
         if email_provider in ("dev", ""):
@@ -103,6 +187,15 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
             raise ConfigError("PORTAL_SECURE_COOKIES must be true in production.")
         if session_secret == "development-secret":
             raise ConfigError("SESSION_SECRET must not be the development default in production.")
+        if not allowed_hosts:
+            raise ConfigError("ALLOWED_HOSTS must be configured in production.")
+        if rate_limit_backend == "memory" and db_url.lower().startswith("postgres"):
+            raise ConfigError(
+                "RATE_LIMIT_BACKEND must be 'postgresql' for multi-process PostgreSQL "
+                "deployments (fail closed; per-process limits are unsafe)."
+            )
+        if backup_encrypt and not backup_passphrase:
+            raise ConfigError("BACKUP_PASSPHRASE is required when BACKUP_ENCRYPT=true.")
 
     # Session secret default is safe only in non-production.
     if not session_secret:
@@ -124,6 +217,8 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
     # Parse optional rate-limit overrides (testing): RATE_LIMIT_<SCOPE>=<n>:<window>
     overrides: dict[str, tuple[int, float]] = {}
     for key, value in source.items():
+        if key == "RATE_LIMIT_BACKEND":
+            continue
         if key.startswith("RATE_LIMIT_") and value:
             scope = key[len("RATE_LIMIT_") :].lower()
             try:
@@ -133,6 +228,8 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
                 raise ConfigError(
                     f"Invalid RATE_LIMIT_{key[len('RATE_LIMIT_') :]} value: {value!r}"
                 ) from exc
+
+    database_backend = "postgresql" if db_url.lower().startswith("postgres") else "sqlite"
 
     return PortalConfig(
         app_env=app_env,
@@ -149,6 +246,29 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
         smtp_pass=smtp_pass,
         smtp_from=smtp_from,
         rate_limit_overrides=overrides,
+        database_backend=database_backend,
+        pool_min=pool_min,
+        pool_max=pool_max,
+        database_connect_timeout=connect_timeout,
+        database_statement_timeout_ms=statement_timeout_ms,
+        rate_limit_backend=rate_limit_backend,
+        allowed_hosts=allowed_hosts,
+        trusted_proxies=trusted_proxies,
+        log_level=log_level,
+        log_format=log_format,
+        request_id_header=request_id_header,
+        deployment_version=deployment_version,
+        retention_sessions_days=retention["retention_sessions_days"],
+        retention_expired_tokens_days=retention["retention_expired_tokens_days"],
+        retention_security_events_days=retention["retention_security_events_days"],
+        retention_api_activity_days=retention["retention_api_activity_days"],
+        retention_pairing_days=retention["retention_pairing_days"],
+        retention_webauthn_challenges_days=retention["retention_webauthn_challenges_days"],
+        retention_verification_tokens_days=retention["retention_verification_tokens_days"],
+        backup_dir=backup_dir,
+        backup_retention_count=backup_retention_count,
+        backup_encrypt=backup_encrypt,
+        backup_passphrase=backup_passphrase,
     )
 
 

@@ -34,3 +34,26 @@ distributed/global — documented honestly.
 ## Backup
 
 See [docs/DISASTER_RECOVERY.md](DISASTER_RECOVERY.md).
+
+---
+
+## Phase 13 — administration commands & retention
+
+**IMPLEMENTED & TESTED.** Production administration commands (deterministic
+exit codes; never expose secrets):
+
+```
+ghostlink db status          ghostlink db migrate      ghostlink db verify
+ghostlink backup create      ghostlink backup verify  ghostlink backup list
+ghostlink backup restore --dry-run
+ghostlink system health      ghostlink system readiness
+ghostlink security-audit
+```
+
+These delegate to the portal backend ops layer (`python -m portal_server.manage`).
+
+**Data retention (13O)** — bounded, idempotent, transactional cleanup via
+`RETENTION_*_DAYS` for sessions, expired tokens, security events, API
+activity, pairing records and expired verification tokens. Cleanup never
+deletes active security state. **NOT VERIFIED** against live PostgreSQL in
+this environment.

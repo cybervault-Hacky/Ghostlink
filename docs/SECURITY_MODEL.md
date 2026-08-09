@@ -64,3 +64,19 @@ deployment, and recovery detail live in
   extension point.
 * No anonymity claim; no claim of protection against a fully compromised
   host.
+
+---
+
+## Phase 13 — production hardening additions
+
+- **Host & proxy validation (13H)** — `ALLOWED_HOSTS` Host-header validation;
+  `X-Forwarded-For`/`X-Forwarded-Proto` are honoured only when a trusted proxy
+  is configured, preventing client spoofing of the rate-limit IP.
+- **Distributed rate limiting (13F)** — `RateLimiter` interface with in-memory
+  and PostgreSQL backends; multi-process PostgreSQL deployments fail closed.
+- **Observability without secrets (13J/K)** — structured JSON logging with
+  request correlation and defensive secret scrubbing.
+- **Backups & retention (13M/O)** — encrypted, checksummed, verifiable
+  backups; bounded, idempotent retention cleanup.
+- **Owner invariant unchanged** — exactly one Owner; no owner escalation,
+  transfer, or `owner:*` scope exists (enforced by `test_phase13_security.py`).

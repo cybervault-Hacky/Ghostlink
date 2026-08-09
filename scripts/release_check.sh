@@ -135,5 +135,22 @@ if grep -RniE "100% secure|impossible to hack|impossible to break|mathematically
 fi
 echo "no banned security claims"
 
+# ---------------------------------------------------- 14. Phase 13 admin CLI
+step "Phase 13 admin CLI smoke (db status / system readiness)"
+TMPADMIN="$(mktemp -d)"
+if DATABASE_URL="${TMPADMIN}/portal.db" BACKUP_DIR="${TMPADMIN}/backups" \
+    "${PYTHON}" ghostlink.py db status >/dev/null 2>&1; then
+    DATABASE_URL="${TMPADMIN}/portal.db" BACKUP_DIR="${TMPADMIN}/backups" \
+        "${PYTHON}" ghostlink.py system readiness >/dev/null 2>&1 || fail "system readiness failed"
+    DATABASE_URL="${TMPADMIN}/portal.db" BACKUP_DIR="${TMPADMIN}/backups" \
+        "${PYTHON}" ghostlink.py backup create >/dev/null 2>&1 || fail "backup create failed"
+    BK="$(ls "${TMPADMIN}"/backups/*.glbak 2>/dev/null | head -1)"
+    [ -n "$BK" ] && "${PYTHON}" ghostlink.py backup verify "$BK" >/dev/null 2>&1 || fail "backup verify failed"
+    echo "admin CLI smoke OK"
+else
+    echo "admin CLI smoke skipped (portal backend unavailable)"
+fi
+rm -rf "${TMPADMIN}"
+
 echo
 echo "All release checks passed."

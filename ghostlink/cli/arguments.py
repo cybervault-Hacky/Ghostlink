@@ -58,6 +58,7 @@ class CLIOptions:
     developer_action: str | None = None
     developer_key_action: str | None = None
     developer_key_id: str | None = None
+    admin_argv: list[str] | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -424,6 +425,21 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="URL",
         help="portal URL (http://… or ws://…) — overrides configuration",
     )
+
+    # ---- Phase 13 production administration ----------------------------
+    for _name, _help in (
+        ("db", "manage the portal database (status/migrate/verify)"),
+        ("backup", "create/verify/list/restore portal backups"),
+        ("system", "portal health / readiness probes"),
+    ):
+        _p = subparsers.add_parser(_name, help=_help)
+        _p.add_argument(
+            "admin_args",
+            nargs=argparse.REMAINDER,
+            metavar="ARGS",
+            help="sub-command arguments (e.g. 'status', 'migrate')",
+        )
+    subparsers.add_parser("security-audit", help="run the deterministic offline security audit")
     return parser
 
 
@@ -477,4 +493,5 @@ def parse_args(argv: Sequence[str] | None = None) -> CLIOptions:
         developer_action=getattr(namespace, "developer_action", None),
         developer_key_action=getattr(namespace, "developer_key_action", None),
         developer_key_id=getattr(namespace, "developer_key_id", None),
+        admin_argv=getattr(namespace, "admin_args", None),
     )

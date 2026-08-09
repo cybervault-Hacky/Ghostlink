@@ -1,0 +1,51 @@
+# GhostLink Developer Portal — production compose overlay (Phase 13Q).
+#
+#   docker compose \
+#     -f deployment/docker/docker-compose.prod.yml \
+#     -f deployment/docker/docker-compose.yml \
+#     up -d
+#
+# SECURITY ASSUMPTIONS (read deployment/README.md):
+#   * All secrets must be supplied via a .env file or an external secret
+#     manager — none are baked into this file or the image.
+#   * The portal is intended to sit behind an HTTPS reverse proxy (nginx);
+#     it binds internally and does not expose itself directly to the internet.
+#   * PORTAL_SECURE_COOKIES=true and a strong SESSION_SECRET are mandatory.
+services:
+  portal:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      PORTAL_SECURE_COOKIES: "true"
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:?EMAIL_PROVIDER is required}
+      EMAIL_SMTP_HOST: ${EMAIL_SMTP_HOST:-}
+      EMAIL_SMTP_USER: ${EMAIL_SMTP_USER:-}
+      EMAIL_SMTP_PASSWORD: ${EMAIL_SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:?WEBAUTHN_RP_ID is required}
+      WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:?WEBAUTHN_ORIGIN is required}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS is required}
+      RATE_LIMIT_BACKEND: postgresql
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: json
+      BACKUP_DIR: /srv/ghostlink/runtime/backups
+      BACKUP_ENCRYPT: "true"
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}
+    ports:
+      - "127.0.0.1:8788:8788"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - runtime:/srv/ghostlink/runtime
+    restart: unless-stopped
+
+volumes:
+  runtime:

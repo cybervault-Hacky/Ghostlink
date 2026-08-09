@@ -22,7 +22,7 @@ from typing import Any
 from ghostlink.developer import keys as dev_keys
 from portal_server import auth, devapi_handlers, webauthn
 from portal_server.config import PortalConfig
-from portal_server.db import Database
+from portal_server.db import DatabaseBackend
 from portal_server.emailing import DevEmailProvider, EmailProvider
 from portal_server.http import (
     COOKIE_NAME,
@@ -35,11 +35,19 @@ from portal_server.http import (
     ok,
 )
 from portal_server.mfa import generate_totp_secret, verify_totp
-from portal_server.security import RateLimiter
+from portal_server.observability import StructuredLogger, validate_request_id
+from portal_server.ratelimit import (
+    InMemoryRateLimiter,
+    RateLimitBackendError,
+    build_rate_limiter,
+)
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 SESSION_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
+# Phase 13: request-body size limit (13U) — reject oversized bodies early.
+MAX_BODY_BYTES = 1024 * 1024  # 1 MiB
 
 
 # Backward-compatible alias: tests and the dev runner construct ``EmailSender``
@@ -52,7 +60,7 @@ class Portal:
 
     def __init__(
         self,
-        db: Database,
+        db: DatabaseBackend,
         *,
         secure_cookies: bool = False,
         emails: EmailProvider | None = None,
@@ -65,13 +73,26 @@ class Portal:
         # Default email is disabled so the portal never claims real delivery
         # unless a provider is explicitly enabled (dev or SMTP).
         self.emails = emails if emails is not None else DevEmailProvider(enabled=False)
-        self.limiter = RateLimiter(
-            monotonic=clock,
-            limits=(
-                config.rate_limit_overrides if config and config.rate_limit_overrides else None
-            ),
-        )
+        # Phase 13: rate limiter is selected by configuration; a PostgreSQL
+        # deployment uses the distributed backend (fail closed on misuse).
+        if config is not None and config.rate_limit_backend == "postgresql":
+            self.limiter = build_rate_limiter(
+                "postgresql", db, overrides=config.rate_limit_overrides or None
+            )
+        else:
+            self.limiter = InMemoryRateLimiter(
+                monotonic=clock,
+                limits=(
+                    config.rate_limit_overrides if config and config.rate_limit_overrides else None
+                ),
+            )
         self.clock = clock
+        self.logger = StructuredLogger(
+            level=config.log_level if config else "info",
+            log_format=config.log_format if config else "json",
+            deployment_version=config.deployment_version if config else "",
+        )
+        self.request_id_header = config.request_id_header if config else "X-Request-ID"
         self.webauthn_challenges: dict[str, tuple[str, float]] = {}  # key -> (value, expiry_mono)
         self.preauth_tickets: dict[str, int] = {}  # ticket -> user_id (short-lived)
 
@@ -338,28 +359,29 @@ def _complete_signin(portal: Portal, request: Request, user: dict[str, Any]) -> 
     token = auth.new_session_token()
     csrf = auth.new_csrf_token()
     now = auth.now_iso()
-    portal.db.execute(
-        "UPDATE users SET failed_logins=0, locked_until=NULL WHERE id=?",
-        (user["id"],),
-    )
-    portal.db.execute(
-        "INSERT INTO sessions(user_id, token_hash, created_at, expires_at, last_active_at, "
-        "device, browser, os, ip, csrf_token) VALUES(?,?,?,?,?,?,?,?,?,?)",
-        (
-            user["id"],
-            auth.hash_secret(token),
-            now,
-            _session_expiry(portal),
-            now,
-            str(request.body_json.get("device", "") or "")[:80]
-            if isinstance(request.body_json, dict)
-            else "",
-            str(request.header("User-Agent"))[:120],
-            "linux",
-            request.client_ip(),
-            csrf,
-        ),
-    )
+    with portal.db.transaction():
+        portal.db.execute(
+            "UPDATE users SET failed_logins=0, locked_until=NULL WHERE id=?",
+            (user["id"],),
+        )
+        portal.db.execute(
+            "INSERT INTO sessions(user_id, token_hash, created_at, expires_at, last_active_at, "
+            "device, browser, os, ip, csrf_token) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                user["id"],
+                auth.hash_secret(token),
+                now,
+                _session_expiry(portal),
+                now,
+                str(request.body_json.get("device", "") or "")[:80]
+                if isinstance(request.body_json, dict)
+                else "",
+                str(request.header("User-Agent"))[:120],
+                "linux",
+                request.client_ip(),
+                csrf,
+            ),
+        )
     _record_event(portal, user["id"], "signin", "session")
     resp = ok({"user": _user_payload(user), "csrfToken": csrf})
     resp.set_cookie(
@@ -503,10 +525,11 @@ def handle_devapi_device_revoke(
     )
     if row is None:
         return error_response(404, "not_found", "Device not found.")
-    portal.db.execute("UPDATE developer_devices SET status='revoked' WHERE id=?", (row["id"],))
-    portal.db.execute(
-        "UPDATE api_tokens SET revoked_at=? WHERE device_id=?", (auth.now_iso(), row["id"])
-    )
+    with portal.db.transaction():
+        portal.db.execute("UPDATE developer_devices SET status='revoked' WHERE id=?", (row["id"],))
+        portal.db.execute(
+            "UPDATE api_tokens SET revoked_at=? WHERE device_id=?", (auth.now_iso(), row["id"])
+        )
     _record_event(portal, user["id"], "device_revoked", "web", {"deviceId": device_id})
     return ok({"revoked": True})
 
@@ -546,10 +569,14 @@ def handle_devapi_credential_revoke(
     )
     if row is None:
         return error_response(404, "not_found", "Credential not found.")
-    portal.db.execute(
-        "UPDATE api_credentials SET status='revoked', revoked_at=? WHERE id=?",
-        (auth.now_iso(), row["id"]),
-    )
+    with portal.db.transaction():
+        portal.db.execute(
+            "UPDATE api_credentials SET status='revoked', revoked_at=? WHERE id=?",
+            (auth.now_iso(), row["id"]),
+        )
+        portal.db.execute(
+            "UPDATE api_tokens SET revoked_at=? WHERE credential_id=?", (auth.now_iso(), row["id"])
+        )
     _record_event(portal, user["id"], "api_key_revoked", "web", {"credentialId": credential_id})
     return ok({"revoked": True})
 
@@ -831,16 +858,17 @@ def handle_change_password(portal: Portal, request: Request, user: dict[str, Any
         return error_response(403, "wrong_password", "Current password is incorrect.")
     if len(new_password) < 12 or len(new_password) > 128:
         return error_response(400, "weak_password", "Password must be 12-128 characters.")
-    portal.db.execute(
-        "UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
-        (auth.hash_password(new_password), auth.now_iso(), user["id"]),
-    )
-    # Phase 11: revoke all sessions (including this one) on password change so
-    # an attacker with a stolen session cannot persist past the password reset.
-    portal.db.execute(
-        "UPDATE sessions SET revoked_at=? WHERE user_id=?",
-        (auth.now_iso(), user["id"]),
-    )
+    with portal.db.transaction():
+        portal.db.execute(
+            "UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
+            (auth.hash_password(new_password), auth.now_iso(), user["id"]),
+        )
+        # Phase 11: revoke all sessions (including this one) on password change
+        # so an attacker with a stolen session cannot persist past the reset.
+        portal.db.execute(
+            "UPDATE sessions SET revoked_at=? WHERE user_id=?",
+            (auth.now_iso(), user["id"]),
+        )
     _record_event(portal, user["id"], "password_changed", "web")
     return ok({"changed": True})
 
@@ -855,15 +883,16 @@ def handle_mfa_setup(portal: Portal, request: Request, user: dict[str, Any]) -> 
         code = str(body.get("code", ""))
         if existing is None or not verify_totp(existing["secret"], code):
             return error_response(401, "invalid_code", "Incorrect authentication code.")
-        portal.db.execute(
-            "UPDATE mfa_totp SET enabled=1, verified=1 WHERE user_id=?", (user["id"],)
-        )
         codes = [auth.generate_recovery_code() for _ in range(8)]
-        for c in codes:
+        with portal.db.transaction():
             portal.db.execute(
-                "INSERT INTO mfa_recovery_codes(user_id, code_hash, created_at) VALUES(?,?,?)",
-                (user["id"], auth.hash_secret(c), auth.now_iso()),
+                "UPDATE mfa_totp SET enabled=1, verified=1 WHERE user_id=?", (user["id"],)
             )
+            for c in codes:
+                portal.db.execute(
+                    "INSERT INTO mfa_recovery_codes(user_id, code_hash, created_at) VALUES(?,?,?)",
+                    (user["id"], auth.hash_secret(c), auth.now_iso()),
+                )
         _record_event(portal, user["id"], "mfa_enabled", "web")
         return created({"recoveryCodes": codes})  # shown once
     secret = existing["secret"] if existing else generate_totp_secret()
@@ -1133,7 +1162,7 @@ def _match(pattern: str, path: str) -> dict[str, str] | None:
 
 
 def create_wsgi_app(
-    db: Database,
+    db: DatabaseBackend,
     *,
     secure_cookies: bool = False,
     emails: EmailProvider | None = None,
@@ -1160,29 +1189,40 @@ def create_wsgi_app(
         if apply_hsts:
             # Inject HSTS for every response in production.
             environ["ghostlink.hsts"] = "1"
+        # Only honour X-Forwarded-* when a trusted reverse proxy is configured.
+        if config is not None and config.trusted_proxy:
+            environ["ghostlink.trusted_proxy"] = "1"
         return _dispatch(portal, request, environ, start_response, debug=debug)
 
     return wsgi_app
 
 
-_operational_logger = None
-
-
-def _log_request(request: Request, status: int, started: float) -> None:
-    """Operational request log — metadata only, never secrets.
-
-    Logs method, path (never the query string or body), HTTP status, and
-    duration. No cookies, tokens, passwords, or credentials.
-    """
-    global _operational_logger
-    if _operational_logger is None:
-        import logging
-
-        _operational_logger = logging.getLogger("ghostlink.portal.request")
+def _log_request(
+    portal: Portal, request: Request, status: int, started: float, request_id: str
+) -> None:
+    """Operational request log — structured, metadata-only, secret-safe."""
     duration_ms = (time.monotonic() - started) * 1000.0
-    _operational_logger.info(
-        "%s %s -> %d (%.1fms)", request.method, request.path, status, duration_ms
+    portal.logger.info(
+        "request",
+        request_id=request_id,
+        method=request.method,
+        route=request.path,
+        status=status,
+        duration_ms=round(duration_ms, 2),
     )
+
+
+def _host_allowed(portal: Portal, request: Request) -> bool:
+    """Reject requests whose ``Host`` header is not allow-listed (13H)."""
+    hosts = portal.config.allowed_hosts if portal.config else ()
+    if not hosts:
+        return True  # not configured → not enforced (dev)
+    host = str(request.header("Host") or "").strip()
+    if not host:
+        return False
+    # Strip an optional port before comparison.
+    bare = host.rsplit(":", 1)[0] if ":" in host and host.rsplit(":", 1)[1].isdigit() else host
+    return bare in hosts
 
 
 def _dispatch(
@@ -1195,22 +1235,97 @@ def _dispatch(
 ) -> list[bytes]:
     """Route a request, applying HSTS when the caller flagged production."""
     started = time.monotonic()
+    request_id = validate_request_id(request.header(portal.request_id_header))
+    if not _host_allowed(portal, request):
+        resp = error_response(403, "forbidden", "Unknown host.")
+        resp.headers[portal.request_id_header] = request_id
+        with contextlib.suppress(Exception):
+            _log_request(portal, request, resp.status, started, request_id)
+        return app_response(resp, start_response)
     try:
+        length = int(request.environ.get("CONTENT_LENGTH") or 0)
+        if length > MAX_BODY_BYTES:
+            resp = error_response(413, "payload_too_large", "Request body is too large.")
+            resp.headers[portal.request_id_header] = request_id
+            with contextlib.suppress(Exception):
+                _log_request(portal, request, resp.status, started, request_id)
+            return app_response(resp, start_response)
         resp = _route_request(portal, request)
+    except RateLimitBackendError:
+        resp = error_response(503, "rate_limit_store_unavailable", "Rate limit store unavailable.")
     except Exception:
         if debug:
             raise
         resp = error_response(500, "internal", "An unexpected error occurred.")
+        portal.logger.error("unhandled_exception", request_id=request_id, route=request.path)
     if environ.get("ghostlink.hsts"):
         resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    resp.headers[portal.request_id_header] = request_id
     with contextlib.suppress(Exception):
-        _log_request(request, resp.status, started)
+        _log_request(portal, request, resp.status, started, request_id)
     return app_response(resp, start_response)
 
 
+def _ready_state(portal: Portal) -> tuple[bool, list[str]]:
+    """Validate DB connectivity + migrations + required production config."""
+    problems: list[str] = []
+    try:
+        row = portal.db.query_one("SELECT 1 AS ok")
+        if row is None:
+            problems.append("database unreachable")
+    except Exception:
+        problems.append("database unreachable")
+    try:
+        if portal.db.schema_version < 3:
+            problems.append("migrations not applied")
+    except Exception:
+        problems.append("cannot read schema version")
+    if portal.config is not None and portal.config.is_production:
+        if not portal.config.allowed_hosts:
+            problems.append("ALLOWED_HOSTS not configured")
+        if portal.config.session_secret == "development-secret":
+            problems.append("SESSION_SECRET is the insecure default")
+        if not portal.config.secure_cookies:
+            problems.append("PORTAL_SECURE_COOKIES is not true")
+        if portal.config.email_provider in ("dev", ""):
+            problems.append("EMAIL_PROVIDER is not production-ready")
+    return (not problems, problems)
+
+
+def handle_health_live(portal: Portal) -> Response:
+    """Liveness: process is alive; no database dependency."""
+    return ok({"status": "alive"})
+
+
+def handle_health_ready(portal: Portal) -> Response:
+    """Readiness: DB connectivity, migrations and required config all valid."""
+    ready, problems = _ready_state(portal)
+    if ready:
+        return ok({"status": "ready", "checks": []})
+    return json_response(503, {"status": "not_ready", "checks": problems})
+
+
+def handle_health(portal: Portal) -> Response:
+    """Safe operational summary — never exposes URLs, secrets or internals."""
+    ready, problems = _ready_state(portal)
+    payload: dict[str, Any] = {
+        "status": "ready" if ready else "degraded",
+        "deployment_version": portal.config.deployment_version if portal.config else "",
+        "database_backend": portal.db.backend_name,
+        "schema_version": portal.db.schema_version,
+    }
+    if not ready:
+        payload["checks"] = problems
+    return ok(payload)
+
+
 def _route_request(portal: Portal, request: Request) -> Response:
+    if request.path == "/health/live" and request.method == "GET":
+        return handle_health_live(portal)
+    if request.path == "/health/ready" and request.method == "GET":
+        return handle_health_ready(portal)
     if request.path == "/health" and request.method == "GET":
-        return ok({"ok": True})
+        return handle_health(portal)
     if not request.path.startswith("/api/"):
         return error_response(404, "not_found", "Not found.")
     for route in ROUTES:

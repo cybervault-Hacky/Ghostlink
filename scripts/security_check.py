@@ -179,6 +179,50 @@ def check_devapi_hygiene() -> list[str]:
     return findings
 
 
+def check_phase13_hygiene() -> list[str]:
+    """Phase 13 checks: production backend, distributed rate limiting,
+    observability, health endpoints, and safe deployment artifacts."""
+    findings: list[str] = []
+    base = PORTAL / "backend" / "portal_server"
+    db_dir = base / "db"
+    # PostgreSQL backend + migration system present.
+    if not (db_dir / "postgres.py").exists():
+        findings.append("db/postgres.py missing — no PostgreSQL backend")
+    if not (db_dir / "migrations.py").exists():
+        findings.append("db/migrations.py missing — no migration system")
+    if "migration_checksum" not in (db_dir / "migrations.py").read_text(encoding="utf-8"):
+        findings.append("migrations.py: no checksum validation")
+    # Observability present with secret scrubbing.
+    obs = base / "observability.py"
+    obs_text = obs.read_text(encoding="utf-8") if obs.exists() else ""
+    if "scrub_secrets" not in obs_text:
+        findings.append("observability.py: secret scrubbing missing")
+    # Distributed rate limiting present.
+    rl = base / "ratelimit.py"
+    rl_text = rl.read_text(encoding="utf-8") if rl.exists() else ""
+    if "PostgresRateLimiter" not in rl_text:
+        findings.append("ratelimit.py: PostgreSQL rate limiter missing")
+    # Health endpoints present.
+    app_text = (base / "app.py").read_text(encoding="utf-8") if (base / "app.py").exists() else ""
+    if "/health/live" not in app_text or "/health/ready" not in app_text:
+        findings.append("app.py: health/live or health/ready endpoint missing")
+    # DATABASE_URL must never be printed/logged.
+    if re.search(r"print\(.*db_url|log(ger)?\(.*DATABASE_URL", app_text):
+        findings.append("app.py: possible DATABASE_URL logging")
+    # Deployment artifacts must not embed real keys/secrets.
+    for rel in ("docker/docker-compose.prod.yml", "nginx/ghostlink.conf"):
+        p = ROOT / "deployment" / rel
+        if not p.exists():
+            findings.append(f"deployment/{rel} missing")
+            continue
+        text = p.read_text(encoding="utf-8")
+        if re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", text, re.IGNORECASE):
+            findings.append(f"deployment/{rel}: embedded private key present")
+        if re.search(r"password:\s*['\"][^$]", text):
+            findings.append(f"deployment/{rel}: hardcoded password")
+    return findings
+
+
 def run_all() -> list[str]:
     findings: list[str] = []
     findings += check_secrets()
@@ -187,6 +231,7 @@ def run_all() -> list[str]:
     findings += check_frontend_telemetry()
     findings += check_no_network_in_backend()
     findings += check_devapi_hygiene()
+    findings += check_phase13_hygiene()
     return findings
 
 

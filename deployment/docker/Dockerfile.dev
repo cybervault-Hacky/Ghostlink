@@ -1,0 +1,18 @@
+# GhostLink Developer Portal — development image (Phase 13Q).
+#
+# Mounts the source tree as a volume and runs the WSGI dev server with a
+# SQLite database. For local iteration only — never use in production.
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /srv/ghostlink
+
+COPY portal/backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+COPY portal/backend /srv/ghostlink/portal/backend
+
+EXPOSE 8788
+
+CMD ["python", "-m", "portal_server"]

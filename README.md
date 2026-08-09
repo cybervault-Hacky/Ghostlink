@@ -133,10 +133,36 @@ lives in [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
-## Current release: Phase 12
+## Current release: Phase 13
 
-**Phase 12 — Developer API Platform & Termux Integration** is the latest
-implemented phase (version `0.14.0`).
+**Phase 13 — Production Infrastructure, Database & Deployment Hardening** is
+the latest implemented phase (version `0.15.0`).
+
+- **PostgreSQL backend** — a first-class PostgreSQL persistence layer
+  (connection pooling, timeouts, transaction safety, numbered + checksummed
+  migrations with advisory-lock serialisation and future-version rejection)
+  while SQLite remains the default for local development and Termux. See
+  [docs/DATABASE_PRODUCTION.md](docs/DATABASE_PRODUCTION.md) and
+  [docs/MIGRATIONS.md](docs/MIGRATIONS.md).
+- **Distributed rate limiting** — a `RateLimiter` interface with an in-memory
+  and a PostgreSQL backend; multi-process PostgreSQL deployments fail closed
+  rather than silently degrading to per-process limits. See
+  [docs/RATE_LIMITING.md](docs/RATE_LIMITING.md).
+- **Production HTTP/deployment** — gunicorn + reverse-proxy configuration,
+  HTTPS/HSTS/security headers, trusted-proxy & Host validation, containerised
+  and systemd deployment, health/readiness/liveness endpoints, structured
+  JSON observability with request correlation and secret scrubbing, encrypted
+  checksummed backups, and bounded data retention. See
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md),
+  [docs/BACKUPS.md](docs/BACKUPS.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
+- **CI/CD & supply-chain** — pytest/ruff/mypy/compileall/frontend gates plus
+  PostgreSQL integration, Docker build, secret scan, and a manual-approval
+  release workflow. See [docs/CI_CD.md](docs/CI_CD.md).
+- **Owner rule retained** — exactly one Owner; developer accounts can never
+  become Owner or transfer ownership (enforced by `tests/test_phase13_security.py`).
+
+Phase 12 (Developer API Platform & Termux Integration, `0.14.0`) is fully
+retained and documented below:
 
 - **Developer API** (`/api/v1/developer/*`) — a narrowly scoped, authenticated,
   auditable, revocable developer API with least-privilege scopes,

@@ -73,3 +73,24 @@ A leaked developer credential is revoked immediately via
 `POST /api/v1/developer-keys/{key_id}/revoke` (or the Security Center).
 Revocation is persistent and irreversible; create a new credential to
 restore access.
+
+---
+
+## Phase 13 — automated recovery procedure & tests
+
+**IMPLEMENTED & TESTED** (SQLite runtime). The Phase 13 recovery procedure is
+exercised by automated tests:
+
+1. Create a production-like database.
+2. Create users/devices/projects/credentials and security events.
+3. Backup.
+4. Destroy the test database.
+5. Restore into an isolated database.
+6. Verify integrity (checksum).
+7. Verify authentication and revocation state.
+8. **Recovery never reactivates revoked credentials** — revoked statuses are
+   preserved byte-for-byte as backed up.
+
+Tooling: `ghostlink backup create|verify|list|restore --dry-run`,
+`ghostlink db verify`. A real restore targets a fresh, isolated database and
+is never auto-destructive. See `BACKUPS.md`.

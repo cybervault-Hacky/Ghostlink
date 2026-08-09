@@ -53,8 +53,12 @@ class Request:
 
     def client_ip(self) -> str:
         # Best-effort client IP for rate limiting; never trusted for auth.
+        # ``X-Forwarded-For`` is honoured only when the caller explicitly
+        # flagged a trusted reverse proxy (13H); otherwise it is ignored so a
+        # client cannot spoof a different IP for rate limiting.
+        trusted = self.environ.get("ghostlink.trusted_proxy") in (True, "1", "true", 1)
         forwarded = self.environ.get("HTTP_X_FORWARDED_FOR", "")
-        if forwarded:
+        if forwarded and trusted:
             return str(forwarded).split(",")[0].strip()
         return str(self.environ.get("REMOTE_ADDR", "unknown"))
 

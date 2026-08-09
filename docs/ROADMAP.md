@@ -515,9 +515,31 @@ revocable developer API and a Termux client.
 - Docs: `API_V1.md`, `TERMUX_INTEGRATION.md`, `DEVICE_SECURITY.md`,
   `PROJECTS.md`, `API_SECURITY.md`, `PAIRING.md`, `DEVELOPER_AUTH.md`.
 
-## Phase 13 — Hardening & Polish
+## Phase 13 — Production Infrastructure, Database & Deployment Hardening ✅ (latest implemented)
 
-- Full security review and threat-model document
+**STATUS: IMPLEMENTED** — transforms the portal into a production-deployable
+infrastructure foundation while preserving Phases 1–12.
+
+- **PostgreSQL backend** — first-class `psycopg3` + `psycopg_pool` backend
+  (pooling, connect/statement/idle timeouts, transaction safety) with SQLite
+  retained for local/Termux.
+- **Migrations** — numbered, checksummed, advisory-lock-serialised,
+  future-version-rejected; `ghostlink db status|migrate|verify`.
+- **Distributed rate limiting** — `RateLimiter` interface with in-memory and
+  PostgreSQL backends; fail-closed for multi-process PostgreSQL.
+- **Production HTTP/deployment** — gunicorn + reverse proxy, HTTPS/HSTS,
+  trusted-proxy & Host validation, health/readiness/liveness, structured JSON
+  observability with request correlation and secret scrubbing.
+- **Backups & retention** — encrypted, checksummed, verifiable backups
+  (`ghostlink backup create|verify|list|restore`); bounded retention cleanup.
+- **CI/CD & supply-chain** — test/security/build/release workflows, Docker
+  images, secret + dependency audits, manual-approval release gate.
+- Docs: `PRODUCTION.md`, `DATABASE_PRODUCTION.md`, `MIGRATIONS.md`,
+  `BACKUPS.md`, `DISASTER_RECOVERY.md`, `OBSERVABILITY.md`, `RATE_LIMITING.md`,
+  `DEPLOYMENT.md`, `SECURITY_MODEL.md`, `OPERATIONS.md`, `CI_CD.md`.
+
+### Planned (not started)
+
 - Offline message queue and multi-device sync design
 - Localization framework activation (beyond `en`)
 - Plugin hooks for room automations

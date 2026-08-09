@@ -1,0 +1,40 @@
+# GhostLink Developer Portal — local development compose stack (Phase 13Q).
+#
+#   docker compose -f deployment/docker/docker-compose.yml up
+#
+# Provides the portal backend on http://127.0.0.1:8788 backed by PostgreSQL.
+# Secrets here are DEVELOPMENT ONLY and must never be used in production.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ghostlink
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: ghostlink
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ghostlink"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  portal:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile.dev
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql://ghostlink:devpassword@db:5432/ghostlink
+      EMAIL_PROVIDER: dev
+      PORTAL_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:8788:8788"
+
+volumes:
+  pgdata:

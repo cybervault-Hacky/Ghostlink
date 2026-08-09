@@ -21,7 +21,7 @@ Private conversations. End-to-end encryption. No browser required.
 ## Contents
 
 [Design principle](#design-principle) · [What is GhostLink?](#what-is-ghostlink) ·
-[Architecture](#architecture-overview) · [Current release](#current-release-phase-11) ·
+[Architecture](#architecture-overview) · [Current release](#current-release-phase-12) ·
 [Screenshots](#screenshots) · [Feature matrix](#feature-matrix) ·
 [Security model](#security-model) · [What the relay can see](#what-the-relay-can-see) ·
 [Identity & invites](#identity-and-invites) · [File transfer](#file-transfer) ·
@@ -133,11 +133,20 @@ lives in [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
-## Current release: Phase 11
+## Current release: Phase 12
 
-**Phase 11 — Production Portal Hardening & Launch Readiness** is the latest
-implemented phase (version `0.13.0`).
+**Phase 12 — Developer API Platform & Termux Integration** is the latest
+implemented phase (version `0.14.0`).
 
+- **Developer API** (`/api/v1/developer/*`) — a narrowly scoped, authenticated,
+  auditable, revocable developer API with least-privilege scopes,
+  short-lived bearer access + rotating refresh tokens, cryptographically
+  random device identity, secure short-lived pairing, server-side project
+  binding, and persistent credential/device revocation.
+- **Termux CLI** — `ghostlink developer login/logout/whoami/device/project/
+  credential/security-status/doctor`, backed by a 0600 local token store.
+- **Owner rule** — exactly one Owner; developer accounts can never become
+  Owner or transfer ownership.
 - **Production configuration** — an environment-driven, fail-closed config
   layer (`APP_ENV` = development/staging/production; production rejects
   development conveniences and requires `SESSION_SECRET`, `DATABASE_URL`,
@@ -764,9 +773,10 @@ GhostLink ships in deliberate, self-contained phases.
 | 9 | Production readiness, compatibility & release engineering | ✅ Implemented |
 | 10A | Developer account & credential infrastructure | ✅ Implemented |
 | 10B | Developer portal (web) | ✅ Implemented |
-| 11 | Production portal hardening & launch readiness | ✅ Implemented (current) |
+| 11 | Production portal hardening & launch readiness | ✅ Implemented |
+| 12 | Developer API platform & Termux integration | ✅ Implemented (current) |
 | 6D | Rich communication — replies/edits/reactions, friend system, editable settings | Planned |
-| 12 | Hardening & polish — security review, offline queue design, localization | Planned |
+| 13 | Hardening & polish — security review, offline queue design, localization | Planned |
 
 Sender-key encryption is implemented as the opt-in `senderkey-v1` suite
 (docs/GROUPS.md §36); `mesh-v1` remains the default for full backward

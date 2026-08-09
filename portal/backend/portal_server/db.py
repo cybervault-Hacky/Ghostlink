@@ -24,7 +24,7 @@ class DatabaseMigrationError(Exception):
     """Raised when the database schema cannot be safely migrated."""
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS users (
     status TEXT NOT NULL DEFAULT 'pending',        -- pending | active | disabled
     email_verified INTEGER NOT NULL DEFAULT 0,
     developer_id TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL DEFAULT 'developer',        -- owner | developer
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     failed_logins INTEGER NOT NULL DEFAULT 0,
@@ -148,13 +149,110 @@ CREATE INDEX IF NOT EXISTS idx_recovery_user ON mfa_recovery_codes(user_id);
 CREATE INDEX IF NOT EXISTS idx_webauthn_user ON webauthn_credentials(user_id);
 """
 
+
 # Versioned, ordered migrations. Each entry is (version, [sql statements]).
 # The base migration (v1) creates the full Phase 10B schema; v2 adds the
-# production indexes. Migrations run inside a single transaction each, and
-# a migration that would downgrade the schema fails clearly.
-MIGRATIONS: list[tuple[int, list[str]]] = [
+# production indexes; v3 adds the Phase 12 developer-API platform tables
+def _add_user_role(conn: sqlite3.Connection) -> None:
+    """Idempotently add the ``users.role`` column to pre-v3 databases.
+
+    New databases get ``role`` from the base schema; existing v1/v2
+    databases need an ALTER. This is a migration step, so it runs inside the
+    migration transaction.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "role" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'developer'")
+
+
+# Phase 12 — Developer API platform (devices, pairing, scoped credentials,
+# bearer access/refresh tokens, API activity, user roles).
+# Phase 12 — Developer API platform (devices, pairing, scoped credentials,
+# bearer access/refresh tokens, API activity, user roles).
+_DEV_API_SCHEMA = """
+CREATE TABLE IF NOT EXISTS developer_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    device_id TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    platform TEXT NOT NULL DEFAULT 'termux',
+    client_version TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',          -- active | revoked
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pairing_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id),          -- null until approved
+    code_hash TEXT NOT NULL,
+    nonce TEXT NOT NULL UNIQUE,
+    device_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',          -- pending | used | expired
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_credentials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    project_id INTEGER REFERENCES projects(id),      -- nullable: global
+    device_id INTEGER REFERENCES developer_devices(id),
+    name TEXT NOT NULL,
+    credential_id TEXT NOT NULL UNIQUE,              -- dk_... (public)
+    secret_hash TEXT NOT NULL,
+    secret_salt TEXT NOT NULL,
+    verifier TEXT NOT NULL,
+    scopes TEXT NOT NULL DEFAULT '',                 -- space-separated scope list
+    status TEXT NOT NULL DEFAULT 'active',           -- active | revoked
+    created_at TEXT NOT NULL,
+    last_used_at TEXT,
+    rotated_at TEXT,
+    revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    device_id INTEGER REFERENCES developer_devices(id),
+    project_id INTEGER REFERENCES projects(id),
+    credential_id INTEGER REFERENCES api_credentials(id),
+    kind TEXT NOT NULL,                              -- access | refresh
+    token_hash TEXT NOT NULL,
+    scopes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    last_used_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS api_activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    device_id INTEGER REFERENCES developer_devices(id),
+    project_id INTEGER REFERENCES projects(id),
+    endpoint TEXT NOT NULL,
+    category TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_devices_user ON developer_devices(user_id);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_api_activity_user_time ON api_activity(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_pairing_nonce ON pairing_codes(nonce);
+"""
+
+
+# Versioned, ordered migrations. Each entry is (version, [steps]). Steps are
+# SQL strings or callables(conn). The base migration (v1) creates the full
+# Phase 10B schema; v2 adds production indexes; v3 adds the Phase 12
+# developer-API tables + user role column. Migrations run inside a single
+# transaction each; a migration that would downgrade the schema fails clearly.
+MIGRATIONS: list[tuple[int, list[object]]] = [
     (1, [_BASE_SCHEMA]),
     (2, [_INDEXES]),
+    (3, [_DEV_API_SCHEMA, _add_user_role]),
 ]
 
 
@@ -201,7 +299,14 @@ class Database:
                     try:
                         conn.execute("BEGIN")
                         for statement in statements:
-                            conn.executescript(statement)
+                            if callable(statement):
+                                statement(conn)
+                            elif isinstance(statement, str):
+                                conn.executescript(statement)
+                            else:
+                                raise DatabaseMigrationError(
+                                    "Migration step is neither SQL nor callable."
+                                )
                         conn.execute(
                             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', ?)",
                             (str(version),),

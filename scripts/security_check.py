@@ -157,6 +157,28 @@ def check_no_network_in_backend() -> list[str]:
     return findings
 
 
+def check_devapi_hygiene() -> list[str]:
+    """Phase 12 checks: no owner escalation, no token/secret logging, scopes
+    enforced server-side, no Authorization header logging."""
+    findings: list[str] = []
+    base = PORTAL / "backend" / "portal_server"
+    dev = (
+        (base / "devapi_handlers.py").read_text(encoding="utf-8")
+        if (base / "devapi_handlers.py").exists()
+        else ""
+    )
+    # No owner scope may exist.
+    if re.search(r'"owner[^"]*"\s*[,:]', dev) or "owner:*" in dev:
+        findings.append("devapi_handlers.py: owner scope or role token present")
+    # No Authorization header / token logged.
+    if re.search(r"log(ger)?\(.*(token|Authorization|secret)", dev):
+        findings.append("devapi_handlers.py: possible token/secret logging")
+    # Scopes must be validated (normalize_scopes rejects unknown scopes).
+    if "normalize_scopes" not in dev and "VALID_SCOPES" not in dev:
+        findings.append("devapi_handlers.py: no scope validation present")
+    return findings
+
+
 def run_all() -> list[str]:
     findings: list[str] = []
     findings += check_secrets()
@@ -164,6 +186,7 @@ def run_all() -> list[str]:
     findings += check_http_layer()
     findings += check_frontend_telemetry()
     findings += check_no_network_in_backend()
+    findings += check_devapi_hygiene()
     return findings
 
 

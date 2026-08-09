@@ -466,7 +466,7 @@ developers, built as a real, tested, security-focused portal (not a mock).
 - Contact cards and room metadata panels
 - Settings screen becomes editable; notification center gains unread state
 
-## Phase 11 — Production Portal Hardening & Launch Readiness ✅ (latest implemented)
+## Phase 11 — Production Portal Hardening & Launch Readiness ✅
 
 **STATUS: IMPLEMENTED** — hardened the Phase 10B portal into a
 launch-ready architecture.
@@ -491,7 +491,31 @@ launch-ready architecture.
 - Full suite green at 1502+ portal-aware tests; no new crypto, no
   payments, no telemetry.
 
-## Phase 12 — Hardening & Polish
+## Phase 12 — Developer API Platform & Termux Integration ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — a narrowly scoped, authenticated, auditable,
+revocable developer API and a Termux client.
+
+- **Developer API** (`/api/v1/developer/*`): least-privilege scopes,
+  short-lived bearer access + rotating refresh tokens, cryptographically
+  random device identity, server-side project binding, persistent
+  credential/device revocation.
+- **Secure pairing**: short-lived, single-use, random pairing codes; the
+  permanent credential is revealed once and never stored by the CLI.
+- **Termux CLI**: `ghostlink developer login/logout/whoami/device/project/
+  credential/security-status/doctor`, with a 0600 local token store
+  (symlink-refusing, atomic, versioned, corruption-detected).
+- **Owner rule**: exactly one Owner; developer accounts can never become
+  Owner or transfer ownership; no owner scope/endpoint exists.
+- **Security**: metadata-only API activity; no token/credential logging;
+  network failure never treated as auth success; expanded security-check
+  coverage.
+- **Tests**: 24 new developer-API + store tests and a real-socket E2E
+  journey; full suite green at 1563 passing.
+- Docs: `API_V1.md`, `TERMUX_INTEGRATION.md`, `DEVICE_SECURITY.md`,
+  `PROJECTS.md`, `API_SECURITY.md`, `PAIRING.md`, `DEVELOPER_AUTH.md`.
+
+## Phase 13 — Hardening & Polish
 
 - Full security review and threat-model document
 - Offline message queue and multi-device sync design

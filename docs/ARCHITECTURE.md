@@ -691,3 +691,19 @@ by the group's `crypto_suite` (`mesh-v1` default, or `senderkey-v1`):
 - Metadata-only operational logging (`ghostlink.portal.request`).
 - Docs: `docs/DATABASE.md`, `docs/DISASTER_RECOVERY.md`, `docs/OPERATIONS.md`,
   `docs/SECURITY_MODEL.md`, `docs/PRODUCTION_CONFIG.md`.
+
+## 20. Developer API & Termux integration (Phase 12)
+
+- `portal_server/devapi.py` — scopes, tokens, device/pairing/credential
+  primitives. `portal_server/devapi_handlers.py` — the
+  `/api/v1/developer/*` handlers.
+- `ghostlink/developer_portal/` — the Termux client: `store.py` (0600,
+  atomic, symlink-refusing local token store) and `client.py` (stdlib HTTP,
+  no token-in-URL, fail-closed on network errors).
+- `ghostlink/cli/commands/developer_portal.py` — the `ghostlink developer
+  login/device/project/credential/security-status/doctor` commands.
+- Database migration v3 adds `developer_devices`, `pairing_codes`,
+  `api_credentials`, `api_tokens`, `api_activity`, and a `users.role`
+  column. One Owner; developer accounts can never become Owner.
+- Docs: `API_V1.md`, `TERMUX_INTEGRATION.md`, `DEVICE_SECURITY.md`,
+  `PROJECTS.md`, `API_SECURITY.md`, `PAIRING.md`, `DEVELOPER_AUTH.md`.

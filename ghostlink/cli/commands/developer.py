@@ -78,9 +78,24 @@ def run_developer(options: CLIOptions) -> int:
             f"Unknown developer key action '{key_action}'.",
             hint="Valid: create, list, rotate, revoke.",
         )
+    # Phase 12: portal-integration actions (Termux ↔ Developer Portal).
+    if action in (
+        "login",
+        "logout",
+        "whoami",
+        "device",
+        "project",
+        "credential",
+        "security-status",
+        "doctor",
+    ):
+        from ghostlink.cli.commands.developer_portal import run_developer_portal
+
+        return run_developer_portal(options, action)
     raise DeveloperError(
         f"Unknown developer action '{action}'.",
-        hint="Valid: init, status, key, export-info.",
+        hint="Valid: init, status, key, export-info, login, logout, whoami, "
+        "device, project, credential, security-status, doctor.",
     )
 
 

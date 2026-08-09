@@ -74,6 +74,16 @@ explicit compatibility matrix, and expands the test suite with
 compatibility, migration, package-content, protocol-downgrade and
 CLI-reliability coverage.
 
+Phase 12 (Developer API Platform & Termux Integration) adds a narrowly
+scoped, authenticated, auditable, revocable developer API at
+``/api/v1/developer/*`` plus a Termux client (``ghostlink developer
+login/device/project/credential/security-status/doctor``). It introduces
+least-privilege scopes, cryptographically random device identity, a
+short-lived pairing flow, rotating bearer access/refresh tokens, server-side
+project binding, and persistent credential/device revocation — with the
+explicit guarantee that exactly one Owner exists and developer accounts can
+never become Owner or transfer ownership.
+
 Phase 11 (Production Portal Hardening & Launch Readiness) hardens the
 Phase 10B Developer Portal into a launch-ready architecture: an
 environment-driven production configuration layer (fail-closed in
@@ -111,7 +121,7 @@ makes **zero network requests** and uploads nothing.
 
 from __future__ import annotations
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 __all__ = ["__version__", "version_info"]
 
 _major, _minor, _patch = (int(part) for part in __version__.split("."))

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ghostlink.developer import keys as dev_keys
-from portal_server import auth, webauthn
+from portal_server import auth, devapi_handlers, webauthn
 from portal_server.config import PortalConfig
 from portal_server.db import Database
 from portal_server.emailing import DevEmailProvider, EmailProvider
@@ -843,6 +843,9 @@ class Route:
     pattern: str
     handler: Callable[..., Response]
     auth_required: bool = True
+    # auth mode for non-session routes: "dev" = bearer access token,
+    # "dev-open" = no auth (pairing/token/health), "dev-session" = session.
+    auth: str = "session"
 
 
 ROUTES: list[Route] = [
@@ -903,6 +906,81 @@ ROUTES: list[Route] = [
     Route(
         "POST", "/api/v1/security/webauthn/register", handle_webauthn_register, auth_required=True
     ),
+    # ---------------- Developer API platform (Phase 12) ----------------
+    Route(
+        "POST",
+        "/api/v1/developer/auth/pair-begin",
+        devapi_handlers.handle_pair_begin,
+        auth_required=False,
+        auth="dev-open",
+    ),
+    Route(
+        "POST",
+        "/api/v1/developer/auth/pair-approve",
+        devapi_handlers.handle_pair_approve,
+        auth_required=False,
+        auth="dev-session",
+    ),
+    Route(
+        "POST",
+        "/api/v1/developer/auth/token",
+        devapi_handlers.handle_token,
+        auth_required=False,
+        auth="dev-open",
+    ),
+    Route(
+        "POST",
+        "/api/v1/developer/auth/refresh",
+        devapi_handlers.handle_refresh,
+        auth_required=False,
+        auth="dev-open",
+    ),
+    Route(
+        "GET",
+        "/api/v1/developer/devices",
+        devapi_handlers.handle_devices_list,
+        auth_required=False,
+        auth="dev",
+    ),
+    Route(
+        "POST",
+        "/api/v1/developer/devices/{device_id}/revoke",
+        devapi_handlers.handle_device_revoke,
+        auth_required=False,
+        auth="dev",
+    ),
+    Route(
+        "GET",
+        "/api/v1/developer/projects",
+        devapi_handlers.handle_projects_list,
+        auth_required=False,
+        auth="dev",
+    ),
+    Route(
+        "GET", "/api/v1/developer/credentials", devapi_handlers.handle_credentials_list, auth="dev"
+    ),
+    Route(
+        "POST",
+        "/api/v1/developer/credentials/{credential_id}/rotate",
+        devapi_handlers.handle_credential_rotate,
+        auth_required=False,
+        auth="dev",
+    ),
+    Route(
+        "POST",
+        "/api/v1/developer/credentials/{credential_id}/revoke",
+        devapi_handlers.handle_credential_revoke,
+        auth_required=False,
+        auth="dev",
+    ),
+    Route(
+        "GET",
+        "/api/v1/developer/security/activity",
+        devapi_handlers.handle_activity,
+        auth_required=False,
+        auth="dev",
+    ),
+    Route("GET", "/api/v1/developer/health", devapi_handlers.handle_health, auth="dev-open"),
 ]
 
 
@@ -1020,6 +1098,22 @@ def _route_request(portal: Portal, request: Request) -> Response:
             if err is not None:
                 return err
             assert user is not None
+        if route.auth == "dev":
+            # Bearer access-token routes authenticate inside the handler.
+            try:
+                return route.handler(portal, request, **params)
+            except Exception as exc:
+                from portal_server.devapi import ScopedCredentialError, api_error_response
+
+                if isinstance(exc, ScopedCredentialError):
+                    return api_error_response(exc)
+                raise
+        if route.auth == "dev-session":
+            user, err = _authenticate(request, portal)
+            if err is not None:
+                return err
+            assert user is not None
+            return route.handler(portal, request, user, **params)
         if user is not None:
             resp = route.handler(portal, request, user, **params)
         else:

@@ -381,21 +381,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     developer = subparsers.add_parser(
         "developer",
-        help="manage the local developer account and API credentials",
+        help="manage the local developer account, portal integration, and API credentials",
     )
     developer.add_argument(
         "developer_action",
         nargs="?",
-        choices=["init", "status", "key", "export-info"],
+        choices=[
+            "init",
+            "status",
+            "key",
+            "export-info",
+            "login",
+            "logout",
+            "whoami",
+            "device",
+            "project",
+            "credential",
+            "security-status",
+            "doctor",
+        ],
         default=None,
-        help="init, status (default), key management, or export public info",
+        help="developer account / portal-integration action",
     )
     developer.add_argument(
         "developer_key_action",
         nargs="?",
-        choices=["create", "list", "rotate", "revoke"],
+        choices=["create", "list", "rotate", "revoke", "register", "use", "status"],
         default=None,
-        help="developer credential action (with 'key')",
+        help="sub-action for key / device / project / credential",
     )
     developer.add_argument(
         "developer_key_id",
@@ -403,6 +416,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="dk_…",
         help="credential key id — required by 'key revoke'",
+    )
+    developer.add_argument(
+        "--relay",
+        dest="relay_url",
+        default=None,
+        metavar="URL",
+        help="portal URL (http://… or ws://…) — overrides configuration",
     )
     return parser
 

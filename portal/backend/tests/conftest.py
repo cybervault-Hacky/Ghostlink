@@ -68,11 +68,13 @@ class TestClient:
                     self.cookies[k] = v
         return int(captured["status"]), captured["body"]
 
-    def get(self, path: str) -> tuple[int, dict]:
-        return self._request("GET", path)
+    def get(self, path: str, *, headers: dict | None = None) -> tuple[int, dict]:
+        return self._request("GET", path, headers=headers)
 
-    def post(self, path: str, *, json: dict | None = None) -> tuple[int, dict]:
-        return self._request("POST", path, json_body=json)
+    def post(
+        self, path: str, *, json: dict | None = None, headers: dict | None = None
+    ) -> tuple[int, dict]:
+        return self._request("POST", path, json_body=json, headers=headers)
 
     def patch(self, path: str, *, json: dict | None = None) -> tuple[int, dict]:
         return self._request("PATCH", path, json_body=json)

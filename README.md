@@ -21,7 +21,7 @@ Private conversations. End-to-end encryption. No browser required.
 ## Contents
 
 [Design principle](#design-principle) · [What is GhostLink?](#what-is-ghostlink) ·
-[Architecture](#architecture-overview) · [Current release](#current-release-phase-9) ·
+[Architecture](#architecture-overview) · [Current release](#current-release-phase-10a) ·
 [Screenshots](#screenshots) · [Feature matrix](#feature-matrix) ·
 [Security model](#security-model) · [What the relay can see](#what-the-relay-can-see) ·
 [Identity & invites](#identity-and-invites) · [File transfer](#file-transfer) ·
@@ -133,33 +133,34 @@ lives in [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
-## Current release: Phase 9
+## Current release: Phase 10A
 
-**Phase 9 — Production Readiness, Compatibility & Release Engineering** is
-the latest implemented phase (version `0.10.0`).
+**Phase 10A — Developer Account & Credential Infrastructure** is the latest
+implemented phase (version `0.11.0`).
 
-- **Python compatibility**: GhostLink targets **Python 3.11+** — verified
-  green on 3.11.2 and matching the actual syntax/API floor used in the code
-  (see [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the matrix).
-- **State/config migration**: every config and state document now carries an
-  explicit schema version, and GhostLink **fails closed** on a document
-  written by a *newer* version rather than silently reinterpreting it.
-- **Release tooling**: `scripts/release_check.sh` runs the full release
-  candidate gate (clean tree, version sync, lint, format, mypy, tests,
-  wheel+sdist build and inspection, clean-install CLI smoke, and a
-  repository secret scan); `scripts/scan_secrets.py` is a deterministic
-  offline secret-leak tripwire.
-- **Backup/recovery guidance**: [docs/BACKUP.md](docs/BACKUP.md) clearly
-  separates what is safe to back up from what is sensitive, and how recovery
-  works on a loss.
-- **Compatibility & regression coverage**: new tests for the Python floor,
-  config/state migration, package contents, protocol downgrade attempts,
-  CLI exit codes, Ctrl+C, Termux path detection, and secret hygiene.
+- **Local Developer Account system** (`ghostlink developer …`): a developer
+  identity (`dev_…`) and cryptographically random API credentials
+  (`gl_dev_<key_id>_<secret>`, **256-bit CSPRNG** secrets) that a future
+  developer portal can authenticate against — without exposing the local
+  secret.
+- **Secure by design**: keys are never derived from predictable
+  identifiers, shown **once** at creation, stored only as salted
+  HKDF-SHA256 verification material (never plaintext), with atomic
+  `0600`/`0700`, symlink-refusing, versioned, fail-closed storage.
+- **Lifecycle**: `init`, `status`, `key create/list/rotate/revoke`,
+  `export-info`; rotation is atomic, revocation is persistent/irreversible,
+  capped at 4 active credentials, with local rate limiting.
+- **Local-only**: the module makes **zero network requests** and uploads
+  nothing. No website, no cloud service (Phase 10B is future work).
+- **Diagnostics**: `--doctor` and `security-status` report developer
+  account/credential health and metadata — never the secret.
+- Full docs: [docs/DEVELOPER_ACCOUNTS.md](docs/DEVELOPER_ACCOUNTS.md) and
+  [docs/SECURITY.md](docs/SECURITY.md).
 
-All of Phases 1–8 remain fully intact, including sender-key encryption and
-the reliability hardening. Run `ghostlink security-status` for a read-only
-security & recovery summary and `ghostlink --doctor` to verify the
-environment.
+All of Phases 1–9 remain fully intact, including sender-key encryption and
+the reliability/release hardening. Run `ghostlink security-status` for a
+read-only security & recovery summary and `ghostlink --doctor` to verify
+the environment.
 
 - Group messaging is implemented on top of the Phase 6B group lifecycle.
 - Two encryption suites, chosen at group creation:
@@ -239,6 +240,7 @@ when they can be generated from the real application.
 | Pairwise-mesh group encryption | ✅ |
 | Sender-key group encryption (O(1), opt-in) | ✅ |
 | Relay never sees keys or plaintext | ✅ |
+| Developer account & API credentials (local, no network) | ✅ |
 | Browser client | Out of scope — terminal-only by design |
 | GUI / Electron application | Out of scope — terminal-only by design |
 | Android APK | Not part of the project |
@@ -562,6 +564,9 @@ Every command below is defined by the argument parser in
 | `ghostlink session` | Session dashboard: history, rooms, invites |
 | `ghostlink doctor` | Read-only environment diagnostics (dependencies, crypto, storage) |
 | `ghostlink security-status` | Read-only security, crypto-suite & recovery summary |
+| `ghostlink developer init` | Create a local developer account + first API key (shown once) |
+| `ghostlink developer key list/rotate/revoke` | Manage developer credentials (local-only) |
+| `ghostlink developer export-info` | Export public developer metadata as JSON |
 
 Common options (where applicable): `--relay URL`, `--as NAME`,
 `--expires DURATION` (`900`, `30s`, `5m`, `1h`), `--uses N`,
@@ -754,9 +759,11 @@ GhostLink ships in deliberate, self-contained phases.
 | 6C | Group messaging + pairwise-mesh encryption | ✅ Implemented |
 | 7 | Sender-key hardening — O(1) group encryption, epoch-scoped sender keys | ✅ Implemented |
 | 8 | Reliability, security hardening & adversarial validation | ✅ Implemented |
-| 9 | Production readiness, compatibility & release engineering | ✅ Implemented (current) |
+| 9 | Production readiness, compatibility & release engineering | ✅ Implemented |
+| 10A | Developer account & credential infrastructure | ✅ Implemented (current) |
 | 6D | Rich communication — replies/edits/reactions, friend system, editable settings | Planned |
-| 10 | Hardening & polish — security review, offline queue design, localization | Planned |
+| 10B | Developer portal (future) | Planned |
+| 11 | Hardening & polish — security review, offline queue design, localization | Planned |
 
 Sender-key encryption is implemented as the opt-in `senderkey-v1` suite
 (docs/GROUPS.md §36); `mesh-v1` remains the default for full backward

@@ -117,6 +117,36 @@ def _storage_row(config: Any, theme: ThemeSpec) -> tuple[str, Text]:
     return "Data Directory", Text.assemble(str(data_dir), "  ", state)
 
 
+def _developer_row(config: Any, theme: ThemeSpec) -> tuple[str, Text]:
+    """Developer-account storage & credential health (metadata only, no secret)."""
+    if config is None:
+        return "Developer account", Text("(unresolved)")
+    from ghostlink.developer.storage import DEV_DIR_NAME
+    from ghostlink.developer.validation import inspect_security
+
+    dev_dir = config.data_dir / DEV_DIR_NAME
+    try:
+        report = inspect_security(dev_dir)
+    except Exception:
+        return "Developer account", Text.assemble(
+            "unreadable", "  ", badge("Needs attention", BadgeTone.WARNING, theme=theme)
+        )
+    if not report.configured:
+        return "Developer account", Text.assemble(
+            "not configured", "  ", badge("OK", BadgeTone.INFO, theme=theme)
+        )
+    summary = []
+    if report.dir_secure:
+        summary.append("storage secure")
+    else:
+        summary.append("storage insecure")
+    if report.account_owner_mismatch:
+        summary.append("owner mismatch")
+    tone = BadgeTone.SUCCESS if report.healthy else BadgeTone.WARNING
+    state = badge("Configured", tone, theme=theme)
+    return "Developer account", Text.assemble("configured · " + "; ".join(summary), "  ", state)
+
+
 def run_doctor(options: CLIOptions) -> int:
     """Execute diagnostics and return the process exit code."""
 
@@ -203,6 +233,7 @@ def run_doctor(options: CLIOptions) -> int:
             Text.assemble(config_state, f"  {config.config_path}"),
         ),
         _storage_row(config if config_error is None else None, theme),
+        _developer_row(config if config_error is None else None, theme),
         _dependency_row(theme),
         _crypto_backend_row(theme),
     ]

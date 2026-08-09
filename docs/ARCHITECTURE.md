@@ -632,3 +632,26 @@ by the group's `crypto_suite` (`mesh-v1` default, or `senderkey-v1`):
 - **Backup guidance** — `docs/BACKUP.md` distinguishes backupable metadata
   from sensitive key material and documents recovery behavior.
 
+## 17. Developer accounts (Phase 10A)
+
+- `ghostlink/developer/` — the local Developer Account & Credential
+  infrastructure:
+  - `keys.py` — CSPRNG generation (`secrets.token_bytes`), the
+    `gl_dev_<key_id>_<secret>` format, parsing, and salted-HKDF-SHA256
+    verification material with constant-time comparison.
+  - `models.py` — `DeveloperAccount` / `DeveloperCredential` dataclasses,
+    versioned, fail-closed on future schema.
+  - `storage.py` — atomic `0600`/`0700`, symlink-refusing, versioned
+    `account.json` + `credentials.json` under `<data-dir>/developer/`.
+  - `account.py` — `DeveloperManager` lifecycle (init/create/rotate/revoke/
+    list/verify), `MAX_ACTIVE_CREDENTIALS = 4` ceiling, in-memory rate
+    limiting, thread-locked mutations, metadata-only audit logging.
+  - `validation.py` — best-effort permission/symlink/corruption inspection.
+- `ghostlink/cli/commands/developer.py` + `ghostlink developer …` — the
+  terminal surface (init, status, key create/list/rotate/revoke,
+  export-info); the full key is shown once, then only redacted metadata.
+- `ghostlink --doctor` and `ghostlink security-status` report developer
+  account/credential health and metadata — never the secret.
+- Phase 10A makes **zero network requests** (tested); Phase 10B will add a
+  remote developer portal using the documented integration contract
+  (`docs/DEVELOPER_ACCOUNTS.md` §12).

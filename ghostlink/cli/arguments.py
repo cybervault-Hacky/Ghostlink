@@ -55,6 +55,9 @@ class CLIOptions:
     group_subject: str | None = None
     group_name: str | None = None
     crypto_suite: str | None = None
+    developer_action: str | None = None
+    developer_key_action: str | None = None
+    developer_key_id: str | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -376,6 +379,31 @@ def build_parser() -> argparse.ArgumentParser:
         "security-status",
         help="show a read-only security, crypto-suite and group-recovery summary",
     )
+    developer = subparsers.add_parser(
+        "developer",
+        help="manage the local developer account and API credentials",
+    )
+    developer.add_argument(
+        "developer_action",
+        nargs="?",
+        choices=["init", "status", "key", "export-info"],
+        default=None,
+        help="init, status (default), key management, or export public info",
+    )
+    developer.add_argument(
+        "developer_key_action",
+        nargs="?",
+        choices=["create", "list", "rotate", "revoke"],
+        default=None,
+        help="developer credential action (with 'key')",
+    )
+    developer.add_argument(
+        "developer_key_id",
+        nargs="?",
+        default=None,
+        metavar="dk_…",
+        help="credential key id — required by 'key revoke'",
+    )
     return parser
 
 
@@ -426,4 +454,7 @@ def parse_args(argv: Sequence[str] | None = None) -> CLIOptions:
         group_subject=getattr(namespace, "group_subject", None),
         group_name=getattr(namespace, "group_name", None),
         crypto_suite=getattr(namespace, "crypto_suite", None),
+        developer_action=getattr(namespace, "developer_action", None),
+        developer_key_action=getattr(namespace, "developer_key_action", None),
+        developer_key_id=getattr(namespace, "developer_key_id", None),
     )

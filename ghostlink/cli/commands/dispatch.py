@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ghostlink.cli.arguments import CLIOptions
+from ghostlink.cli.commands.developer import run_developer
 from ghostlink.cli.commands.groups import run_group
 from ghostlink.cli.commands.host import run_host
 from ghostlink.cli.commands.identity import run_identity
@@ -35,4 +36,6 @@ def run_command(options: CLIOptions) -> int:
         return run_doctor(options)
     if options.command == "security-status":
         return run_security_status(options)
+    if options.command == "developer":
+        return run_developer(options)
     raise ValueError(f"Unknown command {options.command!r} passed argument parsing.")

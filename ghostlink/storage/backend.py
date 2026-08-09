@@ -31,6 +31,16 @@ class StorageBackend(MutableMapping[str, Any], ABC):
 
     # ------------------------------------------------------- mapping protocol
 
+    def replace(self, document: dict[str, Any]) -> None:
+        """Atomically replace the entire document in a single write.
+
+        Unlike mutating the mapping key-by-key (which writes on every
+        assignment), this persists ``document`` in one atomic write — the
+        correct primitive for stores that must never expose a half-written
+        intermediate state (e.g. the developer credential store).
+        """
+        self._write_all(document)
+
     def __getitem__(self, key: str) -> Any:
         return self._read_all()[key]
 

@@ -367,7 +367,7 @@ or new crypto.
   abuse, concurrent membership, resync, relay abuse), plus CLI tests.
 - Full suite green at 1379 passing; no new cryptographic primitive.
 
-## Phase 9 — Production Readiness, Compatibility & Release Engineering ✅ (latest implemented)
+## Phase 9 — Production Readiness, Compatibility & Release Engineering ✅
 
 **STATUS: IMPLEMENTED** — makes GhostLink production-release ready without
 weakening the security model.
@@ -399,6 +399,40 @@ weakening the security model.
   detection, and read-only/malformed config handling.
 - Full suite green at 1416 passing; no new cryptographic primitive.
 
+## Phase 10A — Developer Account & Credential Infrastructure ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — a local, production-grade Developer Account
+system that a future developer portal (Phase 10B) can authenticate against,
+without exposing the local secret. **Phase 10A is local-only: no website, no
+remote service, no secret upload, zero network requests.**
+
+- **`ghostlink/developer/`** module — CSPRNG credential generation
+  (`gl_dev_<key_id>_<secret>`, 256-bit secrets, never derived from
+  predictable identifiers), salted-HKDF-SHA256 verification material
+  (constant-time compare, never plaintext on disk), versioned + fail-closed
+  storage (atomic `0600`/`0700`, symlink-refusing).
+- **Lifecycle** — `ghostlink developer init | status | key create | key
+  list | key rotate | key revoke | export-info`; the raw key is shown once;
+  rotation is atomic; revocation is persistent and irreversible; bounded at
+  `MAX_ACTIVE_CREDENTIALS = 4`.
+- **Local abuse control** — in-memory rate limiting on verification,
+  thread-locked mutations, metadata-only audit logging with a redaction
+  backstop.
+- **Diagnostics** — `--doctor` and `security-status` report developer
+  account/credential health and metadata, never the secret.
+- **Documentation** — `docs/DEVELOPER_ACCOUNTS.md` (architecture, threat
+  model, Phase 10B contract) and `docs/SECURITY.md`.
+- **Tests** — 49 new tests (generation, uniqueness, verification,
+  revocation, rotation, atomic/corrupt/future-schema storage, permission &
+  symlink safety, redaction, rate limit, concurrency, network boundary,
+  CLI, doctor/security-status, packaging).
+- Full suite green at 1465 passing.
+
+## Phase 10B — Developer Portal (future)
+
+A developer portal website that authenticates against the Phase 10A
+credentials. **Not implemented in Phase 10A.**
+
 ## Phase 6D — Rich Communication
 
 - Friend system: adding, verifying safety numbers, blocking
@@ -406,7 +440,7 @@ weakening the security model.
 - Contact cards and room metadata panels
 - Settings screen becomes editable; notification center gains unread state
 
-## Phase 10 — Hardening & Polish
+## Phase 11 — Hardening & Polish
 
 - Full security review and threat-model document
 - Offline message queue and multi-device sync design

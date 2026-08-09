@@ -73,11 +73,23 @@ newer GhostLink, adds release tooling (``scripts/release_check.sh`` and
 explicit compatibility matrix, and expands the test suite with
 compatibility, migration, package-content, protocol-downgrade and
 CLI-reliability coverage.
+
+Phase 10A (Developer Account & Credential Infrastructure) adds a local,
+production-grade Developer Account system: a developer identity
+(``dev_…``) and cryptographically random API credentials (``gl_dev_…``)
+that a future developer portal (Phase 10B) can authenticate against —
+without ever exposing the local secret. Keys are generated with the
+standard-library CSPRNG (256-bit secrets), never derived from predictable
+identifiers, stored only as salted HKDF-SHA256 verification material
+(never plaintext), versioned and fail-closed, with atomic storage, strict
+permissions, rotation, revocation, rate-limited local verification, a
+network-free boundary, and doctor/security-status integration. This module
+makes **zero network requests** and uploads nothing.
 """
 
 from __future__ import annotations
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 __all__ = ["__version__", "version_info"]
 
 _major, _minor, _patch = (int(part) for part in __version__.split("."))

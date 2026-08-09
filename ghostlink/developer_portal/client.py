@@ -46,7 +46,16 @@ class PortalClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode("utf-8")
-                return json.loads(raw) if raw else {}
+                try:
+                    return json.loads(raw) if raw else {}
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    # A 2xx response that is not valid JSON is never treated
+                    # as successful authentication (fail closed).
+                    raise PortalClientError(
+                        "The portal returned an invalid response.",
+                        code="invalid_response",
+                        status=200,
+                    ) from exc
         except urllib.error.HTTPError as exc:
             try:
                 payload = json.loads(exc.read().decode("utf-8") or "{}")

@@ -80,3 +80,19 @@ deployment, and recovery detail live in
   backups; bounded, idempotent retention cleanup.
 - **Owner invariant unchanged** — exactly one Owner; no owner escalation,
   transfer, or `owner:*` scope exists (enforced by `test_phase13_security.py`).
+
+---
+
+## Phase 14 — additions
+
+- **Single-Owner invariant** is a permanent regression boundary
+  (`TestSingleOwnerInvariant`): exactly one Owner, no public/DB/CLI/migration/
+  restore path can create, escalate, transfer, or duplicate the Owner, and
+  `owner:*` / `root:*` / `admin:*` / `system:owner` / `ownership:transfer`
+  scopes are invalid.
+- **Production config fail-closed** — production rejects SQLite, memory rate
+  limiting, insecure cookies, wildcard hosts, dev email/secret, and non-HTTPS
+  `PUBLIC_BASE_URL`. No insecure production default is permitted.
+- **Termux client fail-closed** — a network failure or a malformed 2xx response
+  is never treated as successful authentication.
+- **Incident response** — see `docs/INCIDENT_RESPONSE.md`.

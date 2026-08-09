@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from conftest import make_active_user, signin_and_set_csrf
+from portal_server.config import load_config
 from portal_server.db import Database
 
 # ---------------------------------------------------------------------------
@@ -122,16 +123,21 @@ class TestProxyHostHardening:
         # All attempts share the same real REMOTE_ADDR bucket -> eventually 429.
         assert 429 in statuses
 
-    def test_hsts_in_production(self, tmp_path: Path) -> None:
-        from portal_server.app import create_wsgi_app
-        from portal_server.config import load_config
+    def test_hsts_in_production(self, tmp_path: Path, monkeypatch) -> None:
+        import portal_server.app as app_mod
         from portal_server.emailing import DevEmailProvider
+        from portal_server.ratelimit import InMemoryRateLimiter
 
+        monkeypatch.setattr(
+            app_mod,
+            "build_rate_limiter",
+            lambda backend, db, overrides=None: InMemoryRateLimiter(limits=overrides or None),
+        )
         db = Database(tmp_path / "hsts.db")
         cfg = load_config(
             {
                 "APP_ENV": "production",
-                "DATABASE_URL": str(tmp_path / "hsts.db"),
+                "DATABASE_URL": "postgres://u:p@db/ghostlink",
                 "SESSION_SECRET": "a-long-random-secret-123",
                 "EMAIL_PROVIDER": "smtp",
                 "EMAIL_SMTP_HOST": "smtp.example.com",
@@ -139,9 +145,11 @@ class TestProxyHostHardening:
                 "WEBAUTHN_RP_ID": "portal.example.com",
                 "WEBAUTHN_ORIGIN": "https://portal.example.com",
                 "ALLOWED_HOSTS": "portal.example.com",
+                "RATE_LIMIT_BACKEND": "postgresql",
+                "PUBLIC_BASE_URL": "https://portal.example.com",
             }
         )
-        app = create_wsgi_app(db, emails=DevEmailProvider(enabled=False), config=cfg)
+        app = app_mod.create_wsgi_app(db, emails=DevEmailProvider(enabled=False), config=cfg)
         import io
 
         captured: dict = {}

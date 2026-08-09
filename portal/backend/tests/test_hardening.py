@@ -155,14 +155,24 @@ class TestSecurityHeaders:
         assert "X-Frame-Options" in headers
         assert "Permissions-Policy" in headers
 
-    def test_hsts_only_in_production(self, tmp_path) -> None:
+    def test_hsts_only_in_production(self, tmp_path, monkeypatch) -> None:
+        import portal_server.app as app_mod
         from portal_server.config import load_config
         from portal_server.db import Database
+        from portal_server.ratelimit import InMemoryRateLimiter
 
+        # Production requires the PostgreSQL limiter, but this unit test only
+        # checks HSTS; substitute an in-memory limiter so a SQLite db can be
+        # used without a live PostgreSQL server.
+        monkeypatch.setattr(
+            app_mod,
+            "build_rate_limiter",
+            lambda backend, db, overrides=None: InMemoryRateLimiter(limits=overrides or None),
+        )
         cfg = load_config(
             {
                 "APP_ENV": "production",
-                "DATABASE_URL": "portal.db",
+                "DATABASE_URL": "postgres://user:pass@db/ghostlink",
                 "SESSION_SECRET": "a-long-random-secret-123",
                 "EMAIL_PROVIDER": "smtp",
                 "EMAIL_SMTP_HOST": "smtp.example.com",
@@ -170,11 +180,11 @@ class TestSecurityHeaders:
                 "WEBAUTHN_RP_ID": "portal.example.com",
                 "WEBAUTHN_ORIGIN": "https://portal.example.com",
                 "ALLOWED_HOSTS": "portal.example.com",
+                "RATE_LIMIT_BACKEND": "postgresql",
+                "PUBLIC_BASE_URL": "https://portal.example.com",
             }
         )
-        app = __import__("portal_server.app", fromlist=["create_wsgi_app"]).create_wsgi_app(
-            Database(tmp_path / "p.db"), config=cfg
-        )
+        app = app_mod.create_wsgi_app(Database(tmp_path / "p.db"), config=cfg)
         captured: dict = {}
 
         def start_response(status: str, headers: list) -> None:

@@ -133,10 +133,36 @@ lives in [docs/GROUPS.md](docs/GROUPS.md).
 
 ---
 
-## Current release: Phase 13
+## Current release: Phase 14
+
+**Phase 14 — Public Production Launch & Reliability** is the latest implemented
+phase (version `0.16.0`).
+
+- **Production environment model** — explicit `development`/`staging`/
+  `production` with fail-closed validation (production rejects SQLite, memory
+  rate limiting, insecure cookies, wildcard hosts, dev email/secret, and
+  non-HTTPS `PUBLIC_BASE_URL`). Templates in `deployment/env/`.
+- **PostgreSQL production path** — `DB_POOL_*`/`DB_*` timeouts,
+  `BACKUP_ENCRYPTION_KEY`, `EMAIL_SMTP_USERNAME`; fail-closed production config.
+  Runtime PostgreSQL integration remains environment-gated.
+- **Observability** — structured logs now carry `event`, `environment`, and
+  `error_class`, plus startup/shutdown lifecycle events.
+- **Termux reliability** — the developer client fails closed on malformed
+  responses and surfaces clear errors for 401/429/500/503 and network failures.
+- **Owner invariant** — permanent `TestSingleOwnerInvariant` regression suite.
+- **Security tooling & docs** — extended audit (`scripts/security_check.py`),
+  `docs/INCIDENT_RESPONSE.md`, `docs/PRODUCTION_RUNBOOK.md`, `docs/RELEASE.md`,
+  `docs/TERMUX.md`, `CHANGELOG.md`.
+- **Frontend quality** — loading/empty/error states with accessible
+  `role=status`/`role=alert`, reduced-motion support.
+
+Phase 13 (Production Infrastructure & Deployment Hardening, `0.15.0`) is fully
+retained and described below.
+
+## Phase 13 — Production Infrastructure, Database & Deployment Hardening
 
 **Phase 13 — Production Infrastructure, Database & Deployment Hardening** is
-the latest implemented phase (version `0.15.0`).
+the previous implemented phase (version `0.15.0`).
 
 - **PostgreSQL backend** — a first-class PostgreSQL persistence layer
   (connection pooling, timeouts, transaction safety, numbered + checksummed

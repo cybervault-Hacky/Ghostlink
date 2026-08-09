@@ -57,3 +57,27 @@ These delegate to the portal backend ops layer (`python -m portal_server.manage`
 activity, pairing records and expired verification tokens. Cleanup never
 deletes active security state. **NOT VERIFIED** against live PostgreSQL in
 this environment.
+
+---
+
+## Phase 14 — alerting / monitoring model
+
+**DOCUMENTED ONLY** (provider-neutral; no SaaS integrated). Alerts should be
+raised for:
+
+- application unavailable (`/health/live` 5xx)
+- readiness failure (`/health/ready` 503) — DB unavailable, migration mismatch,
+  missing production config
+- database unavailable / connection-pool exhaustion
+- migration failure or checksum mismatch
+- backup failure and backup-verification failure
+- high authentication-failure rate (from `security_events` / `failed_signin`)
+- rate-limit backend failure (`503 rate_limit_store_unavailable`)
+- excessive 5xx and high latency (from structured request logs)
+- disk exhaustion (backup/storage volume)
+- TLS certificate expiry (reverse proxy)
+
+The structured JSON logs (`event`, `request_id`, `route`, `status`,
+`duration_ms`, `error_class`, `environment`) and `/health/*` endpoints provide
+the raw signals; any alerting system can consume them. No telemetry or
+third-party analytics is added.

@@ -51,6 +51,7 @@ class PortalConfig:
     pool_max: int = 10
     database_connect_timeout: int = 5
     database_statement_timeout_ms: int = 15_000
+    database_idle_timeout: int = 300
     rate_limit_backend: str = "memory"  # memory | postgresql
     allowed_hosts: tuple[str, ...] = ()
     trusted_proxies: tuple[str, ...] = ()
@@ -58,6 +59,7 @@ class PortalConfig:
     log_format: str = "json"
     request_id_header: str = "X-Request-ID"
     deployment_version: str = ""
+    public_base_url: str = ""
     # Data retention (days) — 0 disables that cleanup.
     retention_sessions_days: int = 90
     retention_expired_tokens_days: int = 7
@@ -115,6 +117,7 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
     email_provider = source.get("EMAIL_PROVIDER", "dev").strip().lower() or "dev"
     rp_id = _require_env(source, "WEBAUTHN_RP_ID", required_in=("production",))
     origin = _require_env(source, "WEBAUTHN_ORIGIN", required_in=("production",))
+    public_base_url = _require_env(source, "PUBLIC_BASE_URL", required_in=("production",)).strip()
     trusted_proxy = source.get("PORTAL_TRUSTED_PROXY", "false").strip().lower() in (
         "1",
         "true",
@@ -140,10 +143,19 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
         except ValueError as exc:
             raise ConfigError(f"{name} must be an integer.") from exc
 
-    pool_min = _pool_int("DATABASE_POOL_MIN", 1)
-    pool_max = _pool_int("DATABASE_POOL_MAX", 10)
-    connect_timeout = _pool_int("DATABASE_CONNECT_TIMEOUT", 5)
-    statement_timeout_ms = _pool_int("DATABASE_STATEMENT_TIMEOUT", 15_000)
+    # Phase 14 pool naming (DB_*) with Phase 13 aliases (DATABASE_*) retained.
+    def _int_alias(name: str, alias: str, default: int) -> int:
+        raw = source.get(name, "").strip() or source.get(alias, "").strip()
+        try:
+            return int(raw) if raw else default
+        except ValueError as exc:
+            raise ConfigError(f"{name} must be an integer.") from exc
+
+    pool_min = _int_alias("DB_POOL_MIN", "DATABASE_POOL_MIN", 1)
+    pool_max = _int_alias("DB_POOL_MAX", "DATABASE_POOL_MAX", 10)
+    connect_timeout = _int_alias("DB_CONNECT_TIMEOUT", "DATABASE_CONNECT_TIMEOUT", 5)
+    statement_timeout_ms = _int_alias("DB_STATEMENT_TIMEOUT", "DATABASE_STATEMENT_TIMEOUT", 15_000)
+    db_idle_timeout = _int_alias("DB_IDLE_TIMEOUT", "DATABASE_IDLE_TIMEOUT", 300)
 
     def _retention(name: str, default: int) -> int:
         raw = source.get(name, "").strip()
@@ -164,7 +176,11 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
     backup_dir = source.get("BACKUP_DIR", "./backups").strip() or "./backups"
     backup_retention_count = _pool_int("BACKUP_RETENTION_COUNT", 30)
     backup_encrypt = source.get("BACKUP_ENCRYPT", "false").strip().lower() in ("1", "true", "yes")
-    backup_passphrase = source.get("BACKUP_PASSPHRASE", "").strip()
+    # Phase 14 encryption-key naming with Phase 13 passphrase alias.
+    backup_passphrase = (
+        source.get("BACKUP_ENCRYPTION_KEY", "").strip()
+        or source.get("BACKUP_PASSPHRASE", "").strip()
+    )
 
     if rate_limit_backend not in ("memory", "postgresql"):
         raise ConfigError("RATE_LIMIT_BACKEND must be 'memory' or 'postgresql'.")
@@ -173,9 +189,11 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
     if log_format not in ("json", "text"):
         raise ConfigError("LOG_FORMAT must be 'json' or 'text'.")
     if pool_min < 1:
-        raise ConfigError("DATABASE_POOL_MIN must be >= 1.")
+        raise ConfigError("DB_POOL_MIN must be >= 1.")
     if pool_max < pool_min:
-        raise ConfigError("DATABASE_POOL_MAX must be >= DATABASE_POOL_MIN.")
+        raise ConfigError("DB_POOL_MAX must be >= DB_POOL_MIN.")
+    if db_idle_timeout < 1:
+        raise ConfigError("DB_IDLE_TIMEOUT must be >= 1.")
     if backup_retention_count < 1:
         raise ConfigError("BACKUP_RETENTION_COUNT must be >= 1.")
 
@@ -189,13 +207,25 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
             raise ConfigError("SESSION_SECRET must not be the development default in production.")
         if not allowed_hosts:
             raise ConfigError("ALLOWED_HOSTS must be configured in production.")
-        if rate_limit_backend == "memory" and db_url.lower().startswith("postgres"):
+        if "*" in allowed_hosts:
+            raise ConfigError("ALLOWED_HOSTS must not contain a wildcard in production.")
+        if public_base_url and not public_base_url.startswith("https://"):
+            raise ConfigError("PUBLIC_BASE_URL must be an https:// URL in production.")
+        # Production must never run on SQLite (single-file, per-process).
+        if not db_url.lower().startswith("postgres"):
             raise ConfigError(
-                "RATE_LIMIT_BACKEND must be 'postgresql' for multi-process PostgreSQL "
-                "deployments (fail closed; per-process limits are unsafe)."
+                "DATABASE_URL must point to PostgreSQL in production; SQLite is not "
+                "an allowed production database."
+            )
+        if rate_limit_backend == "memory":
+            raise ConfigError(
+                "RATE_LIMIT_BACKEND must be 'postgresql' in production (fail closed; "
+                "per-process limits are unsafe)."
             )
         if backup_encrypt and not backup_passphrase:
-            raise ConfigError("BACKUP_PASSPHRASE is required when BACKUP_ENCRYPT=true.")
+            raise ConfigError(
+                "BACKUP_ENCRYPTION_KEY is required when BACKUP_ENCRYPT=true in production."
+            )
 
     # Session secret default is safe only in non-production.
     if not session_secret:
@@ -208,7 +238,9 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
         smtp_port = int(source.get("EMAIL_SMTP_PORT", "587"))
     except ValueError as exc:
         raise ConfigError("EMAIL_SMTP_PORT must be an integer.") from exc
-    smtp_user = source.get("EMAIL_SMTP_USER", "").strip()
+    smtp_user = (
+        source.get("EMAIL_SMTP_USERNAME", "").strip() or source.get("EMAIL_SMTP_USER", "").strip()
+    )
     smtp_pass = source.get("EMAIL_SMTP_PASSWORD", "").strip()
     smtp_from = source.get("EMAIL_FROM", "").strip()
     if is_prod and email_provider == "smtp" and not smtp_host:
@@ -258,6 +290,8 @@ def load_config(env: dict[str, str] | None = None) -> PortalConfig:
         log_format=log_format,
         request_id_header=request_id_header,
         deployment_version=deployment_version,
+        public_base_url=public_base_url,
+        database_idle_timeout=db_idle_timeout,
         retention_sessions_days=retention["retention_sessions_days"],
         retention_expired_tokens_days=retention["retention_expired_tokens_days"],
         retention_security_events_days=retention["retention_security_events_days"],

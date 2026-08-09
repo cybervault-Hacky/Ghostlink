@@ -109,6 +109,7 @@ class StructuredLogger:
 
     _SAFE_KEYS: ClassVar[frozenset[str]] = frozenset(
         {
+            "event",
             "request_id",
             "method",
             "route",
@@ -119,6 +120,8 @@ class StructuredLogger:
             "device_id",
             "security_event_type",
             "deployment_version",
+            "environment",
+            "error_class",
             "actor",
             "action",
             "source",
@@ -128,10 +131,16 @@ class StructuredLogger:
     )
 
     def __init__(
-        self, *, level: str = "info", log_format: str = "json", deployment_version: str = ""
+        self,
+        *,
+        level: str = "info",
+        log_format: str = "json",
+        environment: str = "development",
+        deployment_version: str = "",
     ) -> None:
         self.level = level.lower()
         self.log_format = log_format.lower()
+        self.environment = environment
         self.deployment_version = deployment_version
 
     def _emit(self, level: str, message: str, extra: dict[str, Any] | None = None) -> None:
@@ -143,6 +152,8 @@ class StructuredLogger:
                 safe[key] = extra[key]
         if self.deployment_version:
             safe["deployment_version"] = self.deployment_version
+        if self.environment:
+            safe["environment"] = self.environment
         if self.log_format == "json":
             line = json_line({"message": scrub_secrets(message), **safe})
         else:
@@ -170,6 +181,10 @@ class StructuredLogger:
 
     def audit(self, message: str, **extra: Any) -> None:
         self._emit("info", message, {"security_event_type": "audit", **extra})
+
+    def lifecycle(self, event: str, **extra: Any) -> None:
+        """Startup/shutdown/migration/backup lifecycle events (Phase 14)."""
+        self._emit("info", event, {"event": event, **extra})
 
 
 __all__ = [

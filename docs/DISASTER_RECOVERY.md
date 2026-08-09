@@ -94,3 +94,15 @@ exercised by automated tests:
 Tooling: `ghostlink backup create|verify|list|restore --dry-run`,
 `ghostlink db verify`. A real restore targets a fresh, isolated database and
 is never auto-destructive. See `BACKUPS.md`.
+
+---
+
+## Phase 14 — disaster scenarios (procedures)
+
+See `docs/INCIDENT_RESPONSE.md` for the full incident procedures. Documented
+scenarios: database corruption, accidental deletion, credential compromise,
+stolen session, migration failure, application deployment failure, and backup
+corruption. The common recovery path is: verify backup → restore into an
+isolated DB → migrate → verify schema, security invariants, revocation state,
+and the Owner invariant → only then replace production (never automatically,
+never without explicit confirmation).

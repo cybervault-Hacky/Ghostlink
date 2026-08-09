@@ -97,3 +97,49 @@ def test_logger_message_text_is_scrubbed() -> None:
     logger = StructuredLogger(level="info", log_format="json")
     line = _emit(logger, "info", "using dk_x:secrethunter2secret in flow", None)
     assert "secrethunter2secret" not in line
+
+
+def test_logger_includes_environment_and_event() -> None:
+    import json
+
+    logger = StructuredLogger(
+        level="info",
+        log_format="json",
+        environment="production",
+        deployment_version="0.16.0",
+    )
+    line = _emit(
+        logger,
+        "info",
+        "request",
+        {"event": "request", "request_id": "req_1", "method": "GET", "status": 200},
+    )
+    parsed = json.loads(line)
+    assert parsed["environment"] == "production"
+    assert parsed["event"] == "request"
+    assert parsed["deployment_version"] == "0.16.0"
+
+
+def test_logger_error_class_is_safe() -> None:
+    import json
+
+    logger = StructuredLogger(level="info", log_format="json", environment="production")
+    line = _emit(
+        logger,
+        "error",
+        "unhandled_exception",
+        {"event": "request_error", "request_id": "req_2", "error_class": "ValueError"},
+    )
+    parsed = json.loads(line)
+    assert parsed["error_class"] == "ValueError"
+
+
+def test_logger_lifecycle_event() -> None:
+    import json
+
+    logger = StructuredLogger(level="info", log_format="json", environment="staging")
+    line = _emit(logger, "info", "startup", {"event": "startup", "database_backend": "postgresql"})
+    parsed = json.loads(line)
+    assert parsed["event"] == "startup"
+    # Non-safe metadata (database_backend not allow-listed) is dropped.
+    assert "database_backend" not in parsed

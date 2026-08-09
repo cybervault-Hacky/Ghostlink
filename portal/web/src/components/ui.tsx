@@ -59,3 +59,36 @@ export function EmptyState({ title, cta }: { title: string; cta?: ReactNode }) {
     </div>
   );
 }
+
+export function Loading({ label = "Loading…" }: { label?: string }) {
+  return (
+    <div className="loading" role="status" aria-live="polite">
+      <span className="spinner" aria-hidden="true" />
+      <span className="muted">{label}</span>
+    </div>
+  );
+}
+
+export function ErrorState({
+  title,
+  message,
+  onRetry,
+}: {
+  title?: string;
+  message?: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="error-state" role="alert">
+      <div>
+        <strong>{title ?? "Something went wrong"}</strong>
+        {message ? <p className="muted">{message}</p> : null}
+      </div>
+      {onRetry ? (
+        <Button variant="ghost" onClick={onRetry}>
+          Retry
+        </Button>
+      ) : null}
+    </div>
+  );
+}

@@ -72,3 +72,15 @@ the `X-CSRF-Token` header. Responses never contain secrets after creation.
 * The verify endpoint returns a generic 401 for unknown/revoked/wrong keys.
 * No endpoint returns a plaintext password, recovery code, session token, or
   verification material.
+
+---
+
+## Phase 14 — API reliability
+
+- Consistent error envelope `{"error":{"code","message"}}`; no stack traces.
+- `429` rate-limited, `503` rate-limit store unavailable, `413` payload too
+  large — all surfaced by the Termux client with clear, secret-free errors.
+- Activity endpoints are bounded (`LIMIT`) to avoid unbounded queries.
+- IDOR/scope-escalation/replay/revoked-credential behavior covered by the
+  security regression suite (`test_phase13_security.py`,
+  `test_owner_invariant.py`).

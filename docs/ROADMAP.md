@@ -491,7 +491,7 @@ launch-ready architecture.
 - Full suite green at 1502+ portal-aware tests; no new crypto, no
   payments, no telemetry.
 
-## Phase 12 — Developer API Platform & Termux Integration ✅ (latest implemented)
+## Phase 12 — Developer API Platform & Termux Integration ✅
 
 **STATUS: IMPLEMENTED** — a narrowly scoped, authenticated, auditable,
 revocable developer API and a Termux client.
@@ -515,7 +515,7 @@ revocable developer API and a Termux client.
 - Docs: `API_V1.md`, `TERMUX_INTEGRATION.md`, `DEVICE_SECURITY.md`,
   `PROJECTS.md`, `API_SECURITY.md`, `PAIRING.md`, `DEVELOPER_AUTH.md`.
 
-## Phase 13 — Production Infrastructure, Database & Deployment Hardening ✅ (latest implemented)
+## Phase 13 — Production Infrastructure, Database & Deployment Hardening ✅
 
 **STATUS: IMPLEMENTED** — transforms the portal into a production-deployable
 infrastructure foundation while preserving Phases 1–12.
@@ -538,8 +538,34 @@ infrastructure foundation while preserving Phases 1–12.
   `BACKUPS.md`, `DISASTER_RECOVERY.md`, `OBSERVABILITY.md`, `RATE_LIMITING.md`,
   `DEPLOYMENT.md`, `SECURITY_MODEL.md`, `OPERATIONS.md`, `CI_CD.md`.
 
+## Phase 14 — Public Production Launch & Reliability ✅ (latest implemented)
+
+**STATUS: IMPLEMENTED** — operational environment model, production config
+fail-closed, PostgreSQL production path (env-gated runtime), observability
+extensions, Termux reliability, owner-invariant regression suite, extended
+security tooling, frontend loading/error/empty + accessibility, and
+release/incident/runbook documentation.
+
+- **Environment model** — `development`/`staging`/`production` with fail-closed
+  validation; `.env.*.example` templates in `deployment/env/`.
+- **Production config** — rejects SQLite, memory rate limiting, insecure
+  cookies, wildcard hosts, dev email/secret, non-HTTPS `PUBLIC_BASE_URL`;
+  `DB_POOL_*`/`DB_*`, `BACKUP_ENCRYPTION_KEY`, `EMAIL_SMTP_USERNAME`.
+- **Observability** — `event`, `environment`, `error_class`, startup/shutdown
+  lifecycle events in structured JSON logs.
+- **Termux reliability** — client fails closed on malformed responses; clear
+  errors for 401/429/500/503/network.
+- **Owner invariant** — `TestSingleOwnerInvariant` permanent regression suite.
+- **Security tooling** — extended `scripts/security_check.py` (Docker, prod env,
+  CORS, CI auto-deploy) with tests.
+- **Frontend** — `Loading` (`role=status`), `ErrorState` (`role=alert`),
+  empty states, reduced-motion.
+- Docs: `PRODUCTION_RUNBOOK.md`, `INCIDENT_RESPONSE.md`, `RELEASE.md`,
+  `TERMUX.md`, `CHANGELOG.md`.
+
 ### Planned (not started)
 
+- Live public deployment (not performed).
 - Offline message queue and multi-device sync design
 - Localization framework activation (beyond `en`)
 - Plugin hooks for room automations

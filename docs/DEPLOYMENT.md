@@ -106,3 +106,13 @@ security-hardened deployment artifacts in `deployment/`:
 
 Recommended architecture: `Internet → HTTPS nginx → gunicorn → WSGI app →
 PostgreSQL`. **No public deployment has been performed.**
+
+---
+
+## Phase 14 — environment model & low-downtime deployment
+
+Explicit `development`/`staging`/`production` environments (templates in
+`deployment/env/`). Production fails closed. Low-downtime sequence: backup →
+verify → migration verify → apply → schema verify → `/health/live` →
+`/health/ready` → route traffic; retain the previous immutable version for
+rollback; SIGTERM graceful shutdown. **PUBLIC DEPLOYMENT: NOT PERFORMED.**

@@ -42,3 +42,12 @@ Schema version is currently `2`:
 
 See `tests/test_migrations.py` for coverage (fresh schema, index presence,
 future-schema fail-closed, FK enforcement, uniqueness).
+
+---
+
+## Phase 14 — production pool naming
+
+Pool and timeout settings use `DB_POOL_MIN`, `DB_POOL_MAX`, `DB_CONNECT_TIMEOUT`,
+`DB_STATEMENT_TIMEOUT`, `DB_IDLE_TIMEOUT` (Phase 13 `DATABASE_*` names remain as
+aliases). Production refuses to run on SQLite or with the in-memory rate
+limiter. Runtime PostgreSQL integration is **ENVIRONMENT-GATED** in this build.

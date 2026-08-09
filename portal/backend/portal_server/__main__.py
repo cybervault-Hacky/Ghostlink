@@ -67,12 +67,27 @@ def main(argv: list[str] | None = None) -> int:
     server = make_server(
         args.host, args.port, app, server_class=WSGIServer, handler_class=_QuietHandler
     )
+    from portal_server.observability import StructuredLogger
+
+    logger = StructuredLogger(
+        level=config.log_level,
+        log_format=config.log_format,
+        environment=config.app_env,
+        deployment_version=config.deployment_version,
+    )
+    logger.lifecycle(
+        "startup",
+        environment=config.app_env,
+        database_backend=db.backend_name,
+        version=config.deployment_version,
+    )
     print(f"GhostLink Developer Portal backend on http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        logger.lifecycle("shutdown", environment=config.app_env)
         server.server_close()
         db.close()
     return 0

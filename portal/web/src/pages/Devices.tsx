@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { request } from "../lib/api";
-import { Badge, Button, Card, EmptyState, StatusBadge } from "../components/ui";
+import { Badge, Button, Card, EmptyState, ErrorState, Loading, StatusBadge } from "../components/ui";
 
 interface Device {
   device_id: string;
@@ -14,14 +14,29 @@ interface Device {
 
 export default function Devices() {
   const [devices, setDevices] = useState<Device[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    const res = await request("GET", "/api/v1/devapi/devices");
-    if (res.status === 200) setDevices(res.body.devices);
-  }
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await request("GET", "/api/v1/devapi/devices");
+      if (res.status === 200) {
+        setDevices(res.body.devices);
+      } else {
+        setError(res.body?.error?.message ?? "Unable to load devices.");
+      }
+    } catch {
+      setError("Unable to reach the portal.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   async function revoke(deviceId: string) {
     await request("POST", `/api/v1/devapi/devices/${deviceId}/revoke`);
@@ -36,8 +51,12 @@ export default function Devices() {
         device instantly invalidates its tokens.
       </p>
       <div className="stack mt-24">
-        {devices.length === 0 && <Card><EmptyState title="No devices registered yet." /></Card>}
-        {devices.map((d) => (
+        {loading && <Loading label="Loading devices…" />}
+        {!loading && error && <ErrorState title="Could not load devices" message={error} onRetry={load} />}
+        {!loading && !error && devices.length === 0 && (
+          <Card><EmptyState title="No devices registered yet." /></Card>
+        )}
+        {!loading && !error && devices.map((d) => (
           <Card key={d.device_id}>
             <div className="row between">
               <div>

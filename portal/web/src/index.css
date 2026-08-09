@@ -344,6 +344,41 @@ h1, h2, h3 {
   gap: 16px;
 }
 
+.loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 8px;
+  color: var(--text-muted);
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #e5e7eb;
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.error-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid var(--danger-line, rgba(220, 38, 38, 0.25));
+  background: rgba(254, 242, 242, 0.6);
+}
+.error-state p {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;

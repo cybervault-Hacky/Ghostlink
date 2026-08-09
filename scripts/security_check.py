@@ -90,13 +90,17 @@ def check_secrets() -> list[str]:
     join = re.compile(r"gl://join/[A-Za-z0-9]{20}")
     for path, text in _repo_texts():
         rel = path.relative_to(ROOT)
+        # Skip test fixtures: they legitimately embed secret-shaped strings to
+        # exercise detection. The repository-wide scan (scan_secrets.py)
+        # covers every file independently.
+        if "test" in path.stem or "tests" in path.parts:
+            continue
         if pem.search(text):
             findings.append(f"{rel}: private-key PEM block")
-        if "test" not in path.stem and "tests" not in path.parts:
-            if token.search(text):
-                findings.append(f"{rel}: invite token literal")
-            if join.search(text):
-                findings.append(f"{rel}: join link literal")
+        if token.search(text):
+            findings.append(f"{rel}: invite token literal")
+        if join.search(text):
+            findings.append(f"{rel}: join link literal")
     return findings
 
 
@@ -223,6 +227,59 @@ def check_phase13_hygiene() -> list[str]:
     return findings
 
 
+def check_phase14_hygiene() -> list[str]:
+    """Phase 14 checks: Docker hardening, prod config defaults, CORS, CI."""
+    findings: list[str] = []
+    dockerfile = ROOT / "deployment" / "docker" / "Dockerfile"
+    if dockerfile.exists():
+        text = dockerfile.read_text(encoding="utf-8")
+        # Non-root user required; must not end on a root USER.
+        if "USER" not in text:
+            findings.append("deployment/docker/Dockerfile: no explicit USER")
+        elif re.search(r"USER\s+root\s*$", text, re.MULTILINE):
+            findings.append("deployment/docker/Dockerfile: runs as root")
+        if re.search(r"COPY\s+\.env", text):
+            findings.append("deployment/docker/Dockerfile: ships a .env file")
+        if "pip install -e" in text or "pip install .[dev]" in text:
+            findings.append("deployment/docker/Dockerfile: includes dev dependencies")
+    # Production env template must be fail-closed.
+    prod_env = ROOT / "deployment" / "env" / ".env.production.example"
+    if prod_env.exists():
+        text = prod_env.read_text(encoding="utf-8")
+        for needle in (
+            "APP_ENV=production",
+            "PORTAL_SECURE_COOKIES=true",
+            "RATE_LIMIT_BACKEND=postgresql",
+        ):
+            if needle not in text:
+                findings.append(f".env.production.example: missing {needle}")
+    # No wildcard CORS / permissive CORS in the backend (skip test fixtures).
+    for path, text in _repo_texts():
+        if "portal" not in str(path) or not path.name.endswith(".py"):
+            continue
+        if "test" in path.stem or "tests" in path.parts:
+            continue
+        if re.search(r"Access-Control-Allow-Origin['\"]?\s*[:=]\s*['\"]\*['\"]", text):
+            findings.append(f"{path.relative_to(ROOT)}: wildcard CORS")
+    # CI must not auto-deploy to a live production host.
+    for wf in (ROOT / ".github" / "workflows").glob("*.yml"):
+        text = wf.read_text(encoding="utf-8")
+        rel = wf.name
+        if "release" in rel:
+            if "workflow_dispatch" not in text:
+                findings.append(f"{rel}: release workflow is not manual-only")
+            if re.search(r"on:\s*push", text):
+                findings.append(f"{rel}: release workflow auto-runs on push")
+        # A workflow that deploys only with explicit placeholder hosts is fine.
+        if (
+            re.search(r"(scp|ssh|azure/webapps|gcloud deploy|rsync)\b", text)
+            and "REPLACE" not in text
+            and re.search(r"deploy\s*[-:]\s*.*(server|host)", text)
+        ):
+            findings.append(f"{rel}: possible auto-deploy step present")
+    return findings
+
+
 def run_all() -> list[str]:
     findings: list[str] = []
     findings += check_secrets()
@@ -232,6 +289,7 @@ def run_all() -> list[str]:
     findings += check_no_network_in_backend()
     findings += check_devapi_hygiene()
     findings += check_phase13_hygiene()
+    findings += check_phase14_hygiene()
     return findings
 
 

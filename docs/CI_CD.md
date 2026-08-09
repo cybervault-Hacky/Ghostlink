@@ -46,3 +46,24 @@ workflows permission`). Once that permission is granted (or the repository is
 pushed with a suitably scoped token), the files should be committed and pushed
 in one commit. The workflow *definitions* are written and validated by the
 quality gate but have not executed in this offline environment.
+
+## Manual push instructions for the workflow files
+
+The four workflow files are present in the working tree (`?? .github/workflows/`)
+but were not pushed because the connected GitHub App lacks the `workflows`
+permission. To push them with a suitably scoped token:
+
+```bash
+# 1. Grant the connected GitHub App the "Workflows" permission
+#    (GitHub → Settings → Developer settings → GitHub Apps → <app> → Permissions),
+#    or use a personal access token / token with `workflows` scope.
+# 2. From a clean checkout of the branch:
+git checkout arena/019fe552-ghostlink
+git add .github/workflows/
+git commit -m "Add CI/CD workflows (test, security, build, release)"
+git push origin arena/019fe552-ghostlink
+```
+
+Do **not** force-push. The workflow definitions are already validated by the
+offline quality gate (`scripts/security_check.py` includes CI auto-deploy
+checks).

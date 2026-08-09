@@ -90,6 +90,7 @@ class Portal:
         self.logger = StructuredLogger(
             level=config.log_level if config else "info",
             log_format=config.log_format if config else "json",
+            environment=config.app_env if config else "development",
             deployment_version=config.deployment_version if config else "",
         )
         self.request_id_header = config.request_id_header if config else "X-Request-ID"
@@ -1204,6 +1205,7 @@ def _log_request(
     duration_ms = (time.monotonic() - started) * 1000.0
     portal.logger.info(
         "request",
+        event="request",
         request_id=request_id,
         method=request.method,
         route=request.path,
@@ -1253,11 +1255,17 @@ def _dispatch(
         resp = _route_request(portal, request)
     except RateLimitBackendError:
         resp = error_response(503, "rate_limit_store_unavailable", "Rate limit store unavailable.")
-    except Exception:
+    except Exception as exc:
         if debug:
             raise
         resp = error_response(500, "internal", "An unexpected error occurred.")
-        portal.logger.error("unhandled_exception", request_id=request_id, route=request.path)
+        portal.logger.error(
+            "unhandled_exception",
+            event="request_error",
+            request_id=request_id,
+            route=request.path,
+            error_class=exc.__class__.__name__,
+        )
     if environ.get("ghostlink.hsts"):
         resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     resp.headers[portal.request_id_header] = request_id

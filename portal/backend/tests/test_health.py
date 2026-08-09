@@ -84,15 +84,21 @@ def test_request_id_respects_client_value(app) -> None:
     assert headers["X-Request-ID"] == "client-trace-1"
 
 
-def test_host_allowed_list_enforced(tmp_path: Path) -> None:
-    from portal_server.app import create_wsgi_app
+def test_host_allowed_list_enforced(tmp_path: Path, monkeypatch) -> None:
+    import portal_server.app as app_mod
     from portal_server.emailing import DevEmailProvider
+    from portal_server.ratelimit import InMemoryRateLimiter
 
+    monkeypatch.setattr(
+        app_mod,
+        "build_rate_limiter",
+        lambda backend, db, overrides=None: InMemoryRateLimiter(limits=overrides or None),
+    )
     db = Database(tmp_path / "h.db")
     cfg = load_config(
         {
             "APP_ENV": "production",
-            "DATABASE_URL": str(tmp_path / "h.db"),
+            "DATABASE_URL": "postgres://u:p@db/ghostlink",
             "SESSION_SECRET": "a-long-random-secret-123",
             "EMAIL_PROVIDER": "smtp",
             "EMAIL_SMTP_HOST": "smtp.example.com",
@@ -100,9 +106,11 @@ def test_host_allowed_list_enforced(tmp_path: Path) -> None:
             "WEBAUTHN_RP_ID": "portal.example.com",
             "WEBAUTHN_ORIGIN": "https://portal.example.com",
             "ALLOWED_HOSTS": "portal.example.com",
+            "RATE_LIMIT_BACKEND": "postgresql",
+            "PUBLIC_BASE_URL": "https://portal.example.com",
         }
     )
-    app = create_wsgi_app(db, emails=DevEmailProvider(enabled=False), config=cfg)
+    app = app_mod.create_wsgi_app(db, emails=DevEmailProvider(enabled=False), config=cfg)
     status, _body, _ = _get(app, "/health", host="portal.example.com")
     assert status == 200
     status, _body, _ = _get(app, "/health", host="evil.example.com")

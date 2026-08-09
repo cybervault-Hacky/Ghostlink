@@ -34,6 +34,16 @@ def _err(message: str, *, code: str = "error", status: int = 400) -> ScopedCrede
     return ScopedCredentialError(message, code=code, status=status)
 
 
+def _rate_limit(portal: Any, scope: str, key: str) -> None:
+    """Enforce a per-(scope, key) in-memory rate limit; raises 429 on tripping.
+
+    Phase 12P: protects pairing, token issuance/refresh, and credential
+    operations. Per-process only — documented as not distributed/global.
+    """
+    if not portal.limiter.allow(scope, key):
+        raise _err("Rate limit exceeded. Try again later.", code="rate_limited", status=429)
+
+
 def _bearer_token(request: Request) -> str:
     header = request.header("Authorization")
     if not header.startswith("Bearer "):
@@ -144,6 +154,7 @@ def _resolve_access(
 
 
 def handle_pair_begin(portal: Any, request: Request) -> Response:
+    _rate_limit(portal, "pair_begin", request.client_ip())
     body = request.body_json or {}
     name = str(body.get("device_name", "")).strip()[:64]
     _platform = str(body.get("platform", "termux"))[:32]
@@ -184,6 +195,7 @@ def _future_iso(seconds: int) -> str:
 def handle_pair_approve(portal: Any, request: Request, user: dict[str, Any]) -> Response:
     """Approve a pending pairing (session-authenticated) and issue a scoped
     credential for a new device. Returns the credential secret **once**."""
+    _rate_limit(portal, "pair_approve", f"u{user['id']}")
     body = request.body_json or {}
     code = str(body.get("pairing_code", "")).strip()
     scopes = str(body.get("scopes", "project:read device:read credential:read")).strip()
@@ -260,6 +272,7 @@ def handle_pair_approve(portal: Any, request: Request, user: dict[str, Any]) -> 
 
 def handle_token(portal: Any, request: Request) -> Response:
     """Exchange a scoped credential for short-lived access + refresh tokens."""
+    _rate_limit(portal, "token_issue", request.client_ip())
     body = request.body_json or {}
     credential_id = str(body.get("credential_id", ""))
     credential_secret = str(body.get("credential_secret", ""))
@@ -342,6 +355,7 @@ def handle_token(portal: Any, request: Request) -> Response:
 
 
 def handle_refresh(portal: Any, request: Request) -> Response:
+    _rate_limit(portal, "token_refresh", request.client_ip())
     body = request.body_json or {}
     refresh = str(body.get("refresh_token", ""))
     row = portal.db.query_one(
@@ -519,6 +533,7 @@ def handle_credential_rotate(portal: Any, request: Request, credential_id: str) 
         endpoint=f"/developer/credentials/{credential_id}/rotate",
         category="credential",
     )
+    _rate_limit(portal, "credential_rotate", f"u{ctx['user']['id']}")
     row = portal.db.query_one(
         "SELECT * FROM api_credentials WHERE credential_id=? AND user_id=?",
         (credential_id, ctx["user"]["id"]),

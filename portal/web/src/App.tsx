@@ -14,6 +14,9 @@ import Security from "./pages/Security";
 import Sessions from "./pages/Sessions";
 import Activity from "./pages/Activity";
 import Settings from "./pages/Settings";
+import Devices from "./pages/Devices";
+import DeveloperApi from "./pages/DeveloperApi";
+import ApiActivity from "./pages/ApiActivity";
 
 export default function App() {
   return (
@@ -80,6 +83,30 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Settings />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/developer-api"
+              element={
+                <ProtectedRoute>
+                  <DeveloperApi />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/devices"
+              element={
+                <ProtectedRoute>
+                  <Devices />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/api-activity"
+              element={
+                <ProtectedRoute>
+                  <ApiActivity />
                 </ProtectedRoute>
               }
             />

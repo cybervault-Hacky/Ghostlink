@@ -266,3 +266,83 @@ class TestRefreshAndPersistence:
             },
         )
         assert status == 401  # revoked persists
+
+
+class TestPortalWebViews:
+    """Phase 12N: session-authenticated web views for the developer API."""
+
+    def test_devapi_devices_list_and_revoke(self, portal_app) -> None:
+        from conftest import make_active_user, signin_and_set_csrf
+
+        make_active_user(portal_app)
+        signin_and_set_csrf(portal_app)
+        # Register a device via the full pairing flow.
+        pairing = _begin_pairing(portal_app, name="web-device")
+        _approve_pairing(portal_app, pairing["pairing_code"], scopes="device:read")
+        status, body = portal_app.client.get("/api/v1/devapi/devices")
+        assert status == 200
+        assert len(body["devices"]) == 1
+        assert body["devices"][0]["platform"] == "termux"
+        device_id = body["devices"][0]["device_id"]
+        # Revoke via the web view.
+        status, _ = portal_app.client.post(f"/api/v1/devapi/devices/{device_id}/revoke")
+        assert status == 200
+        status, body = portal_app.client.get("/api/v1/devapi/devices")
+        assert body["devices"][0]["status"] == "revoked"
+
+    def test_devapi_credentials_list(self, portal_app) -> None:
+        from conftest import make_active_user, signin_and_set_csrf
+
+        make_active_user(portal_app)
+        signin_and_set_csrf(portal_app)
+        status, body = portal_app.client.get("/api/v1/devapi/credentials")
+        assert status == 200
+        assert body["credentials"] == []
+
+    def test_devapi_activity_metadata_only(self, portal_app) -> None:
+        from conftest import make_active_user, signin_and_set_csrf
+
+        make_active_user(portal_app)
+        signin_and_set_csrf(portal_app)
+        portal_app.client.post(
+            "/api/v1/developer/auth/pair-begin",
+            json={"device_name": "d", "platform": "termux", "client_version": "0.14.0"},
+        )
+        status, body = portal_app.client.get("/api/v1/devapi/activity")
+        assert status == 200
+        blob = str(body["events"])
+        assert "token" not in blob and "secret" not in blob and "Authorization" not in blob
+
+    def test_devapi_pairing_requires_auth(self, portal_app) -> None:
+        status, _ = portal_app.client.get("/api/v1/devapi/pairing")
+        assert status == 401
+
+
+class TestApiRateLimit:
+    def test_pair_begin_rate_limited(self, portal_app) -> None:
+        from conftest import make_active_user
+
+        make_active_user(portal_app)
+        status = 0
+        for i in range(12):
+            status, _ = portal_app.client.post(
+                "/api/v1/developer/auth/pair-begin",
+                json={"device_name": f"d{i}", "platform": "termux", "client_version": "0.14.0"},
+            )
+        assert status == 429
+
+    def test_token_issue_rate_limited(self, portal_app) -> None:
+        from conftest import make_active_user, signin_and_set_csrf
+
+        from ghostlink.developer import keys as dev_keys
+
+        make_active_user(portal_app)
+        signin_and_set_csrf(portal_app)
+        _kid, secret = dev_keys.issue_credential()
+        status = 0
+        for _ in range(25):
+            status, _ = portal_app.client.post(
+                "/api/v1/developer/auth/token",
+                json={"credential_id": "dk_XXXX0000", "credential_secret": secret},
+            )
+        assert status == 429

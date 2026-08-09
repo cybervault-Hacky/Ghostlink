@@ -3,8 +3,10 @@ import { useAuth } from "../lib/auth";
 
 const authed = [
   { to: "/dashboard", label: "Dashboard" },
-  { to: "/credentials", label: "Credentials" },
+  { to: "/developer-api", label: "Developer API" },
+  { to: "/devices", label: "Devices" },
   { to: "/projects", label: "Projects" },
+  { to: "/api-activity", label: "API activity" },
   { to: "/security", label: "Security" },
 ];
 

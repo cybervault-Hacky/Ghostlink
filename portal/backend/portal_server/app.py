@@ -441,6 +441,24 @@ def handle_password_reset(portal: Portal, request: Request) -> Response:
 
 
 def handle_dashboard(portal: Portal, request: Request, user: dict[str, Any]) -> Response:
+    resp = _dashboard_base(portal, user)
+    # Phase 12: developer-API platform counts.
+    devices = portal.db.query_one(
+        "SELECT COUNT(*) AS n FROM developer_devices WHERE user_id=? AND status='active'",
+        (user["id"],),
+    )
+    api_creds = portal.db.query_one(
+        "SELECT COUNT(*) AS n FROM api_credentials WHERE user_id=? AND status='active'",
+        (user["id"],),
+    )
+    resp["devApi"] = {
+        "devices": int(devices["n"]) if devices else 0,
+        "credentials": int(api_creds["n"]) if api_creds else 0,
+    }
+    return ok(resp)
+
+
+def _dashboard_base(portal: Portal, user: dict[str, Any]) -> dict[str, Any]:
     creds = portal.db.query(
         "SELECT * FROM credentials WHERE user_id=? ORDER BY created_at DESC", (user["id"],)
     )
@@ -451,17 +469,109 @@ def handle_dashboard(portal: Portal, request: Request, user: dict[str, Any]) -> 
         "SELECT * FROM sessions WHERE user_id=? ORDER BY created_at DESC", (user["id"],)
     )
     mfa = portal.db.query_one("SELECT enabled FROM mfa_totp WHERE user_id=?", (user["id"],))
+    return {
+        "user": _user_payload(user),
+        "counts": {
+            "credentials": len([c for c in creds if c["status"] == "active"]),
+            "projects": len([p for p in projects if p["status"] == "active"]),
+            "sessions": len([s for s in sessions if not s["revoked_at"]]),
+            "mfaEnabled": bool(mfa and mfa["enabled"]),
+        },
+    }
+
+
+# ------------------------------------------------- developer API (web, 12N)
+
+
+def handle_devapi_devices(portal: Portal, request: Request, user: dict[str, Any]) -> Response:
+    """List the developer's Termux/API devices (session-authenticated web)."""
+    rows = portal.db.query(
+        "SELECT device_id, name, platform, client_version, status, created_at, last_seen_at "
+        "FROM developer_devices WHERE user_id=? ORDER BY created_at DESC",
+        (user["id"],),
+    )
+    return ok({"devices": rows})
+
+
+def handle_devapi_device_revoke(
+    portal: Portal, request: Request, user: dict[str, Any], device_id: str
+) -> Response:
+    """Revoke a developer device (persistent, fail-closed)."""
+    row = portal.db.query_one(
+        "SELECT id FROM developer_devices WHERE device_id=? AND user_id=?",
+        (device_id, user["id"]),
+    )
+    if row is None:
+        return error_response(404, "not_found", "Device not found.")
+    portal.db.execute("UPDATE developer_devices SET status='revoked' WHERE id=?", (row["id"],))
+    portal.db.execute(
+        "UPDATE api_tokens SET revoked_at=? WHERE device_id=?", (auth.now_iso(), row["id"])
+    )
+    _record_event(portal, user["id"], "device_revoked", "web", {"deviceId": device_id})
+    return ok({"revoked": True})
+
+
+def handle_devapi_credentials(portal: Portal, request: Request, user: dict[str, Any]) -> Response:
+    """List scoped developer-API credentials (metadata only, never the secret)."""
+    rows = portal.db.query(
+        "SELECT credential_id, name, scopes, status, created_at, last_used_at, rotated_at, "
+        "revoked_at FROM api_credentials WHERE user_id=? ORDER BY created_at DESC",
+        (user["id"],),
+    )
     return ok(
         {
-            "user": _user_payload(user),
-            "counts": {
-                "credentials": len([c for c in creds if c["status"] == "active"]),
-                "projects": len([p for p in projects if p["status"] == "active"]),
-                "sessions": len([s for s in sessions if not s["revoked_at"]]),
-                "mfaEnabled": bool(mfa and mfa["enabled"]),
-            },
+            "credentials": [
+                {
+                    "credential_id": r["credential_id"],
+                    "name": r["name"],
+                    "scopes": r["scopes"].split(),
+                    "status": r["status"],
+                    "created_at": r["created_at"],
+                    "last_used_at": r["last_used_at"],
+                    "rotated_at": r["rotated_at"],
+                    "revoked_at": r["revoked_at"],
+                }
+                for r in rows
+            ]
         }
     )
+
+
+def handle_devapi_credential_revoke(
+    portal: Portal, request: Request, user: dict[str, Any], credential_id: str
+) -> Response:
+    row = portal.db.query_one(
+        "SELECT id FROM api_credentials WHERE credential_id=? AND user_id=?",
+        (credential_id, user["id"]),
+    )
+    if row is None:
+        return error_response(404, "not_found", "Credential not found.")
+    portal.db.execute(
+        "UPDATE api_credentials SET status='revoked', revoked_at=? WHERE id=?",
+        (auth.now_iso(), row["id"]),
+    )
+    _record_event(portal, user["id"], "api_key_revoked", "web", {"credentialId": credential_id})
+    return ok({"revoked": True})
+
+
+def handle_devapi_activity(portal: Portal, request: Request, user: dict[str, Any]) -> Response:
+    """Metadata-only API activity log (no tokens, no bodies, no secrets)."""
+    rows = portal.db.query(
+        "SELECT endpoint, category, result, created_at FROM api_activity "
+        "WHERE user_id=? ORDER BY created_at DESC LIMIT 100",
+        (user["id"],),
+    )
+    return ok({"events": rows})
+
+
+def handle_devapi_pairing(portal: Portal, request: Request, user: dict[str, Any]) -> Response:
+    """Active pairing codes for the developer's account (metadata only)."""
+    rows = portal.db.query(
+        "SELECT nonce, device_id, status, created_at, expires_at FROM pairing_codes "
+        "WHERE user_id=? AND status='pending' ORDER BY created_at DESC LIMIT 50",
+        (user["id"],),
+    )
+    return ok({"pairing": rows})
 
 
 # ------------------------------------------------------------- credentials
@@ -899,6 +1009,23 @@ ROUTES: list[Route] = [
     ),
     Route("POST", "/api/v1/sessions/revoke-others", handle_signout_others, auth_required=True),
     Route("GET", "/api/v1/activity", handle_activity, auth_required=True),
+    # Phase 12N developer-API platform (web, session-authenticated).
+    Route("GET", "/api/v1/devapi/devices", handle_devapi_devices, auth_required=True),
+    Route(
+        "POST",
+        "/api/v1/devapi/devices/{device_id}/revoke",
+        handle_devapi_device_revoke,
+        auth_required=True,
+    ),
+    Route("GET", "/api/v1/devapi/credentials", handle_devapi_credentials, auth_required=True),
+    Route(
+        "POST",
+        "/api/v1/devapi/credentials/{credential_id}/revoke",
+        handle_devapi_credential_revoke,
+        auth_required=True,
+    ),
+    Route("GET", "/api/v1/devapi/activity", handle_devapi_activity, auth_required=True),
+    Route("GET", "/api/v1/devapi/pairing", handle_devapi_pairing, auth_required=True),
     Route("POST", "/api/v1/security/password", handle_change_password, auth_required=True),
     Route("POST", "/api/v1/security/mfa/setup", handle_mfa_setup, auth_required=True),
     Route("POST", "/api/v1/security/mfa/disable", handle_mfa_disable, auth_required=True),
@@ -1098,8 +1225,10 @@ def _route_request(portal: Portal, request: Request) -> Response:
             if err is not None:
                 return err
             assert user is not None
-        if route.auth == "dev":
-            # Bearer access-token routes authenticate inside the handler.
+        if route.auth in ("dev", "dev-open"):
+            # Bearer/open dev routes authenticate inside the handler; convert
+            # a raised ScopedCredentialError (e.g. rate limit) into its
+            # proper Response instead of a 500.
             try:
                 return route.handler(portal, request, **params)
             except Exception as exc:

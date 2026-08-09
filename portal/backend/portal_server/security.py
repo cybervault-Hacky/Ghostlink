@@ -22,6 +22,11 @@ DEFAULT_LIMITS: dict[str, tuple[int, float]] = {
     "credential_rotate": (10, 300.0),
     "credential_revoke": (20, 300.0),
     "session_action": (20, 300.0),
+    # Phase 12 developer-API platform limits.
+    "pair_begin": (10, 300.0),
+    "pair_approve": (10, 300.0),
+    "token_issue": (20, 300.0),
+    "token_refresh": (20, 300.0),
 }
 
 

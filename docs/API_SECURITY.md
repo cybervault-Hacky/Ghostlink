@@ -43,3 +43,31 @@ and request bodies are never recorded.
 * Rate limits are per-process/in-memory, not distributed/global.
 * The local token store holds refresh tokens at rest (0600) because the CLI
   must be able to refresh; this is documented, not hidden.
+
+## Rate limiting (Phase 12P)
+
+Developer-API endpoints are rate-limited (per-process, in-memory):
+
+* pairing (begin / approve) — 10 per 5 min
+* token issuance — 20 per 5 min
+* token refresh — 20 per 5 min
+* credential rotation — 10 per 5 min
+
+The portal's existing web endpoints (sign-in, sign-up, password reset,
+MFA, etc.) retain their limits. All limits are per-process, not
+distributed/global — documented honestly.
+
+## Portal UI (Phase 12N)
+
+The portal web UI exposes developer-API surfaces via session-authenticated
+endpoints under `/api/v1/devapi/*`:
+
+* `GET /api/v1/devapi/devices` — list developer devices
+* `POST /api/v1/devapi/devices/{device_id}/revoke` — revoke a device
+* `GET /api/v1/devapi/credentials` — list scoped API credentials (metadata only)
+* `POST /api/v1/devapi/credentials/{credential_id}/revoke` — revoke a credential
+* `GET /api/v1/devapi/activity` — metadata-only API activity
+* `GET /api/v1/devapi/pairing` — active pending pairing codes
+
+Frontend pages: `Developer API`, `Devices`, `API activity`. These display
+metadata only — never secrets, tokens, or Authorization headers.

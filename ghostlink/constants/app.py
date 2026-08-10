@@ -9,6 +9,7 @@ APP_NAME: str = "GhostLink"
 APP_SLUG: str = "ghostlink"
 APP_VERSION: str = __version__
 APP_TAGLINE: str = "Private conversations. Zero compromise."
+APP_BRAND_BADGE: str = "Private conversations · Zero compromise"
 APP_DESCRIPTION: str = (
     "GhostLink is a terminal-only encrypted messenger designed for Termux on "
     "Android, with first-class support for desktop Linux."
@@ -26,8 +27,38 @@ RELEASE_LABEL: str = f"{RELEASE_PHASE} · {RELEASE_CODENAME}"
 MIN_PYTHON: tuple[int, int] = (3, 11)
 
 DEFAULT_THEME: str = "phantom"
+BUILTIN_THEMES: tuple[str, ...] = (
+    "phantom",
+    "obsidian",
+    "ember",
+    "emerald",
+    "arctic",
+    "aurora",
+    "mono",
+)
 DEFAULT_LANGUAGE: str = "en"
-SUPPORTED_LANGUAGES: dict[str, str] = {"en": "English"}
+SUPPORTED_LANGUAGES: dict[str, str] = {
+    "en": "English",
+    "hi": "Hindi",
+    "hinglish": "Hinglish",
+    "mr": "Marathi",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "pt": "Portuguese",
+    "ja": "Japanese",
+}
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English (en)",
+    "hi": "Hindi / हिन्दी (hi)",
+    "hinglish": "Hinglish (hinglish)",
+    "mr": "Marathi / मराठी (mr)",
+    "es": "Spanish / Español (es)",
+    "fr": "French / Français (fr)",
+    "de": "German / Deutsch (de)",
+    "pt": "Portuguese / Português (pt)",
+    "ja": "Japanese / 日本語 (ja)",
+}
 
 # ------------------------------------------------------------------- chat
 CHAT_HISTORY_MODES: frozenset[str] = frozenset({"disabled", "session", "encrypted"})

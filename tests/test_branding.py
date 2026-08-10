@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from ghostlink.assets.branding import (
     GHOST_EMBLEM,
     LOGO_LARGE,
@@ -72,3 +74,108 @@ class TestAdaptiveSelection:
         console = ConsoleManager(theme, record=True, width=120)
         console.print(BannerRenderer(console).hero())
         assert "Private conversations" in console.export_text()
+
+
+class TestStatusBadgesBranding:
+    def test_hero_badge_row_content(self, theme: ThemeSpec) -> None:
+        from ghostlink.constants.app import APP_VERSION
+        from ghostlink.ui.components.badges import BadgeTone, badge, badge_row
+
+        console = ConsoleManager(theme, record=True, width=120)
+        status = badge_row(
+            badge(f"v{APP_VERSION}", BadgeTone.ACCENT, theme=theme),
+            badge("Termux (Android)", BadgeTone.INFO, theme=theme),
+        )
+        console.print(status)
+        output = console.export_text()
+        assert f"v{APP_VERSION}" in output
+        assert "Termux (Android)" in output
+        assert "Phase 15" not in output
+        assert "Production Operations & Platform Maturity" not in output
+
+    def test_hero_badge_row_renders_on_standard_terminal_width(self, theme: ThemeSpec) -> None:
+        from ghostlink.constants.app import APP_VERSION
+        from ghostlink.ui.components.badges import BadgeTone, badge, badge_row
+
+        console = ConsoleManager(theme, record=True, width=80)
+        status = badge_row(
+            badge(f"v{APP_VERSION}", BadgeTone.ACCENT, theme=theme),
+            badge("Termux (Android)", BadgeTone.INFO, theme=theme),
+        )
+        console.print(status)
+        lines = [line.strip() for line in console.export_text().splitlines() if line.strip()]
+        assert len(lines) == 1
+        assert "◆ v" in lines[0]
+        assert "● Termux (Android)" in lines[0]
+        assert "Phase 15" not in lines[0]
+
+    def test_home_screen_contains_no_phase_15_text(
+        self, isolated_home: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from ghostlink.cli.arguments import parse_args
+        from ghostlink.constants.app import APP_VERSION
+        from ghostlink.core.bootstrap import build_application
+        from ghostlink.ui.menu import InteractiveMenu
+        from ghostlink.ui.screens.home import HomeScreen
+
+        application = build_application(parse_args([]))
+        recording = ConsoleManager(
+            application._context.console.theme,
+            record=True,
+            width=100,
+            force_terminal=False,
+        )
+        application._context.console = recording
+        monkeypatch.setattr(
+            InteractiveMenu,
+            "prompt",
+            lambda self, entries, *, default_key: "exit",
+        )
+
+        asyncio.run(HomeScreen(application._context).show())
+        output = recording.export_text()
+        assert f"v{APP_VERSION}" in output
+        assert "Phase 15" not in output
+        assert "Production Operations & Platform Maturity" not in output
+
+    def test_compact_header_contains_no_phase_15_text(self, theme: ThemeSpec) -> None:
+        console = ConsoleManager(theme, record=True, width=100)
+        BannerRenderer(console).compact_header()
+        console.print(BannerRenderer(console).compact_header())
+        output = console.export_text()
+        assert "GHOSTLINK" in output
+        assert "Phase 15" not in output
+        assert "Production Operations & Platform Maturity" not in output
+
+    def test_about_screen_contains_no_phase_15_text(
+        self, isolated_home: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from ghostlink.cli.arguments import parse_args
+        from ghostlink.constants.app import APP_VERSION
+        from ghostlink.core.bootstrap import build_application
+        from ghostlink.ui.screens.about import AboutScreen
+        from ghostlink.ui.screens.base import Screen
+
+        application = build_application(parse_args([]))
+        recording = ConsoleManager(
+            application._context.console.theme,
+            record=True,
+            width=100,
+            force_terminal=False,
+        )
+        application._context.console = recording
+
+        async def _instant_pause(self: Screen, prompt: str = "…") -> None:
+            return None
+
+        monkeypatch.setattr(Screen, "pause", _instant_pause)
+
+        asyncio.run(AboutScreen(application._context).show())
+        output = recording.export_text()
+        assert f"v{APP_VERSION}" in output
+        assert "Phase 15" not in output
+        assert "Production Operations & Platform Maturity" not in output

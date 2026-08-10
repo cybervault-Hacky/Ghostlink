@@ -98,5 +98,10 @@ packages = ["ghostlink"]
 exclude = "(tests|scripts)/"
 
 [[tool.mypy.overrides]]
-module = "simple_term_menu"
+module = [
+    "simple_term_menu",
+    "psycopg",
+    "psycopg.rows",
+    "psycopg_pool",
+]
 ignore_missing_imports = true

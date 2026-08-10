@@ -11,7 +11,9 @@ from ghostlink.ui.themes import ThemeEngine
 class TestThemeRegistry:
     def test_builtin_themes_present(self) -> None:
         names = ThemeEngine().names
-        assert {"phantom", "emerald", "ember", "mono"} <= set(names)
+        expected = {"phantom", "obsidian", "ember", "emerald", "arctic", "aurora", "mono"}
+        assert expected <= set(names)
+        assert len(names) >= 7
 
     def test_default_is_phantom(self) -> None:
         engine = ThemeEngine()

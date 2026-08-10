@@ -19,24 +19,38 @@ The config file is generated with explanatory comments on first launch.
 
 ## Keys
 
+### `[meta]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `config_version` | integer | `1` | Configuration schema version marker. |
+| `onboarding_completed` | boolean | `false` | First-run setup wizard completion flag. |
+
 ### `[ui]`
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `theme` | string | `"phantom"` | Color theme. Registered: `phantom`, `emerald`, `ember`, `mono`. |
-| `language` | string | `"en"` | Interface language. `en` is the supported language in Phase 1. |
+| `theme` | string | `"phantom"` | Color theme. Built-in: `phantom`, `obsidian`, `ember`, `emerald`, `arctic`, `aurora`, `mono`. |
+| `language` | string | `"en"` | Interface language (`en`, `hi`, `hinglish`, `mr`, `es`, `fr`, `de`, `pt`, `ja`). |
 
 ### `[notifications]`
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | boolean | `true` | Master switch for notification toasts (history is kept either way). |
+| `messages` | boolean | `true` | Toast alerts on new incoming chat messages. |
+| `room_activity` | boolean | `true` | Toast alerts on peer join/leave events. |
+| `invites` | boolean | `true` | Toast alerts on invite creation and redemptions. |
+| `sound` | boolean | `false` | Audible terminal bell on alert events where supported. |
+| `vibration` | boolean | `false` | Haptic vibration feedback on Termux/Android. |
 
 ### `[storage]`
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `data_dir` | string | `""` | Empty = platform default above. Absolute or `~`-relative path. |
+| `auto_clean_temp` | boolean | `true` | Automatically clean orphan temporary transfer chunks. |
+| `max_cache_mb` | integer | `512` | Upper bound for in-flight transfer chunk cache. |
 
 ### `[diagnostics]`
 
@@ -79,10 +93,12 @@ The config file is generated with explanatory comments on first launch.
 | `display_name` | string | `\"\"` | Pseudonym shown to your chat peer (≤ 24 printable chars; empty = per-run default). `--as NAME` overrides per run. |
 | `read_receipts` | boolean | `true` | Send `✓✓` read receipts when you read messages. |
 | `typing_indicators` | boolean | `true` | Send typing start/stop signals while composing. |
+| `presence` | boolean | `true` | Broadcast peer online presence status. |
 | `history_mode` | string | `\"disabled\"` | Message retention: `disabled` (nothing kept), `session` (memory only, wiped on exit), or `encrypted` (passphrase-locked file under `<data>/state/history/`). |
 | `timestamp_format` | string | `\"24h\"` | Message timestamps: `24h` → `[22:10]`, `12h` → `[10:10 PM]`. |
 | `notification_style` | string | `\"banner\"` | Notice rendering in chat: `banner`, `compact`, or `muted` (loud warnings only). |
 | `message_wrapping` | boolean | `true` | Wrap long message lines to the terminal width (narrow Termux windows stay readable). |
+| `cleanup_on_exit` | boolean | `false` | Automatically wipe session history and caches upon quitting. |
 
 **Encrypted history** derives a key from your passphrase (scrypt) and seals
 the history file with ChaCha20-Poly1305; writes are atomic with `0600`

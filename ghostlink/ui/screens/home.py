@@ -13,10 +13,11 @@ import asyncio
 from rich.align import Align
 from rich.text import Text
 
-from ghostlink.constants.app import APP_VERSION, RELEASE_LABEL
+from ghostlink.constants.app import APP_VERSION
 from ghostlink.constants.files import STATE_DIR_NAME
 from ghostlink.exceptions.base import GhostLinkError
 from ghostlink.exceptions.config import ConfigValidationError
+from ghostlink.i18n import t
 from ghostlink.models.room import is_valid_room_id, normalize_room_id
 from ghostlink.ui.banner import BannerRenderer
 from ghostlink.ui.components.badges import BadgeTone, badge, badge_row
@@ -26,40 +27,75 @@ from ghostlink.ui.dashboards import render_join_result, render_room_dashboard
 from ghostlink.ui.menu import InteractiveMenu, MenuEntry
 from ghostlink.ui.screens.about import AboutScreen
 from ghostlink.ui.screens.base import Screen, ScreenContext
+from ghostlink.ui.screens.help import HelpScreen
+from ghostlink.ui.screens.identity import IdentityScreen
+from ghostlink.ui.screens.security import SecurityDashboardScreen
 from ghostlink.ui.screens.settings import SettingsScreen
+from ghostlink.ui.screens.transfers import TransferDashboardScreen
 
-MENU_ENTRIES: tuple[MenuEntry, ...] = (
-    MenuEntry(
-        key="create-room",
-        label="Create Room",
-        description="Host an encrypted one-to-one chat",
-        icon="✚",
-    ),
-    MenuEntry(
-        key="join-room",
-        label="Join Room",
-        description="Enter a friend's encrypted chat",
-        icon="➤",
-    ),
-    MenuEntry(
-        key="settings",
-        label="Settings",
-        description="View configuration",
-        icon="⚙",
-    ),
-    MenuEntry(
-        key="about",
-        label="About",
-        description="Version and build information",
-        icon="◆",
-    ),
-    MenuEntry(
-        key="exit",
-        label="Exit",
-        description="Close GhostLink",
-        icon="✖",
-    ),
-)
+
+def get_menu_entries(lang: str = "en") -> tuple[MenuEntry, ...]:
+    """Build localized main menu entries."""
+
+    return (
+        MenuEntry(
+            key="create-room",
+            label=t("menu.create_room.label", lang),
+            description=t("menu.create_room.desc", lang),
+            icon="✚",
+        ),
+        MenuEntry(
+            key="join-room",
+            label=t("menu.join_room.label", lang),
+            description=t("menu.join_room.desc", lang),
+            icon="➤",
+        ),
+        MenuEntry(
+            key="transfers",
+            label="File Transfers",
+            description="Inspect transfer pipeline, speeds & downloads",
+            icon="📎",
+        ),
+        MenuEntry(
+            key="security",
+            label="Security",
+            description="Verified cryptographic posture & audit details",
+            icon="🛡",
+        ),
+        MenuEntry(
+            key="identity",
+            label="Identity",
+            description="Cryptographic fingerprint & display nickname",
+            icon="🔑",
+        ),
+        MenuEntry(
+            key="settings",
+            label=t("menu.settings.label", lang),
+            description=t("menu.settings.desc", lang),
+            icon="⚙",
+        ),
+        MenuEntry(
+            key="help",
+            label="Help & Shortcuts",
+            description="Interactive commands and keyboard reference",
+            icon="❓",
+        ),
+        MenuEntry(
+            key="about",
+            label=t("menu.about.label", lang),
+            description=t("menu.about.desc", lang),
+            icon="◆",
+        ),
+        MenuEntry(
+            key="exit",
+            label=t("menu.exit.label", lang),
+            description=t("menu.exit.desc", lang),
+            icon="✖",
+        ),
+    )
+
+
+MENU_ENTRIES: tuple[MenuEntry, ...] = get_menu_entries("en")
 
 
 class HomeScreen(Screen):
@@ -73,6 +109,7 @@ class HomeScreen(Screen):
     async def show(self) -> None:
         first_render = True
         while True:
+            lang = self.context.settings.ui.language
             self._render(hero=first_render)
             if first_render:
                 self._flush_bootstrap_notices()
@@ -85,7 +122,8 @@ class HomeScreen(Screen):
             # thread, so a direct synchronous call keeps the menu on that
             # thread while it blocks for input. Do NOT move this prompt into a
             # worker/executor thread — see ghostlink.ui.menu for the guard.
-            choice = self._menu.prompt(MENU_ENTRIES, default_key="exit")
+            entries = get_menu_entries(lang)
+            choice = self._menu.prompt(entries, default_key="exit")
             if choice == "exit":
                 return
             await self._dispatch(choice)
@@ -95,24 +133,29 @@ class HomeScreen(Screen):
     def _render(self, *, hero: bool) -> None:
         context = self.context
         console = context.console
+        lang = context.settings.ui.language
         console.clear()
         console.newline()
         if hero:
             status = badge_row(
                 badge(f"v{APP_VERSION}", BadgeTone.ACCENT, theme=context.theme),
                 badge(context.environment.platform_label, BadgeTone.INFO, theme=context.theme),
-                badge(RELEASE_LABEL, BadgeTone.MUTED, theme=context.theme),
             )
             console.print(self._banner.hero(status))
         else:
-            console.print(self._banner.compact_header(subtitle=RELEASE_LABEL))
+            console.print(self._banner.compact_header())
             console.rule(style="gl.border")
         if hero:
             # Creator credits sit subtly below the version/status badges and
             # above the navigation hint, only on the full startup screen.
             console.print(creator_credits())
         console.newline()
-        console.print(Align.center(Text(self._menu.interaction_hint, style="gl.muted")))
+        hint = (
+            t("menu.hint.keyboard", lang)
+            if self._menu.keyboard_driven
+            else t("menu.hint.numbered", lang)
+        )
+        console.print(Align.center(Text(hint, style="gl.muted")))
         console.newline()
 
     def _flush_bootstrap_notices(self) -> None:
@@ -131,6 +174,14 @@ class HomeScreen(Screen):
             await SettingsScreen(self.context).show()
         elif choice == "about":
             await AboutScreen(self.context).show()
+        elif choice == "identity":
+            await IdentityScreen(self.context).show()
+        elif choice == "security":
+            await SecurityDashboardScreen(self.context).show()
+        elif choice == "transfers":
+            await TransferDashboardScreen(self.context).show()
+        elif choice == "help":
+            await HelpScreen(self.context).show()
         elif choice == "create-room":
             await self._create_room_flow()
         elif choice == "join-room":

@@ -17,6 +17,7 @@ from typing import Any
 
 from ghostlink.assets.branding import load_default_config_text
 from ghostlink.config.loader import load_config_file, validate_sections
+from ghostlink.config.serializer import save_config_file
 from ghostlink.constants.files import (
     CONFIG_FILE_NAME,
     LOGS_DIR_NAME,
@@ -28,6 +29,7 @@ from ghostlink.models.settings import (
     ChatSettings,
     DiagnosticsSettings,
     InvitesSettings,
+    MetaSettings,
     NotificationSettings,
     RelaySettings,
     RoomsSettings,
@@ -138,6 +140,12 @@ class ConfigurationManager:
         self._settings = self._build_sections(sections)
         return self._settings
 
+    def save(self, settings: AppSettings) -> None:
+        """Atomically persist a validated settings instance to disk."""
+
+        save_config_file(self._config_path, settings)
+        self._settings = self._apply_overrides(settings)
+
     def ensure_directories(self) -> None:
         """Provision every directory GhostLink needs, up front."""
 
@@ -170,6 +178,7 @@ class ConfigurationManager:
             invites=InvitesSettings(**sections.get("invites", {})),
             chat=ChatSettings(**sections.get("chat", {})),
             transfer=TransferSettings(**sections.get("transfer", {})),
+            meta=MetaSettings(**sections.get("meta", {})),
         )
         return self._apply_overrides(settings)
 

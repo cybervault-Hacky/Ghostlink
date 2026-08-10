@@ -107,7 +107,7 @@ async def _instant_pause(self: Screen, prompt: str = "…") -> None:
 
 
 def _render_home(context: ScreenContext) -> None:
-    from ghostlink.constants.app import APP_VERSION, RELEASE_LABEL
+    from ghostlink.constants.app import APP_VERSION
 
     console = context.console
     banner = BannerRenderer(console)
@@ -115,7 +115,6 @@ def _render_home(context: ScreenContext) -> None:
     status = badge_row(
         badge(f"v{APP_VERSION}", BadgeTone.ACCENT, theme=context.theme),
         badge(context.environment.platform_label, BadgeTone.INFO, theme=context.theme),
-        badge(RELEASE_LABEL, BadgeTone.MUTED, theme=context.theme),
     )
     console.newline()
     console.print(banner.hero(status))

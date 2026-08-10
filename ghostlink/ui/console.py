@@ -66,6 +66,12 @@ class ConsoleManager:
     def no_color(self) -> bool:
         return self.console.no_color
 
+    def set_theme(self, theme: ThemeSpec) -> None:
+        """Switch the active color theme at runtime."""
+
+        self._theme = theme
+        self.console.push_theme(ThemeEngine.rich_theme(theme))
+
     # ------------------------------------------------------------- operations
 
     def print(self, *renderables: RenderableType, **kwargs: Any) -> None:

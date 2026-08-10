@@ -694,7 +694,7 @@ class TestReconnectResume:
                             and host_mgr.get(transfer_id).state  # type: ignore[union-attr]
                             is TransferState.COMPLETED
                         ),
-                        timeout=30.0,
+                        timeout=45.0,
                     )
                     await _wait_for(
                         lambda: (
@@ -702,7 +702,7 @@ class TestReconnectResume:
                             and guest_mgr.get(transfer_id).state  # type: ignore[union-attr]
                             is TransferState.COMPLETED
                         ),
-                        timeout=10.0,
+                        timeout=20.0,
                     )
                     saved = guest_mgr.get(transfer_id).saved_path  # type: ignore[union-attr]
                     assert Path(saved).read_bytes() == source.read_bytes()

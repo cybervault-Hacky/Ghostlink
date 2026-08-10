@@ -14,9 +14,9 @@ from ghostlink.constants.app import (
     BUILD_DATE,
     DEVELOPER,
     LICENSE_NAME,
-    RELEASE_LABEL,
     REPOSITORY_URL,
 )
+from ghostlink.i18n import t
 from ghostlink.ui.components.panels import section_panel
 from ghostlink.ui.components.tables import kv_grid
 from ghostlink.ui.screens.base import Screen
@@ -30,19 +30,20 @@ class AboutScreen(Screen):
         console = context.console
         environment = context.environment
         theme = context.theme
+        lang = context.settings.ui.language
 
         emblem = Text("\n".join(GHOST_EMBLEM), style=f"bold {theme.accent}")
 
         facts = kv_grid(
             [
-                ("Version", Text(f"v{APP_VERSION} — {RELEASE_LABEL}")),
-                ("Developer", Text(DEVELOPER)),
+                (t("about.version", lang), Text(f"v{APP_VERSION}")),
+                (t("about.developer", lang), Text(DEVELOPER)),
                 (
-                    "Platform",
+                    t("about.platform", lang),
                     Text(f"{environment.platform_label} · Python {environment.python_version}"),
                 ),
-                ("License", Text(LICENSE_NAME)),
-                ("Build Date", Text(BUILD_DATE)),
+                (t("about.license", lang), Text(LICENSE_NAME)),
+                (t("about.build_date", lang), Text(BUILD_DATE)),
             ]
         )
 
@@ -64,5 +65,5 @@ class AboutScreen(Screen):
 
         console.clear()
         console.newline()
-        console.print(section_panel("About", body))
+        console.print(section_panel(t("about.title", lang), body))
         await self.pause()

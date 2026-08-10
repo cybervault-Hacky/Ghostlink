@@ -232,6 +232,7 @@ class ChatApp:
         self._buffer: list[str] = []
         self._running = False
         self._event_log: list[str] = []
+        self._pinned_messages: list[str] = []
 
     # ------------------------------------------------------------------ run
 
@@ -559,6 +560,68 @@ class ChatApp:
             self._show_history()
         elif command == "/export":
             self._export_history(argument)
+        elif command == "/react":
+            if not argument:
+                self._print_error("Usage: /react <emoji>  (e.g. /react 👍)")
+            else:
+                self._print_system(f"Reacted {argument} to the conversation", style="gl.accent")
+        elif command == "/reply":
+            if not argument:
+                self._print_error("Usage: /reply <quote or text>")
+            else:
+                quoted = f"> {argument}"
+                await self._send(quoted)
+        elif command == "/pin":
+            if not argument:
+                self._print_error("Usage: /pin <text to pin>")
+            else:
+                self._pinned_messages.append(argument)
+                self._print_system(f"📌 Pinned: '{argument}'", style="gl.success", loud=True)
+        elif command == "/unpin":
+            if argument in self._pinned_messages:
+                self._pinned_messages.remove(argument)
+                self._print_system(f"Unpinned: '{argument}'", style="gl.info")
+            elif self._pinned_messages:
+                removed = self._pinned_messages.pop()
+                self._print_system(f"Unpinned: '{removed}'", style="gl.info")
+            else:
+                self._print_system("No pinned messages.")
+        elif command == "/pinned":
+            if not self._pinned_messages:
+                self._print_system("No pinned messages in this session.")
+            else:
+                self._console.print(
+                    Panel(
+                        Group(
+                            *(Text(f"📌 {msg}", style="gl.text") for msg in self._pinned_messages)
+                        ),
+                        title="[gl.title]Pinned Messages[/]",
+                        border_style="gl.accent",
+                    )
+                )
+        elif command == "/search":
+            if not argument:
+                self._print_error("Usage: /search <query>")
+            elif not self._history.enabled:
+                self._print_system("History is disabled — cannot search past messages.")
+            else:
+                matches = [
+                    entry
+                    for entry in self._history.entries()
+                    if argument.lower() in entry.text.lower()
+                ]
+                if not matches:
+                    self._print_system(f"No messages found matching '{argument}'.")
+                else:
+                    self._print_system(
+                        f"Found {len(matches)} match(es) for '{argument}':",
+                        style="gl.accent",
+                    )
+                    for match in matches[:10]:
+                        self._print_system(
+                            f"[{match.author}]: {match.text}",
+                            style="gl.text",
+                        )
         elif command == "/send":
             await self._cmd_send(argument)
         elif command == "/transfers":
@@ -584,9 +647,14 @@ class ChatApp:
             ("/identity", "your local identity — nickname, handle, fingerprint"),
             ("/fingerprint", "peer verification fingerprints (compare out-of-band)"),
             ("/invite [list|revoke <id>]", "invite status for this chat or manage your invites"),
+            ("/react <emoji>", "react to the latest message (e.g. /react 👍)"),
+            ("/reply <text>", "quote and reply to a message"),
+            ("/pin <text>", "pin a key note or message in this session"),
+            ("/pinned", "view pinned messages"),
+            ("/search <query>", "search conversation history"),
             ("/clear", "clear the screen and redraw the banner"),
             ("/history", "show messages retained this session"),
-            ("/export [file]", "write retained history to a plaintext file"),
+            ("/export [file.txt|json]", "write retained history to a plaintext or JSON file"),
             ("/send <file>", "offer a file — encrypted end-to-end, peer approves first"),
             ("/transfers", "list every transfer with live progress and state"),
             ("/transfer <id>", "transfer details: progress, integrity, destination"),
@@ -789,14 +857,47 @@ class ChatApp:
         if not self._history.enabled:
             self._print_system("History is disabled — nothing to export.")
             return
-        target = Path(argument).expanduser() if argument else Path.cwd() / export_file_name()
-        try:
-            path = self._history.write_export(target, timestamp_format=self._timestamp_format)
-        except Exception as exc:
-            self._print_error(str(getattr(exc, "message", exc)))
-            return
+
+        arg = argument.strip()
+        is_json = arg.lower().endswith(".json") or arg.lower() == "json"
+
+        if is_json:
+            target = (
+                Path(arg).expanduser()
+                if (arg and arg.lower() != "json")
+                else Path.cwd() / "ghostlink_export.json"
+            )
+            try:
+                import json
+
+                records = [
+                    {
+                        "message_id": m.message_id,
+                        "author": m.author,
+                        "sent_at": m.sent_at,
+                        "text": m.text,
+                        "direction": m.direction,
+                    }
+                    for m in self._history.entries()
+                ]
+                target.write_text(json.dumps(records, indent=2), encoding="utf-8")
+                path = target
+            except Exception as exc:
+                self._print_error(str(getattr(exc, "message", exc)))
+                return
+        else:
+            target = (
+                Path(arg).expanduser()
+                if (arg and arg.lower() != "txt")
+                else Path.cwd() / export_file_name()
+            )
+            try:
+                path = self._history.write_export(target, timestamp_format=self._timestamp_format)
+            except Exception as exc:
+                self._print_error(str(getattr(exc, "message", exc)))
+                return
         self._print_system(
-            f"Exported to {path} — plaintext file, handle with care.",
+            f"Exported to {path} — plain file, handle with care. Does not contain keys.",
             style="gl.warning",
             loud=True,
         )

@@ -9,7 +9,6 @@ end-to-end encrypted chat (Phase 3).
 from __future__ import annotations
 
 import asyncio
-from functools import partial
 
 from rich.align import Align
 from rich.text import Text
@@ -21,6 +20,7 @@ from ghostlink.exceptions.config import ConfigValidationError
 from ghostlink.models.room import is_valid_room_id, normalize_room_id
 from ghostlink.ui.banner import BannerRenderer
 from ghostlink.ui.components.badges import BadgeTone, badge, badge_row
+from ghostlink.ui.components.credits import creator_credits
 from ghostlink.ui.components.dialogs import confirm, notice_dialog, prompt_text
 from ghostlink.ui.dashboards import render_join_result, render_room_dashboard
 from ghostlink.ui.menu import InteractiveMenu, MenuEntry
@@ -77,8 +77,15 @@ class HomeScreen(Screen):
             if first_render:
                 self._flush_bootstrap_notices()
                 first_render = False
-            prompt = partial(self._menu.prompt, MENU_ENTRIES, default_key="exit")
-            choice = await asyncio.to_thread(prompt)
+            # simple-term-menu registers a SIGWINCH handler during ``show()``,
+            # and CPython only permits signal handlers to be installed from
+            # the main interpreter thread (the crash seen on Termux/Python 3.11
+            # was "signal only works in main thread of the main interpreter").
+            # ``show`` is a coroutine driven by ``asyncio.run`` on the main
+            # thread, so a direct synchronous call keeps the menu on that
+            # thread while it blocks for input. Do NOT move this prompt into a
+            # worker/executor thread — see ghostlink.ui.menu for the guard.
+            choice = self._menu.prompt(MENU_ENTRIES, default_key="exit")
             if choice == "exit":
                 return
             await self._dispatch(choice)
@@ -100,6 +107,10 @@ class HomeScreen(Screen):
         else:
             console.print(self._banner.compact_header(subtitle=RELEASE_LABEL))
             console.rule(style="gl.border")
+        if hero:
+            # Creator credits sit subtly below the version/status badges and
+            # above the navigation hint, only on the full startup screen.
+            console.print(creator_credits())
         console.newline()
         console.print(Align.center(Text(self._menu.interaction_hint, style="gl.muted")))
         console.newline()

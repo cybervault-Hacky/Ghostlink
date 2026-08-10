@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
 from dataclasses import dataclass
 
 from rich.table import Table
@@ -77,6 +78,22 @@ class InteractiveMenu:
         *,
         default_key: str,
     ) -> str:
+        # simple-term-menu calls signal.signal(SIGWINCH, ...) during ``show``.
+        # CPython only allows signal handlers to be registered from the main
+        # thread of the main interpreter; doing so from a worker thread raises
+        # ``ValueError: signal only works in main thread of the main
+        # interpreter`` (the crash reported on Termux/Python 3.11 when the menu
+        # was driven through ``asyncio.to_thread``). Fail fast with a clear
+        # developer-facing error instead of letting the third-party library
+        # surface the cryptic signal error at runtime.
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError(
+                "InteractiveMenu keyboard prompt must run on the main thread; "
+                "simple-term-menu installs signal handlers and cannot run in a "
+                "worker thread. Call prompt() synchronously instead of wrapping "
+                "it in asyncio.to_thread/run_in_executor."
+            )
+
         from simple_term_menu import TerminalMenu
 
         titles = [f"{entry.icon}   {entry.label}" for entry in entries]

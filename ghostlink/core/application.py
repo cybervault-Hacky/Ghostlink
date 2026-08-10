@@ -10,6 +10,7 @@ without restructuring the entrypoint.
 from __future__ import annotations
 
 from rich.align import Align
+from rich.console import Group
 from rich.text import Text
 
 from ghostlink.core.logging import get_logger
@@ -17,6 +18,7 @@ from ghostlink.exceptions.base import ExitCode
 from ghostlink.models.session import SessionInfo
 from ghostlink.services.session import SessionService
 from ghostlink.ui.components.badges import BadgeTone
+from ghostlink.ui.components.credits import creator_credits
 from ghostlink.ui.components.panels import app_panel
 from ghostlink.ui.screens.base import ScreenContext
 from ghostlink.ui.screens.home import HomeScreen
@@ -78,4 +80,6 @@ class Application:
                 )
             )
         )
+        # Small creator-credit footer in the final completion/shutdown output.
+        console.print(Group(Text(""), creator_credits()))
         console.newline()

@@ -143,7 +143,7 @@ class TestCreditsOnHomeScreen:
 
         output = application._context.console.export_text()
         assert CREATOR_NAME in output
-        assert "Settings" in output
+        assert "SETTINGS" in output
 
 
 class TestCreditsOnCompletion:

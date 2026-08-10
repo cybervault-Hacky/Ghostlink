@@ -106,7 +106,7 @@ class TestStatusBadgesBranding:
         lines = [line.strip() for line in console.export_text().splitlines() if line.strip()]
         assert len(lines) == 1
         assert "◆ v" in lines[0]
-        assert "● Termux (Android)" in lines[0]
+        assert "• Termux (Android)" in lines[0]
         assert "Phase 15" not in lines[0]
 
     def test_home_screen_contains_no_phase_15_text(

@@ -1,4 +1,4 @@
-"""Status badges — compact labelled chips like ``[ ✔ ENABLED ]``."""
+"""Status badges — compact labelled chips like ``[ ✓ ENABLED ]``."""
 
 from __future__ import annotations
 
@@ -7,6 +7,14 @@ from enum import Enum
 from rich.text import Text
 
 from ghostlink.models.theme import ThemeSpec
+from ghostlink.ui.components.layout import (
+    GLYPH_ACCENT,
+    GLYPH_ERROR,
+    GLYPH_INFO,
+    GLYPH_MUTED,
+    GLYPH_SUCCESS,
+    GLYPH_WARNING,
+)
 
 
 class BadgeTone(Enum):
@@ -21,12 +29,12 @@ class BadgeTone(Enum):
 
 
 _TONE_ICONS: dict[BadgeTone, str] = {
-    BadgeTone.ACCENT: "◆",
-    BadgeTone.SUCCESS: "✔",
-    BadgeTone.WARNING: "▲",
-    BadgeTone.ERROR: "✖",
-    BadgeTone.INFO: "●",
-    BadgeTone.MUTED: "○",
+    BadgeTone.ACCENT: GLYPH_ACCENT,
+    BadgeTone.SUCCESS: GLYPH_SUCCESS,
+    BadgeTone.WARNING: GLYPH_WARNING,
+    BadgeTone.ERROR: GLYPH_ERROR,
+    BadgeTone.INFO: GLYPH_INFO,
+    BadgeTone.MUTED: GLYPH_MUTED,
 }
 
 

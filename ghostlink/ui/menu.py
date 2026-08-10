@@ -4,6 +4,12 @@ On a real terminal the menu is keyboard-driven (arrow keys / vim keys via the
 optional ``simple-term-menu`` dependency). When input is piped or the
 dependency is unavailable, it degrades to a numbered prompt with identical
 semantics — scripts and CI can drive the application end-to-end either way.
+
+Design language: entries carry a plain text label, an optional current
+*value* (shown in the accent-adjacent highlight style), and an optional muted
+description. Selection is shown through the cursor (``›``), indentation, and
+highlighting — never through emoji. Blank *separator* entries create calm
+spacing between option groups; they are never selectable and never numbered.
 """
 
 from __future__ import annotations
@@ -22,15 +28,30 @@ from ghostlink.ui.console import ConsoleManager
 _KEYBOARD_CURSOR_HINT = "↑/↓ or j/k to move · Enter to select · q to quit"
 _NUMBERED_CURSOR_HINT = "Type a number and press Enter"
 
+#: Column width used to align current values in keyboard menus.
+_VALUE_PAD = 26
+
 
 @dataclass(frozen=True, slots=True)
 class MenuEntry:
-    """One selectable menu option."""
+    """One selectable menu option (or a non-selectable separator)."""
 
     key: str
     label: str
-    description: str
-    icon: str
+    description: str = ""
+    icon: str = ""
+    value: str = ""
+    separator: bool = False
+
+    @classmethod
+    def spacer(cls) -> MenuEntry:
+        """A blank row creating visual separation between option groups.
+
+        Separators are skipped by the keyboard cursor and carry no number in
+        the numbered fallback. They can never be selected.
+        """
+
+        return cls(key="", label="", separator=True)
 
 
 class InteractiveMenu:
@@ -64,13 +85,19 @@ class InteractiveMenu:
     ) -> str:
         """Return the key of the chosen entry, or ``default_key`` on quit."""
 
-        if not entries:
-            raise ValueError("prompt() requires at least one menu entry")
+        selectable = [entry for entry in entries if not entry.separator]
+        if not selectable:
+            raise ValueError("prompt() requires at least one selectable menu entry")
         if self.keyboard_driven:
             return self._prompt_keyboard(tuple(entries), default_key=default_key)
         return self._prompt_numbered(tuple(entries), default_key=default_key)
 
     # ---------------------------------------------------------------- keyboard
+
+    def _title_for(self, entry: MenuEntry) -> str:
+        if entry.value:
+            return f"{entry.label:<{_VALUE_PAD}} {entry.value}"
+        return entry.label
 
     def _prompt_keyboard(
         self,
@@ -96,20 +123,24 @@ class InteractiveMenu:
 
         from simple_term_menu import TerminalMenu
 
-        titles = [f"{entry.icon}   {entry.label}" for entry in entries]
+        titles = ["" if entry.separator else self._title_for(entry) for entry in entries]
         menu = TerminalMenu(
             titles,
-            menu_cursor="❯ ",
+            menu_cursor="› ",
             menu_cursor_style=("fg_cyan", "bold"),
             menu_highlight_style=("fg_cyan", "bold"),
             cycle_cursor=True,
             clear_screen=False,
             clear_menu_on_exit=False,
             show_search_hint=False,
+            skip_empty_entries=True,
         )
         chosen = menu.show()
         if chosen is None or not isinstance(chosen, int):
             self._logger.debug("menu dismissed; selecting default '%s'", default_key)
+            return default_key
+        if chosen >= len(entries) or entries[chosen].separator:
+            self._logger.debug("menu returned separator; selecting default '%s'", default_key)
             return default_key
         return entries[chosen].key
 
@@ -117,13 +148,19 @@ class InteractiveMenu:
 
     def render_legend(self, entries: tuple[MenuEntry, ...]) -> None:
         """Render the entries table (also useful for embedding in layouts)."""
+
         table = Table(box=None, show_header=False, show_edge=False, pad_edge=False)
         table.add_column(no_wrap=True, style="gl.accent", justify="right")
-        table.add_column(no_wrap=True)
-        table.add_column(no_wrap=True, style="gl.title")
+        table.add_column(style="gl.title", no_wrap=True)
+        table.add_column(style="gl.highlight", no_wrap=True)
         table.add_column(style="gl.muted")
-        for index, entry in enumerate(entries, start=1):
-            table.add_row(str(index), entry.icon, entry.label, entry.description)
+        number = 0
+        for entry in entries:
+            if entry.separator:
+                table.add_row("", "", "", "")
+                continue
+            number += 1
+            table.add_row(str(number), entry.label, entry.value, entry.description)
         self._console.print(table)
 
     def _prompt_numbered(
@@ -134,9 +171,10 @@ class InteractiveMenu:
     ) -> str:
         self.render_legend(entries)
         self._console.newline()
+        selectable = [entry for entry in entries if not entry.separator]
         while True:
             try:
-                raw = self._console.console.input(Text.assemble(("  ❯ ", "gl.highlight"))).strip()
+                raw = self._console.console.input(Text.assemble(("  › ", "gl.highlight"))).strip()
             except EOFError:
                 self._logger.debug("stdin closed; selecting default '%s'", default_key)
                 return default_key
@@ -144,8 +182,8 @@ class InteractiveMenu:
                 return default_key
             if raw.isdigit():
                 index = int(raw)
-                if 1 <= index <= len(entries):
-                    return entries[index - 1].key
+                if 1 <= index <= len(selectable):
+                    return selectable[index - 1].key
             self._console.print(
-                Text(f"  Enter a number between 1 and {len(entries)}.", style="gl.warning")
+                Text(f"  Enter a number between 1 and {len(selectable)}.", style="gl.warning")
             )

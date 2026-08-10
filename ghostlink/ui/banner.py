@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from rich.align import Align
 from rich.console import Group
+from rich.rule import Rule
 from rich.text import Text
 
 from ghostlink.assets.branding import (
@@ -74,14 +75,14 @@ class BannerRenderer:
             return self._gradient_text((art,))
         return self._gradient_text(art)
 
-    def tagline(self) -> Text:
-        return Text(APP_TAGLINE, style="gl.muted", justify="center")
+    def tagline(self, text: str | None = None) -> Text:
+        return Text(APP_TAGLINE if text is None else text, style="gl.muted", justify="center")
 
-    def hero(self, *extras: Text) -> Group:
+    def hero(self, *extras: Text, tagline: str | None = None) -> Group:
         """The full centered hero block: wordmark, tagline, and optional rows."""
 
         centered_logo = Align.center(self.wordmark())
-        parts: list[object] = [centered_logo, "", Align.center(self.tagline())]
+        parts: list[object] = [centered_logo, "", Align.center(self.tagline(tagline))]
         for extra in extras:
             parts.append("")
             parts.append(Align.center(extra))
@@ -96,4 +97,4 @@ class BannerRenderer:
         header.append_text(wordmark)
         if subtitle:
             header.append(f"  ·  {subtitle}", style="gl.muted")
-        return Group(header, Text("", end=""))
+        return Group(header, Rule(style="gl.border"))

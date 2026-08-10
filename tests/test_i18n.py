@@ -84,18 +84,20 @@ class TestI18nCatalog:
     @pytest.mark.parametrize("lang", sorted(REQUIRED_LANGUAGES))
     def test_get_menu_entries_localized(self, lang: str) -> None:
         entries = get_menu_entries(lang)
-        assert len(entries) == 9
-        keys = [entry.key for entry in entries]
+        selectable = [entry for entry in entries if not entry.separator]
+        keys = [entry.key for entry in selectable]
         assert keys == [
             "create-room",
             "join-room",
+            "rooms",
             "transfers",
-            "security",
             "identity",
+            "security",
             "settings",
+            "storage",
             "help",
             "about",
             "exit",
         ]
-        assert all(entry.label.strip() for entry in entries)
-        assert all(entry.description.strip() for entry in entries)
+        assert all(entry.label.strip() for entry in selectable)
+        assert all(entry.description.strip() for entry in selectable)

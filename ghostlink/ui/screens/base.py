@@ -2,8 +2,10 @@
 
 Every screen receives a :class:`ScreenContext` — the typed bundle of runtime
 services it may use — and implements the async :meth:`Screen.show` contract.
-Async screens keep Phase 2 free to await transports directly inside a screen
-without restructuring the UI.
+
+Screens share one visual language through :meth:`Screen.header`, the Back
+helpers on :class:`~ghostlink.ui.menu.InteractiveMenu` and the primitives in
+:mod:`ghostlink.ui.components.layout`, so no screen invents its own chrome.
 """
 
 from __future__ import annotations
@@ -13,13 +15,16 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ghostlink.i18n import t
 from ghostlink.models.environment import EnvironmentInfo
 from ghostlink.models.settings import AppSettings
 from ghostlink.models.theme import ThemeSpec
 from ghostlink.services.rooms import RoomService
 from ghostlink.ui.components.dialogs import wait_for_enter
+from ghostlink.ui.components.layout import back_label, page_header
 from ghostlink.ui.components.notifications import NotificationCenter, NotificationLevel
 from ghostlink.ui.console import ConsoleManager
+from ghostlink.ui.menu import MenuEntry
 
 DeferredNotice = tuple[NotificationLevel, str]
 
@@ -59,7 +64,29 @@ class Screen(ABC):
     async def show(self) -> None:
         """Render the screen and run its interaction until it is dismissed."""
 
-    async def pause(self, prompt: str = "Press Enter to return…") -> None:
+    # ------------------------------------------------------------- chrome
+
+    def header(self, title: str, subtitle: str | None = None) -> None:
+        """Clear and print the standard screen header (title/subtitle/rule)."""
+
+        console = self.context.console
+        console.clear()
+        console.newline()
+        console.print(page_header(title, subtitle))
+        console.newline()
+
+    def back_menu_entry(self, description: str = "") -> MenuEntry:
+        """The one Back affordance — same label on every screen."""
+
+        lang = self.context.settings.ui.language
+        return MenuEntry(
+            key="back", label=back_label(t("action.back", lang)), description=description
+        )
+
+    async def pause(self, prompt: str | None = None) -> None:
         """Wait for acknowledgement without blocking the event loop."""
 
-        await asyncio.to_thread(wait_for_enter, self.context.console.console)
+        if prompt is None:
+            lang = self.context.settings.ui.language
+            prompt = t("action.return", lang)
+        await asyncio.to_thread(wait_for_enter, self.context.console.console, prompt=prompt)

@@ -1,9 +1,10 @@
 """Home screen — the primary navigation menu.
 
-Presents the five destinations: Create Room, Join Room, Settings, About, and
-Exit. Room actions are live: Create hosts a room, Join validates a room
-identifier — and when a relay is configured, both drop straight into the
-end-to-end encrypted chat (Phase 3).
+A calm, focused launch point: the GhostLink wordmark, one status line, the
+creator credits, and a single grouped menu. Start flows (host/join) drop into
+the end-to-end encrypted chat when a relay is configured; every other entry
+opens exactly one owned screen. Back from any destination returns here — the
+menu itself is the base of the navigation stack, never a duplicate of itself.
 """
 
 from __future__ import annotations
@@ -29,68 +30,77 @@ from ghostlink.ui.screens.about import AboutScreen
 from ghostlink.ui.screens.base import Screen, ScreenContext
 from ghostlink.ui.screens.help import HelpScreen
 from ghostlink.ui.screens.identity import IdentityScreen
+from ghostlink.ui.screens.rooms import RoomManagementScreen
 from ghostlink.ui.screens.security import SecurityDashboardScreen
 from ghostlink.ui.screens.settings import SettingsScreen
+from ghostlink.ui.screens.storage import StorageManagerScreen
 from ghostlink.ui.screens.transfers import TransferDashboardScreen
+
+HOME_TAGLINE = "Encrypted communication for your terminal"
 
 
 def get_menu_entries(lang: str = "en") -> tuple[MenuEntry, ...]:
-    """Build localized main menu entries."""
+    """Build the localized main menu — one entry per destination, grouped."""
 
     return (
         MenuEntry(
             key="create-room",
             label=t("menu.create_room.label", lang),
             description=t("menu.create_room.desc", lang),
-            icon="✚",
         ),
         MenuEntry(
             key="join-room",
             label=t("menu.join_room.label", lang),
             description=t("menu.join_room.desc", lang),
-            icon="➤",
+        ),
+        MenuEntry.spacer(),
+        MenuEntry(
+            key="rooms",
+            label=t("menu.rooms.label", lang),
+            description=t("menu.rooms.desc", lang),
         ),
         MenuEntry(
             key="transfers",
-            label="File Transfers",
-            description="Inspect transfer pipeline, speeds & downloads",
-            icon="📎",
+            label=t("menu.transfers.label", lang),
+            description=t("menu.transfers.desc", lang),
+        ),
+        MenuEntry.spacer(),
+        MenuEntry(
+            key="identity",
+            label=t("menu.identity.label", lang),
+            description=t("menu.identity.desc", lang),
         ),
         MenuEntry(
             key="security",
-            label="Security",
-            description="Verified cryptographic posture & audit details",
-            icon="🛡",
+            label=t("menu.security.label", lang),
+            description=t("menu.security.desc", lang),
         ),
-        MenuEntry(
-            key="identity",
-            label="Identity",
-            description="Cryptographic fingerprint & display nickname",
-            icon="🔑",
-        ),
+        MenuEntry.spacer(),
         MenuEntry(
             key="settings",
             label=t("menu.settings.label", lang),
             description=t("menu.settings.desc", lang),
-            icon="⚙",
+        ),
+        MenuEntry(
+            key="storage",
+            label=t("menu.storage.label", lang),
+            description=t("menu.storage.desc", lang),
         ),
         MenuEntry(
             key="help",
-            label="Help & Shortcuts",
-            description="Interactive commands and keyboard reference",
-            icon="❓",
+            label=t("menu.help.label", lang),
+            description=t("menu.help.desc", lang),
         ),
         MenuEntry(
             key="about",
             label=t("menu.about.label", lang),
             description=t("menu.about.desc", lang),
-            icon="◆",
         ),
+        MenuEntry.spacer(),
         MenuEntry(
             key="exit",
             label=t("menu.exit.label", lang),
             description=t("menu.exit.desc", lang),
-            icon="✖",
         ),
     )
 
@@ -141,14 +151,12 @@ class HomeScreen(Screen):
                 badge(f"v{APP_VERSION}", BadgeTone.ACCENT, theme=context.theme),
                 badge(context.environment.platform_label, BadgeTone.INFO, theme=context.theme),
             )
-            console.print(self._banner.hero(status))
-        else:
-            console.print(self._banner.compact_header())
-            console.rule(style="gl.border")
-        if hero:
-            # Creator credits sit subtly below the version/status badges and
-            # above the navigation hint, only on the full startup screen.
+            console.print(self._banner.hero(status, tagline=HOME_TAGLINE))
+            # Creator credits sit subtly below the status line, only on the
+            # full startup screen.
             console.print(creator_credits())
+        else:
+            console.print(self._banner.compact_header(subtitle=HOME_TAGLINE))
         console.newline()
         hint = (
             t("menu.hint.keyboard", lang)
@@ -180,6 +188,10 @@ class HomeScreen(Screen):
             await SecurityDashboardScreen(self.context).show()
         elif choice == "transfers":
             await TransferDashboardScreen(self.context).show()
+        elif choice == "rooms":
+            await RoomManagementScreen(self.context).show()
+        elif choice == "storage":
+            await StorageManagerScreen(self.context).show()
         elif choice == "help":
             await HelpScreen(self.context).show()
         elif choice == "create-room":
@@ -211,7 +223,7 @@ class HomeScreen(Screen):
             await self.pause()
             return
         if not await self._confirm_chat(
-            "Share the room ID, then press Enter — the chat opens in this screen."
+            "Share the room ID, then continue — the chat opens in this screen."
         ):
             return
         await self._enter_chat(role="host", channel=room.room_id, relay_url=relay_url)

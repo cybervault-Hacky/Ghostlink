@@ -258,7 +258,7 @@ class ChatApp:
             if self._transfers is not None:
                 self._transfers.remove_listener(self._on_transfer_event)
             self._console.newline()
-            self._print_system("Session closed — keys wiped from memory. Stay private. 👻")
+            self._print_system("Session closed — keys wiped from memory.")
         return int(ExitCode.OK)
 
     # ------------------------------------------------------------ input path
@@ -314,7 +314,7 @@ class ChatApp:
             self._print_system(event.detail, style="gl.info")
         elif kind is ChatEventKind.CONNECTION:
             if "lost" in event.detail or "Disconnected" in event.detail:
-                self._print_system(f"⚠ {event.detail}", style="gl.warning", loud=True)
+                self._print_system(f"! {event.detail}", style="gl.warning", loud=True)
             elif "closed" in event.detail:
                 self._print_system(event.detail, style="gl.warning", loud=True)
             else:
@@ -322,7 +322,7 @@ class ChatApp:
         elif kind is ChatEventKind.NOTICE:
             severity_error = "integrity" in event.detail or "handshake" in event.detail.lower()
             self._print_system(
-                f"⚠ {event.detail}" if severity_error else event.detail,
+                f"! {event.detail}" if severity_error else event.detail,
                 style="gl.error" if severity_error else "gl.muted",
                 loud=severity_error,
             )
@@ -390,7 +390,7 @@ class ChatApp:
             self._speed_meters.pop(snapshot.transfer_id, None)
             self._print_system(f"✓ Saved to: {event.detail}", style="gl.success", loud=True)
         elif kind is TransferEventKind.NOTICE:
-            self._print_system(f"⚠ {event.detail}", style="gl.warning", loud=True)
+            self._print_system(f"! {event.detail}", style="gl.warning", loud=True)
 
     def _print_offer(self, snapshot: TransferSnapshot) -> None:
         grid = Table.grid(padding=(0, 2))
@@ -403,7 +403,7 @@ class ChatApp:
         self._console.print(
             Panel(
                 grid,
-                title="[gl.title]📎 Incoming File[/]",
+                title="[gl.title]Incoming File[/]",
                 box=box.ROUNDED,
                 border_style="gl.accent",
                 padding=(0, 1),
@@ -426,13 +426,13 @@ class ChatApp:
         state = snapshot.state
         summary = detail or state_label(state)
         if state is TransferState.COMPLETED:
-            self._print_system(f"📎 {summary}", style="gl.success", loud=True)
+            self._print_system(f"• {summary}", style="gl.success", loud=True)
         elif state in (TransferState.FAILED, TransferState.CANCELLED, TransferState.EXPIRED):
-            self._print_system(f"📎 {snapshot.filename} — {summary}", style="gl.error", loud=True)
+            self._print_system(f"• {snapshot.filename} — {summary}", style="gl.error", loud=True)
         elif state is TransferState.REJECTED:
-            self._print_system(f"📎 {snapshot.filename} — {summary}", style="gl.warning", loud=True)
+            self._print_system(f"• {snapshot.filename} — {summary}", style="gl.warning", loud=True)
         else:
-            self._print_system(f"📎 {snapshot.filename} — {summary}")
+            self._print_system(f"• {snapshot.filename} — {summary}")
 
     async def _announce_ready(self) -> None:
         """Measure latency once the session is live, then show the banner."""
@@ -449,7 +449,7 @@ class ChatApp:
         if fingerprint:
             self._console.print(
                 Text(
-                    f"  🔒 Safety code  {fingerprint}  — compare it out-of-band with "
+                    f"  Safety code  {fingerprint}  — compare it out-of-band with "
                     f"{self._session.peer_name}.",
                     style="gl.muted",
                 )
@@ -471,9 +471,9 @@ class ChatApp:
         grid.add_row("You:", session.display_name, "Peer:", session.peer_name)
         panel = Panel(
             grid,
-            title="[gl.title]⚡ GhostLink Secure Session[/]",
+            title="[gl.title]GhostLink Secure Session[/]",
             subtitle="[gl.muted]/help lists commands · /exit leaves[/]",
-            box=box.DOUBLE,
+            box=box.ROUNDED,
             border_style="gl.accent",
             padding=(0, 2),
             expand=True,
@@ -507,7 +507,7 @@ class ChatApp:
         style = self._notification_style
         if message.status is MessageStatus.FAILED:
             reason = f" — {message.error}" if message.error else ""
-            self._console.print(Text(f"  ✗ delivery failed{reason}", style="gl.error"))
+            self._console.print(Text(f"  ✕ delivery failed{reason}", style="gl.error"))
             return
         if style == "muted":
             return
@@ -532,7 +532,7 @@ class ChatApp:
         self._console.print(Text(f"── {text}", style=style))
 
     def _print_error(self, text: str) -> None:
-        self._console.print(Text(f"✗ {text}", style="gl.error"))
+        self._console.print(Text(f"✕ {text}", style="gl.error"))
 
     # --------------------------------------------------------------- commands
 
@@ -576,7 +576,7 @@ class ChatApp:
                 self._print_error("Usage: /pin <text to pin>")
             else:
                 self._pinned_messages.append(argument)
-                self._print_system(f"📌 Pinned: '{argument}'", style="gl.success", loud=True)
+                self._print_system(f"Pinned: '{argument}'", style="gl.success", loud=True)
         elif command == "/unpin":
             if argument in self._pinned_messages:
                 self._pinned_messages.remove(argument)
@@ -593,7 +593,7 @@ class ChatApp:
                 self._console.print(
                     Panel(
                         Group(
-                            *(Text(f"📌 {msg}", style="gl.text") for msg in self._pinned_messages)
+                            *(Text(f"• {msg}", style="gl.text") for msg in self._pinned_messages)
                         ),
                         title="[gl.title]Pinned Messages[/]",
                         border_style="gl.accent",
@@ -728,7 +728,7 @@ class ChatApp:
             Panel(
                 grid,
                 title="[gl.title]Session info[/]",
-                box=box.DOUBLE,
+                box=box.ROUNDED,
                 border_style="gl.accent",
                 padding=(0, 2),
             )

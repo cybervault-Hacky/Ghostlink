@@ -15,14 +15,20 @@ from enum import Enum
 
 from rich.text import Text
 
+from ghostlink.ui.components.layout import (
+    GLYPH_ERROR,
+    GLYPH_INFO,
+    GLYPH_SUCCESS,
+    GLYPH_WARNING,
+)
 from ghostlink.ui.console import ConsoleManager
 
 
 class NotificationLevel(Enum):
-    INFO = ("●", "gl.info")
-    SUCCESS = ("✔", "gl.success")
-    WARNING = ("▲", "gl.warning")
-    ERROR = ("✖", "gl.error")
+    INFO = (GLYPH_INFO, "gl.info")
+    SUCCESS = (GLYPH_SUCCESS, "gl.success")
+    WARNING = (GLYPH_WARNING, "gl.warning")
+    ERROR = (GLYPH_ERROR, "gl.error")
 
     @property
     def icon(self) -> str:
@@ -67,9 +73,8 @@ class NotificationCenter:
         if not self._enabled:
             return
         toast = Text()
-        toast.append(f" {entry.level.icon} ", style=f"bold {entry.level.style}")
+        toast.append(f"{entry.level.icon} ", style=f"bold {entry.level.style}")
         toast.append(message, style="gl.text")
-        toast.append(f"  ·  {entry.raised_at:%H:%M:%S}", style="gl.muted")
         self._console.print(toast)
 
     # ------------------------------------------------------------ convenience

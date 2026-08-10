@@ -1,11 +1,10 @@
-"""Room Management and QR Invite screen."""
+"""Rooms screen — room management and QR invite generation."""
 
 from __future__ import annotations
 
 import asyncio
 
 from rich.align import Align
-from rich.console import Group
 from rich.text import Text
 
 from ghostlink.constants.files import STATE_DIR_NAME
@@ -13,9 +12,8 @@ from ghostlink.i18n import t
 from ghostlink.invites.lifecycle import SecureInviteManager
 from ghostlink.invites.registry import LocalInviteRegistry
 from ghostlink.storage.manager import StorageManager
-from ghostlink.ui.components.badges import BadgeTone, badge
+from ghostlink.ui.components.badges import BadgeTone
 from ghostlink.ui.components.dialogs import notice_dialog, prompt_text
-from ghostlink.ui.components.panels import section_panel
 from ghostlink.ui.components.tables import kv_grid
 from ghostlink.ui.menu import InteractiveMenu, MenuEntry
 from ghostlink.ui.screens.base import Screen, ScreenContext
@@ -23,7 +21,7 @@ from ghostlink.utils.qr import render_invite_qr_panel
 
 
 class RoomManagementScreen(Screen):
-    """Room management and QR invite generation interface."""
+    """Room management and QR invite interface."""
 
     def __init__(self, context: ScreenContext) -> None:
         super().__init__(context)
@@ -37,28 +35,21 @@ class RoomManagementScreen(Screen):
 
     async def show(self) -> None:
         while True:
-            lang = self.context.settings.ui.language
             self._render_overview()
 
             entries = (
                 MenuEntry(
                     key="create",
-                    label="Create Room & Generate QR Invite",
-                    description="Host a room and produce both a link and a QR code",
-                    icon="✚",
+                    label="Create Room & QR Invite",
+                    description="Host a room and produce a link and QR code",
                 ),
                 MenuEntry(
                     key="qr_view",
-                    label="Render QR Code for Invite Link",
-                    description="Enter any gl://join/ link to display as terminal QR",
-                    icon="📱",
+                    label="Show QR for Invite Link",
+                    description="Render a gl://join/ link as a terminal QR code",
                 ),
-                MenuEntry(
-                    key="back",
-                    label=t("action.back", lang),
-                    description="Return to the Main Menu",
-                    icon="↩",
-                ),
+                MenuEntry.spacer(),
+                self.back_menu_entry(),
             )
 
             choice = self._menu.prompt(entries, default_key="back")
@@ -72,39 +63,33 @@ class RoomManagementScreen(Screen):
     def _render_overview(self) -> None:
         context = self.context
         console = context.console
-        theme = context.theme
+        lang = context.settings.ui.language
 
-        console.clear()
-        console.newline()
+        self.header(t("menu.rooms.label", lang), "Encrypted channels and invites")
 
         rooms = context.rooms.list_rooms()
         lifetime_min = context.settings.rooms.default_lifetime_minutes
-        facts = kv_grid(
-            [
-                ("Hosted Rooms", Text(f"{len(rooms)} active")),
-                ("Default Lifetime", Text(f"{lifetime_min} minutes")),
-                ("Invite Mode", Text("Single-use cryptographic tokens (HMAC-verified)")),
-                ("Relay Routing", Text(context.settings.relay.url or "Local rendezvous")),
-            ]
+        console.print(
+            kv_grid(
+                [
+                    ("Hosted Rooms", Text(f"{len(rooms)} active")),
+                    ("Default Lifetime", Text(f"{lifetime_min} minutes")),
+                    ("Invite Mode", Text("Single-use cryptographic tokens (HMAC)")),
+                    (
+                        "Relay Routing",
+                        Text(context.settings.relay.url or "Local rendezvous", style="gl.muted"),
+                    ),
+                ]
+            )
         )
-
-        badge_header = Align.center(
-            badge("Room & Invite Management", BadgeTone.ACCENT, theme=theme)
-        )
-
-        body = Group(
-            badge_header,
-            Text(""),
-            facts,
-            Text(""),
+        console.newline()
+        console.print(
             Text(
-                "Rooms are ephemeral channels protected with X25519 session handshakes.\n"
-                "Share invite QR codes with contacts directly for zero-friction joining.",
+                "Rooms are ephemeral channels protected by X25519 session handshakes. "
+                "Share the invite QR code directly with a contact.",
                 style="gl.muted",
-            ),
+            )
         )
-
-        console.print(section_panel("Room Management", body, subtitle="Encrypted Channels"))
         console.newline()
 
     async def _create_room_with_qr(self) -> None:
@@ -132,7 +117,7 @@ class RoomManagementScreen(Screen):
             await self.pause()
         except Exception as exc:
             console.newline()
-            console.print(notice_dialog("Could Not Create Room", str(exc), tone=BadgeTone.ERROR))
+            console.print(notice_dialog("Could not create room", str(exc), tone=BadgeTone.ERROR))
             await self.pause()
 
     async def _view_qr_prompt(self) -> None:

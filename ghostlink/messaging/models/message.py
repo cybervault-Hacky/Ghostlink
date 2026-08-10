@@ -84,7 +84,7 @@ STATUS_GLYPHS: dict[MessageStatus, str] = {
     MessageStatus.SENT: "✓",
     MessageStatus.DELIVERED: "✓✓",
     MessageStatus.READ: "✓✓",
-    MessageStatus.FAILED: "✗",
+    MessageStatus.FAILED: "✕",
 }
 
 

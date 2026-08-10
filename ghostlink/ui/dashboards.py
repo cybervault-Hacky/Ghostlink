@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from rich.console import Group, RenderableType
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -21,6 +22,7 @@ from ghostlink.models.session import SessionInfo
 from ghostlink.transport.relay.client import RelayProbeReport
 from ghostlink.ui.components.badges import BadgeTone, badge
 from ghostlink.ui.components.charts import latency_panel
+from ghostlink.ui.components.layout import section_label
 from ghostlink.ui.components.panels import app_panel, section_panel
 from ghostlink.ui.components.tables import info_table, kv_grid
 from ghostlink.ui.console import ConsoleManager
@@ -106,19 +108,18 @@ def render_room_dashboard(
     )
 
     console.newline()
-    console.print(
-        section_panel(
-            "Room Hosted",
-            Group(
-                app_panel(room_rows, title="Room", padding=(1, 2), expand=False),
-                Text(""),
-                app_panel(invite_rows, title="Invite", padding=(1, 2), expand=False),
-                Text(""),
-                *footer_lines,
-            ),
-            subtitle=room.room_id,
-        )
-    )
+    console.print(Text("Room Hosted", style="gl.title"))
+    console.print(Text(room.room_id, style="gl.muted"))
+    console.print(Rule(style="gl.border"))
+    console.newline()
+    console.print(section_label("Room"))
+    console.print(room_rows)
+    console.newline()
+    console.print(section_label("Invite"))
+    console.print(invite_rows)
+    console.newline()
+    for line in footer_lines:
+        console.print(line)
 
 
 # -------------------------------------------------------------------- join
@@ -144,7 +145,7 @@ def render_join_result(
             ),
             Text(""),
             Text(
-                "Room session establishment arrives with Phase 3 messaging.",
+                "The end-to-end encrypted chat opens next — keys are generated in memory.",
                 style="gl.muted",
             ),
         )

@@ -76,7 +76,7 @@ def render_exception(
     console.print(
         Panel(
             _build_body(error, unexpected=unexpected),
-            title=f"[bold bright_red]✖ {escape(title)}[/]",
+            title=f"[bold bright_red]✕ {escape(title)}[/]",
             subtitle=f"[grey62]exit code {int(code)}[/]",
             border_style="bright_red",
             padding=(1, 2),

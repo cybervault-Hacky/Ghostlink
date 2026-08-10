@@ -255,8 +255,8 @@ class TestPrivacyAndChatSettings:
 
         asyncio.run(SettingsScreen(application._context).show())
         output = recording.export_text()
-        assert "Identity Fingerprint" in output
-        assert "Identity & Cryptographic Keys" in output
+        assert "PUBLIC FINGERPRINT" in output
+        assert "IDENTITY" in output
 
 
 class TestNotificationSettings:
@@ -417,7 +417,7 @@ class TestDeveloperAndSystemSettings:
         asyncio.run(SettingsScreen(application._context).show())
         output = recording.export_text()
 
-        assert "System Diagnostics" in output
+        assert "SYSTEM DIAGNOSTICS" in output
         assert "Platform" in output
         assert "Python Runtime" in output
         assert "Configuration File" in output

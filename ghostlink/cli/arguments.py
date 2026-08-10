@@ -17,7 +17,6 @@ from ghostlink.constants.app import (
     APP_NAME,
     APP_VERSION,
     BUILD_DATE,
-    RELEASE_LABEL,
 )
 from ghostlink.ui.themes import ThemeEngine
 
@@ -86,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"{APP_NAME} {APP_VERSION} ({RELEASE_LABEL}, {BUILD_DATE})",
+        version=f"{APP_NAME} {APP_VERSION} ({BUILD_DATE})",
         help="print the version banner and exit",
     )
     parser.add_argument(
@@ -431,8 +430,8 @@ def build_parser() -> argparse.ArgumentParser:
         ("db", "manage the portal database (status/migrate/verify)"),
         ("backup", "create/verify/list/restore portal backups"),
         ("system", "portal health / readiness probes"),
-        ("production", "production readiness checks (Phase 15P)"),
-        ("release", "release management: check/verify/manifest (Phase 15F)"),
+        ("production", "production readiness checks"),
+        ("release", "release management: check/verify/manifest"),
     ):
         _p = subparsers.add_parser(_name, help=_help)
         _p.add_argument(

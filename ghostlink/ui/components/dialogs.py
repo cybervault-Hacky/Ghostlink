@@ -1,4 +1,4 @@
-"""Dialog components: notices, roadmap panels, confirmations, and pauses."""
+"""Dialog components: notices, confirmations, and pauses."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from rich.prompt import Confirm
 from rich.text import Text
 
 from ghostlink.ui.components.badges import BadgeTone
+from ghostlink.ui.components.layout import PROMPT_GLYPH, confirm_panel
 
 
 def notice_dialog(
@@ -91,7 +92,7 @@ def prompt_text(
 
     while True:
         try:
-            raw = console.input(f"[gl.highlight]❯ {escape(question)}:[/] ").strip()
+            raw = console.input(f"[gl.highlight]{PROMPT_GLYPH} {escape(question)}:[/] ").strip()
         except (EOFError, OSError):
             return None
         if raw.lower() in {"q", "quit", "cancel"}:
@@ -119,3 +120,23 @@ def confirm(
         return Confirm.ask(f"[gl.text]{escape(question)}[/]", console=console, default=default)
     except (EOFError, OSError):
         return default
+
+
+def confirm_action(
+    console: Console,
+    title: str,
+    message: str,
+    *,
+    consequence: str | None = None,
+    default: bool = False,
+) -> bool:
+    """A professional confirmation dialog for consequential actions.
+
+    Prints a calm, bordered explanation panel (``CONFIRM …`` title, plain
+    language, optional consequence note) followed by a single Continue?
+    prompt. No alarmist styling, no emoji.
+    """
+
+    console.print(confirm_panel(title, message, consequence=consequence))
+    console.print()
+    return confirm(console, "Continue?", default=default)

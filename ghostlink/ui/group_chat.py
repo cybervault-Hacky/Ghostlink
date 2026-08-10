@@ -140,9 +140,7 @@ class GroupChatApp:
             self._input.stop()
             self._service.remove_listener(self._on_event)
             self._console.newline()
-            self._print_system(
-                "Group session closed — pairwise keys wiped from memory. Stay private. 👻"
-            )
+            self._print_system("Group session closed — pairwise keys wiped from memory.")
         return int(ExitCode.OK)
 
     async def _refresh_latency(self) -> None:
@@ -191,7 +189,7 @@ class GroupChatApp:
             self._print_message_block(author, frame.text, frame.ts)
             if event.gap:
                 self._print_system(
-                    "⚠ message arrived with a sequence gap — earlier messages from "
+                    "! message arrived with a sequence gap — earlier messages from "
                     "this member may have been missed or reordered.",
                     style="gl.warning",
                     loud=True,
@@ -210,7 +208,7 @@ class GroupChatApp:
                 verb = "read by" if read else "delivered"
                 self._print_delivery_line(f"✓✓ {verb} {tail}", good=True)
         elif event.kind is GroupChatEventKind.NOTICE:
-            self._print_system(f"⚠ {event.detail}", style="gl.warning", loud=True)
+            self._print_system(f"! {event.detail}", style="gl.warning", loud=True)
         elif event.kind is GroupChatEventKind.MEMBERSHIP:
             self._print_system(event.detail, style="gl.info", loud=True)
 
@@ -258,9 +256,9 @@ class GroupChatApp:
         )
         panel = Panel(
             grid,
-            title="[gl.title]⚡ GhostLink Secure Group[/]",
+            title="[gl.title]GhostLink Secure Group[/]",
             subtitle="[gl.muted]/help lists commands · /quit leaves the chat[/]",
-            box=box.DOUBLE,
+            box=box.ROUNDED,
             border_style="gl.accent",
             padding=(0, 2),
             expand=True,
@@ -268,7 +266,7 @@ class GroupChatApp:
         self._console.print(panel)
         self._console.print(
             Text(
-                "  🔒 Every message is encrypted separately for each recipient; the relay "
+                "  Every message is encrypted separately for each recipient; the relay "
                 "routes opaque ciphertext only.",
                 style="gl.muted",
             )
@@ -306,7 +304,7 @@ class GroupChatApp:
         if self._notification_style == "muted":
             return
         if failed:
-            self._console.print(Text(f"  ✗ {line}", style="gl.error"))
+            self._console.print(Text(f"  ✕ {line}", style="gl.error"))
         elif good:
             self._console.print(Text(f"  {line}", style="gl.success"))
         else:
@@ -318,7 +316,7 @@ class GroupChatApp:
         self._console.print(Text(f"── {text}", style=style))
 
     def _print_error(self, text: str) -> None:
-        self._console.print(Text(f"✗ {text}", style="gl.error"))
+        self._console.print(Text(f"✕ {text}", style="gl.error"))
 
     # --------------------------------------------------------------- commands
 
@@ -412,7 +410,7 @@ class GroupChatApp:
             Panel(
                 grid,
                 title="[gl.title]Group session info[/]",
-                box=box.DOUBLE,
+                box=box.ROUNDED,
                 border_style="gl.accent",
                 padding=(0, 2),
             )
@@ -454,7 +452,7 @@ class GroupChatApp:
             Panel(
                 grid,
                 title="[gl.title]Security status — no secrets shown[/]",
-                box=box.DOUBLE,
+                box=box.ROUNDED,
                 border_style="gl.accent",
                 padding=(0, 2),
             )

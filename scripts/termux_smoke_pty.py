@@ -16,7 +16,7 @@ import sys
 import time
 
 WAIT_SECONDS = 10.0
-MENU_MARKERS = ("Create Room", "Join Room", "Settings", "About")
+MENU_MARKERS = ("Host a Room", "Join a Room", "Settings", "About")
 
 
 def main() -> int:

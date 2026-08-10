@@ -238,7 +238,7 @@ class BaseHistory:
             stamp = format_timestamp(entry.sent_at, timestamp_format)
             if entry.kind == "transfer":
                 verb = "sent to" if entry.direction == "outgoing" else "received from"
-                lines.append(f"{stamp} 📎 {entry.text}")
+                lines.append(f"{stamp} [file] {entry.text}")
                 lines.append(f"  {verb} {entry.author} — {entry.status}")
             else:
                 lines.append(f"{stamp} {entry.author}:")

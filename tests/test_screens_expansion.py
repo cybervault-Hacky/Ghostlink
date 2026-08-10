@@ -16,7 +16,6 @@ from ghostlink.ui.screens.base import Screen
 from ghostlink.ui.screens.help import HelpScreen
 from ghostlink.ui.screens.identity import IdentityScreen
 from ghostlink.ui.screens.onboarding import OnboardingWizard
-from ghostlink.ui.screens.palette import CommandPalette
 from ghostlink.ui.screens.rooms import RoomManagementScreen
 from ghostlink.ui.screens.security import SecurityDashboardScreen
 from ghostlink.ui.screens.storage import StorageManagerScreen
@@ -64,7 +63,7 @@ class TestIdentityScreen:
         asyncio.run(IdentityScreen(application._context).show())
         output = recording.export_text()
 
-        assert "Identity Manager" in output
+        assert "IDENTITY" in output
         assert "Protected" in output
         assert "GhostCoder" in output
 
@@ -86,7 +85,7 @@ class TestSecurityDashboardScreen:
         asyncio.run(screen.show())
         output = recording.export_text()
 
-        assert "Security Dashboard" in output
+        assert "SECURITY STATUS" in output
         assert "End-to-End Encryption" in output
         assert "ChaCha20-Poly1305" in output
 
@@ -104,7 +103,7 @@ class TestSecurityDashboardScreen:
         asyncio.run(screen._show_audit())
         output = recording.export_text()
 
-        assert "CRYPTOGRAPHIC PROTOCOL SPECIFICATIONS" in output
+        assert "CRYPTOGRAPHIC PROTOCOL SPECIFICATIONS" in output.upper()
         assert "Key Exchange" in output
         assert "ChaCha20-Poly1305" in output
 
@@ -131,7 +130,7 @@ class TestStorageManagerScreen:
         asyncio.run(StorageManagerScreen(application._context).show())
         output = recording.export_text()
 
-        assert "Storage Manager" in output
+        assert "STORAGE" in output
         assert "State & Key Storage" in output
         assert not (transfers_dir / "chunk_0.tmp").exists()
 
@@ -152,8 +151,8 @@ class TestTransferDashboardScreen:
         asyncio.run(TransferDashboardScreen(application._context).show())
         output = recording.export_text()
 
-        assert "File Transfers" in output
-        assert "Chunk Protocol" in output
+        assert "TRANSFERS" in output
+        assert "Chunk Size" in output
         assert "SHA-256" in output
 
 
@@ -171,25 +170,10 @@ class TestHelpScreen:
         asyncio.run(HelpScreen(application._context).show())
         output = recording.export_text()
 
-        assert "Help & Shortcuts" in output
-        assert "Ctrl+K" in output
+        assert "HELP" in output
+        assert "Ctrl+C" in output
         assert "/help" in output
         assert "/info" in output
-
-
-class TestCommandPalette:
-    def test_command_palette_navigation_choice(
-        self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        application = build_application(parse_args([]))
-        recording = ConsoleManager(
-            application._context.console.theme, record=True, width=100, force_terminal=False
-        )
-        application._context.console = recording
-
-        _script_menu(monkeypatch, ["security"])
-        choice = CommandPalette(application._context).show()
-        assert choice == "security"
 
 
 class TestOnboardingWizard:
@@ -235,5 +219,5 @@ class TestRoomManagementScreen:
         asyncio.run(RoomManagementScreen(application._context).show())
         output = recording.export_text()
 
-        assert "Room Management" in output
+        assert "ROOMS" in output
         assert "Default Lifetime" in output

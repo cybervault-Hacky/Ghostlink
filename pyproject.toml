@@ -82,7 +82,7 @@ ignore = [
     "UP047",
 ]
 # Intentional terminal typography, not typos.
-allowed-confusables = ["×", "❯", "…", "·", "—", "─"]
+allowed-confusables = ["×", "❯", "…", "·", "—", "─", "›", "←", "→"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["ghostlink"]

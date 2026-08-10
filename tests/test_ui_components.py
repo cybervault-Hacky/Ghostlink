@@ -26,12 +26,12 @@ ENTRIES = (
 class TestBadges:
     def test_filled_badge_uses_theme_background(self, theme: ThemeSpec) -> None:
         chip = badge("Enabled", BadgeTone.SUCCESS, theme=theme)
-        assert "✔ Enabled" in chip.plain
+        assert "✓ Enabled" in chip.plain
         assert f"on {theme.success}" in chip.style
 
     def test_themeless_badge_uses_semantic_style(self) -> None:
         chip = badge("Ready", BadgeTone.INFO)
-        assert chip.plain == "[● Ready]"
+        assert chip.plain == "[• Ready]"
         assert chip.style == "bold gl.info"
 
     def test_badge_row_joins_with_separator(self, theme: ThemeSpec) -> None:

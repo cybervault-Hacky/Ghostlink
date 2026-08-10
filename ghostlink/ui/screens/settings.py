@@ -1,19 +1,23 @@
-"""Settings Center — interactive configuration and customization.
+"""Settings — one calm, predictable settings center.
 
-Allows genuine in-app customization of GhostLink preferences including color
-themes with live previews, interface language, privacy controls (read receipts,
-typing indicators, history retention), in-app notifications, relay rendezvous
-networking, storage directories, and diagnostics.
+Exactly one Settings screen exists, reached from Home. It owns six category
+submenus and nothing else; each submenu owns its rows and returns one level
+with Back. Selecting a category opens only that category's rows — the same
+screen is never rendered twice and no submenu reopens itself after a return.
 
-Every change is validated, atomically persisted to the configuration file,
-immediately applied to runtime state, and confirmed with clear visual feedback.
+Every row shows its current value right-aligned (``Theme → Phantom``,
+``Read Receipts → ON``). Changes are validated, atomically persisted,
+immediately applied to runtime state, and confirmed with a single status
+toast.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from rich.align import Align
 from rich.console import Group
@@ -23,6 +27,8 @@ from rich.text import Text
 
 from ghostlink.config.serializer import save_config_file
 from ghostlink.constants.app import (
+    APP_NAME,
+    APP_VERSION,
     BUILTIN_THEMES,
     CHAT_HISTORY_MODES,
     CHAT_NOTIFICATION_STYLES,
@@ -38,62 +44,52 @@ from ghostlink.identity.storage import IdentityStore
 from ghostlink.models.settings import AppSettings
 from ghostlink.models.theme import ThemeSpec
 from ghostlink.storage.manager import StorageManager
-from ghostlink.ui.components.badges import BadgeTone, badge
-from ghostlink.ui.components.dialogs import confirm, notice_dialog, prompt_text
+from ghostlink.ui.components.badges import BadgeTone
+from ghostlink.ui.components.dialogs import confirm, confirm_action, notice_dialog, prompt_text
+from ghostlink.ui.components.layout import (
+    GLYPH_ACCENT,
+    GLYPH_CURSOR,
+    GLYPH_ERROR,
+    GLYPH_MUTED,
+    GLYPH_SUCCESS,
+    GLYPH_WARNING,
+)
 from ghostlink.ui.components.notifications import NotificationLevel
-from ghostlink.ui.components.panels import section_panel
 from ghostlink.ui.components.tables import kv_grid
 from ghostlink.ui.menu import InteractiveMenu, MenuEntry
 from ghostlink.ui.screens.base import Screen, ScreenContext
 from ghostlink.ui.themes import ThemeEngine
 
-
-def _format_relay_value(settings: AppSettings, theme: ThemeSpec, lang: str) -> Text:
-    """Formatted relay indicator."""
-
-    url = settings.relay.url.strip()
-    if not url:
-        return Text.assemble(
-            badge(t("status.not_configured", lang), BadgeTone.MUTED, theme=theme),
-            ("  (local rooms)", "gl.muted"),
-        )
-    return Text.assemble(
-        badge(t("status.configured", lang), BadgeTone.SUCCESS, theme=theme),
-        f"  {url}",
-    )
+EntriesBuilder = Callable[[], list[MenuEntry]]
+ActionHandler = Callable[[], Awaitable[None]]
 
 
 def _render_theme_preview_box(spec: ThemeSpec) -> Panel:
-    """Render a compact live preview demonstrating a theme palette."""
+    """Compact live preview demonstrating a theme's semantic palette roles."""
 
     preview_table = Table(box=None, show_header=False, pad_edge=False, expand=True)
-    preview_table.add_column("Element", style="gl.muted", width=18)
-    preview_table.add_column("Sample Display")
+    preview_table.add_column("Token", style=spec.muted, width=12)
+    preview_table.add_column("Sample")
 
     preview_table.add_row(
-        "Primary Accent",
-        Text("■ GhostLink Secure Terminal", style=f"bold {spec.primary}"),
+        "Primary", Text(f"{GLYPH_ACCENT} GhostLink", style=f"bold {spec.primary}")
     )
     preview_table.add_row(
-        "Selected Badge",
-        Text(f" ◆ {spec.name.title()} ", style=f"bold {spec.on_accent} on {spec.accent}"),
+        "Selected",
+        Text(
+            f" {GLYPH_CURSOR} {spec.name.title()} ", style=f"bold {spec.on_accent} on {spec.accent}"
+        ),
     )
     preview_table.add_row(
-        "Success Notice",
-        Text("✔ Encryption verified · 0 compromise", style=f"bold {spec.success}"),
+        "Success", Text(f"{GLYPH_SUCCESS} Encryption verified", style=f"bold {spec.success}")
     )
     preview_table.add_row(
-        "Warning Alert",
-        Text("▲ Relay reconnecting in 1.0s", style=f"bold {spec.warning}"),
+        "Warning", Text(f"{GLYPH_WARNING} Relay reconnecting", style=f"bold {spec.warning}")
     )
     preview_table.add_row(
-        "Error State",
-        Text("✖ Invalid frame checksum", style=f"bold {spec.error}"),
+        "Error", Text(f"{GLYPH_ERROR} Invalid frame checksum", style=f"bold {spec.error}")
     )
-    preview_table.add_row(
-        "Muted Text",
-        Text("○ Session ephemeral · No disk traces", style=spec.muted),
-    )
+    preview_table.add_row("Muted", Text(f"{GLYPH_MUTED} Session ephemeral", style=spec.muted))
 
     return Panel(
         Group(
@@ -101,7 +97,7 @@ def _render_theme_preview_box(spec: ThemeSpec) -> Panel:
             Text(""),
             preview_table,
         ),
-        title=f"[bold {spec.primary}]Theme Preview: {spec.name.title()}[/]",
+        title=f"[bold {spec.primary}]Preview — {spec.name.title()}[/]",
         border_style=spec.border,
         padding=(1, 2),
         expand=False,
@@ -109,7 +105,7 @@ def _render_theme_preview_box(spec: ThemeSpec) -> Panel:
 
 
 class SettingsScreen(Screen):
-    """Interactive Settings Center."""
+    """The single interactive Settings screen."""
 
     def __init__(self, context: ScreenContext) -> None:
         super().__init__(context)
@@ -119,206 +115,47 @@ class SettingsScreen(Screen):
         while True:
             lang = self.context.settings.ui.language
             set_current_language(lang)
-            self._render_overview()
+            self.header(t("settings.title", lang), t("settings.subtitle", lang))
 
             entries = (
                 MenuEntry(
                     key="appearance",
                     label=t("settings.cat.appearance.title", lang),
                     description=t("settings.cat.appearance.desc", lang),
-                    icon="🎨",
                 ),
                 MenuEntry(
                     key="privacy",
                     label=t("settings.cat.privacy.title", lang),
                     description=t("settings.cat.privacy.desc", lang),
-                    icon="🔒",
                 ),
                 MenuEntry(
                     key="notifications",
                     label=t("settings.cat.notifications.title", lang),
                     description=t("settings.cat.notifications.desc", lang),
-                    icon="🔔",
                 ),
                 MenuEntry(
                     key="network",
                     label=t("settings.cat.network.title", lang),
                     description=t("settings.cat.network.desc", lang),
-                    icon="🌐",
                 ),
                 MenuEntry(
                     key="storage",
                     label=t("settings.cat.storage.title", lang),
                     description=t("settings.cat.storage.desc", lang),
-                    icon="💾",
                 ),
                 MenuEntry(
                     key="developer",
                     label=t("settings.cat.developer.title", lang),
                     description=t("settings.cat.developer.desc", lang),
-                    icon="🛠",
                 ),
-                MenuEntry(
-                    key="back",
-                    label=t("settings.back", lang),
-                    description=t("settings.back.desc", lang),
-                    icon="↩",
-                ),
+                MenuEntry.spacer(),
+                self.back_menu_entry(t("settings.back.desc", lang)),
             )
 
             choice = self._menu.prompt(entries, default_key="back")
             if choice == "back":
                 return
             await self._dispatch_category(choice)
-
-    # ---------------------------------------------------------------- render overview
-
-    def _render_overview(self) -> None:
-        context = self.context
-        console = context.console
-        settings = context.settings
-        theme = context.theme
-        lang = settings.ui.language
-
-        console.clear()
-        console.newline()
-
-        overview_table = Table(
-            box=None,
-            show_header=True,
-            header_style="gl.title",
-            pad_edge=False,
-            expand=True,
-        )
-        overview_table.add_column("Category", style="gl.accent", width=22)
-        overview_table.add_column("Setting", style="gl.text", width=24)
-        overview_table.add_column("Current Value", style="gl.highlight")
-
-        # Appearance
-        overview_table.add_row(
-            t("settings.cat.appearance.title", lang),
-            t("settings.theme.label", lang),
-            badge(theme.name.title(), BadgeTone.ACCENT, theme=theme),
-        )
-        overview_table.add_row(
-            "",
-            t("settings.language.label", lang),
-            Text(f"{SUPPORTED_LANGUAGES.get(lang, lang)} ({lang})"),
-        )
-        overview_table.add_section()
-
-        # Privacy
-        overview_table.add_row(
-            t("settings.cat.privacy.title", lang),
-            t("settings.read_receipts.label", lang),
-            badge(
-                t("status.on", lang) if settings.chat.read_receipts else t("status.off", lang),
-                BadgeTone.SUCCESS if settings.chat.read_receipts else BadgeTone.MUTED,
-                theme=theme,
-            ),
-        )
-        overview_table.add_row(
-            "",
-            t("settings.typing_indicators.label", lang),
-            badge(
-                t("status.on", lang) if settings.chat.typing_indicators else t("status.off", lang),
-                BadgeTone.SUCCESS if settings.chat.typing_indicators else BadgeTone.MUTED,
-                theme=theme,
-            ),
-        )
-        overview_table.add_row(
-            "",
-            t("settings.history_mode.label", lang),
-            Text(settings.chat.history_mode),
-        )
-        overview_table.add_row(
-            "",
-            t("settings.display_name.label", lang),
-            Text(
-                settings.chat.display_name or t("status.per_run_default", lang),
-                style="gl.muted",
-            ),
-        )
-        overview_table.add_section()
-
-        # Notifications
-        notif_label = (
-            t("status.enabled", lang)
-            if settings.notifications.enabled
-            else t("status.disabled", lang)
-        )
-        overview_table.add_row(
-            t("settings.cat.notifications.title", lang),
-            t("settings.notifications_enabled.label", lang),
-            badge(
-                notif_label,
-                BadgeTone.SUCCESS if settings.notifications.enabled else BadgeTone.MUTED,
-                theme=theme,
-            ),
-        )
-        overview_table.add_row(
-            "",
-            t("settings.notification_style.label", lang),
-            Text(settings.chat.notification_style),
-        )
-        overview_table.add_section()
-
-        # Network
-        overview_table.add_row(
-            t("settings.cat.network.title", lang),
-            t("settings.relay_url.label", lang),
-            _format_relay_value(settings, theme, lang),
-        )
-        overview_table.add_section()
-
-        # Storage
-        data_dir_display = (
-            settings.storage.data_dir
-            if settings.storage.data_dir.strip()
-            else f"{t('status.default', lang)} ({context.data_dir})"
-        )
-        overview_table.add_row(
-            t("settings.cat.storage.title", lang),
-            t("settings.data_dir.label", lang),
-            Text(data_dir_display, style="gl.muted"),
-        )
-        overview_table.add_section()
-
-        # Developer & System
-        overview_table.add_row(
-            t("settings.cat.developer.title", lang),
-            t("settings.debug_mode.label", lang),
-            badge(
-                t("status.on", lang) if settings.diagnostics.debug else t("status.off", lang),
-                BadgeTone.WARNING if settings.diagnostics.debug else BadgeTone.MUTED,
-                theme=theme,
-            ),
-        )
-        overview_table.add_row(
-            "",
-            t("settings.system_info.label", lang),
-            badge(t("status.readonly", lang), BadgeTone.INFO, theme=theme),
-        )
-
-        config_footer = Text.assemble(
-            ("Configuration Path: ", "gl.muted"),
-            (str(context.config_path), "gl.text"),
-        )
-
-        content = Group(
-            overview_table,
-            Text(""),
-            config_footer,
-        )
-
-        console.print(
-            section_panel(
-                t("settings.title", lang),
-                content,
-                subtitle=t("settings.subtitle", lang),
-            )
-        )
-        console.newline()
 
     # ---------------------------------------------------------------- category dispatch
 
@@ -336,290 +173,299 @@ class SettingsScreen(Screen):
         elif category == "developer":
             await self._developer_menu()
 
-    # ---------------------------------------------------------------- Appearance
+    # ---------------------------------------------------------------- shared plumbing
 
-    async def _appearance_menu(self) -> None:
+    async def _run_submenu(
+        self,
+        title: str,
+        subtitle: str,
+        build_entries: EntriesBuilder,
+        actions: dict[str, ActionHandler],
+    ) -> None:
+        """One loop, one dispatch table: the owner of a category submenu."""
+
         while True:
-            lang = self.context.settings.ui.language
-            self._render_category_header(
-                t("settings.cat.appearance.title", lang),
-                t("settings.cat.appearance.desc", lang),
-            )
-            entries = (
-                MenuEntry(
-                    key="theme",
-                    label=f"{t('settings.theme.label', lang)}: {self.context.theme.name.title()}",
-                    description="Change color theme with live preview",
-                    icon="🎨",
-                ),
-                MenuEntry(
-                    key="language",
-                    label=f"{t('settings.language.label', lang)}: {LANGUAGE_NAMES.get(lang, lang)}",
-                    description="Change interface language",
-                    icon="🌐",
-                ),
-                MenuEntry(
-                    key="back",
-                    label=t("action.back", lang),
-                    description="Return to Settings Center",
-                    icon="↩",
-                ),
-            )
+            self.header(title, subtitle)
+            entries = (*build_entries(), MenuEntry.spacer(), self.back_menu_entry())
             choice = self._menu.prompt(entries, default_key="back")
             if choice == "back":
                 return
-            if choice == "theme":
-                await self._select_theme()
-            elif choice == "language":
-                await self._select_language()
+            handler = actions.get(choice)
+            if handler is not None:
+                await handler()
+
+    def _toggle_chat(self, field: str, label: str) -> None:
+        settings = self.context.settings
+        new_val = not getattr(settings.chat, field)
+        changes: dict[str, Any] = {field: new_val}
+        updated = replace(settings, chat=replace(settings.chat, **changes))
+        if self._persist_settings(updated):
+            status = self._on_off(new_val, settings.ui.language)
+            self.context.notifications.notify(
+                f"{label}: {status}",
+                NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
+            )
+
+    def _toggle_notifications(self, field: str, label: str) -> None:
+        settings = self.context.settings
+        new_val = not getattr(settings.notifications, field)
+        changes: dict[str, Any] = {field: new_val}
+        updated = replace(settings, notifications=replace(settings.notifications, **changes))
+        if self._persist_settings(updated):
+            status = self._on_off(new_val, settings.ui.language)
+            self.context.notifications.notify(
+                f"{label}: {status}",
+                NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
+            )
+
+    def _on_off(self, value: bool, lang: str) -> str:
+        return (t("status.on", lang) if value else t("status.off", lang)).upper()
+
+    def _persist_settings(self, new_settings: AppSettings) -> bool:
+        """Atomically persist settings to disk and update context."""
+
+        try:
+            save_config_file(self.context.config_path, new_settings)
+            self.context.settings = new_settings
+            return True
+        except (ConfigurationError, ConfigValidationError, OSError) as exc:
+            self.context.console.newline()
+            self.context.console.print(
+                notice_dialog(
+                    "Could not save settings",
+                    str(exc),
+                    tone=BadgeTone.ERROR,
+                    hint="Check write permissions for the configuration file and directory.",
+                )
+            )
+            return False
+
+    # ---------------------------------------------------------------- Appearance
+
+    async def _appearance_menu(self) -> None:
+        lang = self.context.settings.ui.language
+
+        def entries() -> list[MenuEntry]:
+            current_lang = self.context.settings.ui.language
+            return [
+                MenuEntry(
+                    key="theme",
+                    label=t("settings.theme.label", lang),
+                    description=t("settings.theme.desc", lang),
+                    value=self.context.theme.name.title(),
+                ),
+                MenuEntry(
+                    key="language",
+                    label=t("settings.language.label", lang),
+                    description=t("settings.language.desc", lang),
+                    value=LANGUAGE_NAMES.get(current_lang, current_lang),
+                ),
+            ]
+
+        async def edit_theme() -> None:
+            await self._select_theme()
+
+        async def edit_language() -> None:
+            await self._select_language()
+
+        await self._run_submenu(
+            t("settings.cat.appearance.title", lang),
+            t("settings.cat.appearance.desc", lang),
+            entries,
+            {"theme": edit_theme, "language": edit_language},
+        )
 
     async def _select_theme(self) -> None:
         engine = ThemeEngine()
+        lang = self.context.settings.ui.language
         current_theme_name = self.context.settings.ui.theme.lower()
-        while True:
-            lang = self.context.settings.ui.language
-            self._render_category_header(
-                t("dialog.theme_select.title", lang),
-                "Select a color theme to preview and apply",
-            )
-            entries = []
-            for name in BUILTIN_THEMES:
-                is_active = name == current_theme_name
-                tag = f" [{t('status.active', lang)}]" if is_active else ""
-                entries.append(
-                    MenuEntry(
-                        key=name,
-                        label=f"{name.title()}{tag}",
-                        description=engine.get(name).description,
-                        icon="●" if is_active else "○",
-                    )
-                )
+
+        self.header(
+            t("dialog.theme_select.title", lang),
+            t("settings.theme.desc", lang),
+        )
+        entries: list[MenuEntry] = []
+        for name in BUILTIN_THEMES:
+            is_active = name == current_theme_name
             entries.append(
                 MenuEntry(
-                    key="cancel",
-                    label=t("action.cancel", lang),
-                    description="Keep current theme and return",
-                    icon="✖",
+                    key=name,
+                    label=name.title(),
+                    description=engine.get(name).description,
+                    value=t("status.current", lang) if is_active else "",
                 )
             )
-
-            chosen = self._menu.prompt(entries, default_key="cancel")
-            if chosen == "cancel":
-                return
-
-            # Show theme live preview and confirm
-            spec = engine.get(chosen)
-            self.context.console.clear()
-            self.context.console.newline()
-            self.context.console.print(Align.center(_render_theme_preview_box(spec)))
-            self.context.console.newline()
-
-            apply_confirmed = await asyncio.to_thread(
-                confirm,
-                self.context.console.console,
-                f"Apply {spec.name.title()} theme?",
-                default=True,
+        entries.append(MenuEntry.spacer())
+        entries.append(
+            MenuEntry(
+                key="cancel", label=t("action.cancel", lang), description="Keep current theme"
             )
-            if apply_confirmed:
-                updated = replace(
-                    self.context.settings,
-                    ui=replace(self.context.settings.ui, theme=spec.name),
-                )
-                if self._persist_settings(updated):
-                    self.context.console.set_theme(spec)
-                    current_theme_name = spec.name
-                    self.context.notifications.notify(
-                        t("dialog.theme_changed", lang, theme=spec.name.title()),
-                        NotificationLevel.SUCCESS,
-                    )
-                    return
+        )
+
+        chosen = self._menu.prompt(entries, default_key="cancel")
+        if chosen == "cancel" or chosen == current_theme_name:
+            return
+
+        # Live preview, then one clean confirmation.
+        spec = engine.get(chosen)
+        self.context.console.newline()
+        self.context.console.print(Align.center(_render_theme_preview_box(spec)))
+        self.context.console.newline()
+
+        apply_confirmed = await asyncio.to_thread(
+            confirm,
+            self.context.console.console,
+            f"Apply {spec.name.title()} theme?",
+            default=True,
+        )
+        if not apply_confirmed:
+            return
+        updated = replace(
+            self.context.settings,
+            ui=replace(self.context.settings.ui, theme=spec.name),
+        )
+        if self._persist_settings(updated):
+            self.context.console.set_theme(spec)
+            self.context.notifications.notify(
+                t("dialog.theme_changed", lang, theme=spec.name.title()),
+                NotificationLevel.SUCCESS,
+            )
 
     async def _select_language(self) -> None:
+        lang = self.context.settings.ui.language
         current_lang = self.context.settings.ui.language
-        while True:
-            lang = self.context.settings.ui.language
-            self._render_category_header(
-                t("dialog.language_select.title", lang),
-                "Select the display language for menus, dialogs, and settings",
-            )
-            entries = []
-            for code in sorted(SUPPORTED_LANGUAGES.keys()):
-                is_active = code == current_lang
-                name_display = LANGUAGE_NAMES.get(code, SUPPORTED_LANGUAGES[code])
-                tag = f" [{t('status.active', lang)}]" if is_active else ""
-                entries.append(
-                    MenuEntry(
-                        key=code,
-                        label=f"{name_display}{tag}",
-                        description=f"Language code: {code}",
-                        icon="●" if is_active else "○",
-                    )
-                )
+
+        self.header(
+            t("dialog.language_select.title", lang),
+            t("settings.language.desc", lang),
+        )
+        entries: list[MenuEntry] = []
+        for code in sorted(SUPPORTED_LANGUAGES.keys()):
+            is_active = code == current_lang
             entries.append(
                 MenuEntry(
-                    key="cancel",
-                    label=t("action.cancel", lang),
-                    description="Keep current language and return",
-                    icon="✖",
+                    key=code,
+                    label=LANGUAGE_NAMES.get(code, SUPPORTED_LANGUAGES[code]),
+                    description=f"Language code: {code}",
+                    value=t("status.current", lang) if is_active else "",
                 )
             )
-
-            chosen = self._menu.prompt(entries, default_key="cancel")
-            if chosen == "cancel":
-                return
-
-            updated = replace(
-                self.context.settings,
-                ui=replace(self.context.settings.ui, language=chosen),
+        entries.append(MenuEntry.spacer())
+        entries.append(
+            MenuEntry(
+                key="cancel", label=t("action.cancel", lang), description="Keep current language"
             )
-            if self._persist_settings(updated):
-                set_current_language(chosen)
-                current_lang = chosen
-                target_name = SUPPORTED_LANGUAGES.get(chosen, chosen)
-                self.context.notifications.notify(
-                    t("dialog.language_changed", chosen, language=target_name),
-                    NotificationLevel.SUCCESS,
-                )
-                return
+        )
+
+        chosen = self._menu.prompt(entries, default_key="cancel")
+        if chosen == "cancel" or chosen == current_lang:
+            return
+
+        updated = replace(
+            self.context.settings,
+            ui=replace(self.context.settings.ui, language=chosen),
+        )
+        if self._persist_settings(updated):
+            set_current_language(chosen)
+            target_name = SUPPORTED_LANGUAGES.get(chosen, chosen)
+            self.context.notifications.notify(
+                t("dialog.language_changed", chosen, language=target_name),
+                NotificationLevel.SUCCESS,
+            )
 
     # ---------------------------------------------------------------- Privacy & Chat
 
     async def _privacy_menu(self) -> None:
-        while True:
+        lang = self.context.settings.ui.language
+
+        def entries() -> list[MenuEntry]:
             settings = self.context.settings
-            lang = settings.ui.language
-            self._render_category_header(
-                t("settings.cat.privacy.title", lang),
-                t("settings.cat.privacy.desc", lang),
-            )
-
-            rr_on = settings.chat.read_receipts
-            ti_on = settings.chat.typing_indicators
-            pres_on = settings.chat.presence
-            clean_on = settings.chat.cleanup_on_exit
-            rr_state = t("status.on", lang) if rr_on else t("status.off", lang)
-            ti_state = t("status.on", lang) if ti_on else t("status.off", lang)
-            pres_state = t("status.on", lang) if pres_on else t("status.off", lang)
-            clean_state = t("status.on", lang) if clean_on else t("status.off", lang)
-            name_state = settings.chat.display_name or t("status.per_run_default", lang)
-
-            mode_label = f"{t('settings.history_mode.label', lang)} [{settings.chat.history_mode}]"
-            entries = (
+            lang_now = settings.ui.language
+            chat = settings.chat
+            return [
                 MenuEntry(
                     key="toggle_receipts",
-                    label=f"{t('settings.read_receipts.label', lang)} [{rr_state}]",
-                    description="Send and display message read receipts",
-                    icon="✓" if settings.chat.read_receipts else "○",
+                    label=t("settings.read_receipts.label", lang_now),
+                    description=t("settings.read_receipts.desc", lang_now),
+                    value=self._on_off(chat.read_receipts, lang_now),
                 ),
                 MenuEntry(
                     key="toggle_typing",
-                    label=f"{t('settings.typing_indicators.label', lang)} [{ti_state}]",
-                    description="Broadcast typing status to peers",
-                    icon="✎" if settings.chat.typing_indicators else "○",
+                    label=t("settings.typing_indicators.label", lang_now),
+                    description=t("settings.typing_indicators.desc", lang_now),
+                    value=self._on_off(chat.typing_indicators, lang_now),
                 ),
                 MenuEntry(
                     key="toggle_presence",
-                    label=f"Presence & Peer Visibility [{pres_state}]",
-                    description="Broadcast peer online presence status",
-                    icon="🟢" if settings.chat.presence else "○",
+                    label=t("settings.presence.label", lang_now),
+                    description=t("settings.presence.desc", lang_now),
+                    value=self._on_off(chat.presence, lang_now),
                 ),
                 MenuEntry(
                     key="history_mode",
-                    label=mode_label,
-                    description="Message retention (disabled, session, encrypted)",
-                    icon="◷",
+                    label=t("settings.history_mode.label", lang_now),
+                    description=t("settings.history_mode.desc", lang_now),
+                    value=chat.history_mode.title(),
                 ),
                 MenuEntry(
                     key="toggle_cleanup",
-                    label=f"Auto Data Cleanup on Exit [{clean_state}]",
-                    description="Wipe session caches and history on exit",
-                    icon="🧹" if settings.chat.cleanup_on_exit else "○",
+                    label=t("settings.auto_cleanup.label", lang_now),
+                    description=t("settings.auto_cleanup.desc", lang_now),
+                    value=self._on_off(chat.cleanup_on_exit, lang_now),
                 ),
                 MenuEntry(
                     key="display_name",
-                    label=f"{t('settings.display_name.label', lang)} [{name_state}]",
-                    description=t("settings.display_name.desc", lang),
-                    icon="👤",
+                    label=t("settings.display_name.label", lang_now),
+                    description=t("settings.display_name.desc", lang_now),
+                    value=chat.display_name or t("status.per_run_default", lang_now),
                 ),
                 MenuEntry(
                     key="identity_keys",
-                    label="Identity & Cryptographic Keys",
-                    description="View fingerprint or rotate identity keypair",
-                    icon="🔑",
+                    label=t("settings.identity.label", lang_now),
+                    description=t("settings.identity.desc", lang_now),
                 ),
-                MenuEntry(
-                    key="back",
-                    label=t("action.back", lang),
-                    description="Return to Settings Center",
-                    icon="↩",
-                ),
-            )
+            ]
 
-            choice = self._menu.prompt(entries, default_key="back")
-            if choice == "back":
-                return
-            if choice == "toggle_receipts":
-                new_val = not settings.chat.read_receipts
-                updated = replace(
-                    settings,
-                    chat=replace(settings.chat, read_receipts=new_val),
-                )
-                if self._persist_settings(updated):
-                    status_str = t("status.on", lang) if new_val else t("status.off", lang)
-                    self.context.notifications.notify(
-                        f"✓ {t('settings.read_receipts.label', lang)}: {status_str}",
-                        NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
-                    )
-            elif choice == "toggle_typing":
-                new_val = not settings.chat.typing_indicators
-                updated = replace(
-                    settings,
-                    chat=replace(settings.chat, typing_indicators=new_val),
-                )
-                if self._persist_settings(updated):
-                    status_str = t("status.on", lang) if new_val else t("status.off", lang)
-                    self.context.notifications.notify(
-                        f"✓ {t('settings.typing_indicators.label', lang)}: {status_str}",
-                        NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
-                    )
-            elif choice == "toggle_presence":
-                new_val = not settings.chat.presence
-                updated = replace(
-                    settings,
-                    chat=replace(settings.chat, presence=new_val),
-                )
-                if self._persist_settings(updated):
-                    status_str = t("status.on", lang) if new_val else t("status.off", lang)
-                    self.context.notifications.notify(
-                        f"✓ Presence Visibility: {status_str}",
-                        NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
-                    )
-            elif choice == "toggle_cleanup":
-                new_val = not settings.chat.cleanup_on_exit
-                updated = replace(
-                    settings,
-                    chat=replace(settings.chat, cleanup_on_exit=new_val),
-                )
-                if self._persist_settings(updated):
-                    status_str = t("status.on", lang) if new_val else t("status.off", lang)
-                    self.context.notifications.notify(
-                        f"✓ Auto Cleanup on Exit: {status_str}",
-                        NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
-                    )
-            elif choice == "history_mode":
-                await self._select_history_mode()
-            elif choice == "display_name":
-                await self._edit_display_name()
-            elif choice == "identity_keys":
-                await self._identity_menu()
+        async def receipts() -> None:
+            self._toggle_chat("read_receipts", t("settings.read_receipts.label", lang))
+
+        async def typing() -> None:
+            self._toggle_chat("typing_indicators", t("settings.typing_indicators.label", lang))
+
+        async def presence() -> None:
+            self._toggle_chat("presence", t("settings.presence.label", lang))
+
+        async def history() -> None:
+            await self._select_history_mode()
+
+        async def cleanup() -> None:
+            self._toggle_chat("cleanup_on_exit", t("settings.auto_cleanup.label", lang))
+
+        async def name() -> None:
+            await self._edit_display_name()
+
+        async def identity() -> None:
+            await self._identity_menu()
+
+        await self._run_submenu(
+            t("settings.cat.privacy.title", lang),
+            t("settings.cat.privacy.desc", lang),
+            entries,
+            {
+                "toggle_receipts": receipts,
+                "toggle_typing": typing,
+                "toggle_presence": presence,
+                "history_mode": history,
+                "toggle_cleanup": cleanup,
+                "display_name": name,
+                "identity_keys": identity,
+            },
+        )
 
     async def _identity_menu(self) -> None:
+        lang = self.context.settings.ui.language
         while True:
-            lang = self.context.settings.ui.language
-            self._render_category_header(
-                "Identity & Cryptographic Keys",
-                "Manage local installation identity, public fingerprint, and key rotation",
-            )
+            self.header(t("settings.identity.label", lang), t("settings.identity.desc", lang))
             state_dir = self.context.data_dir / STATE_DIR_NAME
             fingerprint_display = "No local identity initialized"
             try:
@@ -634,22 +480,17 @@ class SettingsScreen(Screen):
             entries = (
                 MenuEntry(
                     key="view_fingerprint",
-                    label=f"View Public Fingerprint [{fingerprint_display[:16]}…]",
-                    description="View the GLFP cryptographic fingerprint peers verify",
-                    icon="🔑",
+                    label=t("settings.fingerprint.label", lang),
+                    description="The GLFP fingerprint peers verify out-of-band",
+                    value=fingerprint_display[:16] + "…",
                 ),
                 MenuEntry(
                     key="rotate_keys",
-                    label="Rotate Identity Keypair",
-                    description="Generate a fresh cryptographic identity keypair",
-                    icon="↺",
+                    label=t("settings.rotate.label", lang),
+                    description="Generate a fresh identity keypair",
                 ),
-                MenuEntry(
-                    key="back",
-                    label=t("action.back", lang),
-                    description="Return to Privacy & Chat menu",
-                    icon="↩",
-                ),
+                MenuEntry.spacer(),
+                self.back_menu_entry(),
             )
             choice = self._menu.prompt(entries, default_key="back")
             if choice == "back":
@@ -661,27 +502,30 @@ class SettingsScreen(Screen):
 
     async def _view_fingerprint(self, fingerprint: str) -> None:
         console = self.context.console
-        console.clear()
-        console.newline()
-        body = Group(
-            Text("Your cryptographic public identity fingerprint:", style="gl.text"),
-            Text(""),
-            Align.center(Text(fingerprint, style="bold gl.accent")),
-            Text(""),
-            Text(
-                "Share this fingerprint out-of-band to verify end-to-end encryption with contacts.",
-                style="gl.muted",
-            ),
+        self.header(t("settings.fingerprint.label", self.context.settings.ui.language))
+        console.print(
+            kv_grid(
+                [
+                    ("Fingerprint", Text(fingerprint, style="gl.highlight")),
+                    (
+                        "Verification",
+                        Text(
+                            "Compare out-of-band with contacts to verify end-to-end encryption.",
+                            style="gl.muted",
+                        ),
+                    ),
+                ]
+            )
         )
-        console.print(section_panel("Identity Fingerprint", body))
         await self.pause()
 
     async def _rotate_identity(self) -> None:
         console = self.context.console
         lang = self.context.settings.ui.language
         confirmed = await asyncio.to_thread(
-            confirm,
+            confirm_action,
             console.console,
+            t("dialog.confirm_rotate_title", lang),
             t("dialog.confirm_rotate_identity", lang),
             default=False,
         )
@@ -698,7 +542,7 @@ class SettingsScreen(Screen):
             )
         except Exception as exc:
             console.newline()
-            console.print(notice_dialog("Identity Rotation Failed", str(exc), tone=BadgeTone.ERROR))
+            console.print(notice_dialog("Identity rotation failed", str(exc), tone=BadgeTone.ERROR))
             await self.pause()
 
     async def _select_history_mode(self) -> None:
@@ -707,56 +551,52 @@ class SettingsScreen(Screen):
         current_mode = settings.chat.history_mode
 
         descriptions = {
-            "disabled": "Ephemeral — conversations exist in RAM only and vanish on exit",
-            "session": "Retained in memory during the active session",
-            "encrypted": "Encrypted to a passphrase-protected local storage file",
+            "disabled": "Ephemeral — conversations live in memory only",
+            "session": "Retained in memory for the active session",
+            "encrypted": "Encrypted in passphrase-protected local storage",
         }
 
-        self._render_category_header(
+        self.header(
             t("dialog.history_select.title", lang),
-            "Choose message history retention policy",
+            t("settings.history_mode.desc", lang),
         )
-        entries = []
+        entries: list[MenuEntry] = []
         for mode in sorted(CHAT_HISTORY_MODES):
-            is_active = mode == current_mode
-            tag = f" [{t('status.active', lang)}]" if is_active else ""
             entries.append(
                 MenuEntry(
                     key=mode,
-                    label=f"{mode.title()}{tag}",
+                    label=mode.title(),
                     description=descriptions.get(mode, mode),
-                    icon="●" if is_active else "○",
+                    value=t("status.current", lang) if mode == current_mode else "",
                 )
             )
+        entries.append(MenuEntry.spacer())
         entries.append(
-            MenuEntry(
-                key="cancel",
-                label=t("action.cancel", lang),
-                description="Keep current mode and return",
-                icon="✖",
-            )
+            MenuEntry(key="cancel", label=t("action.cancel", lang), description="Keep current mode")
         )
 
         chosen = self._menu.prompt(entries, default_key="cancel")
-        if chosen != "cancel" and chosen != current_mode:
-            updated = replace(
-                settings,
-                chat=replace(settings.chat, history_mode=chosen),
+        if chosen == "cancel" or chosen == current_mode:
+            return
+        updated = replace(settings, chat=replace(settings.chat, history_mode=chosen))
+        if self._persist_settings(updated):
+            self.context.notifications.notify(
+                t(
+                    "dialog.setting_saved",
+                    lang,
+                    setting=f"{t('settings.history_mode.label', lang)}: {chosen.title()}",
+                ),
+                NotificationLevel.SUCCESS,
             )
-            if self._persist_settings(updated):
-                self.context.notifications.notify(
-                    f"✓ {t('settings.history_mode.label', lang)}: {chosen}",
-                    NotificationLevel.SUCCESS,
-                )
 
     async def _edit_display_name(self) -> None:
         console = self.context.console
         lang = self.context.settings.ui.language
         current_name = self.context.settings.chat.display_name
 
-        self._render_category_header(
+        self.header(
             t("settings.display_name.label", lang),
-            f"Current pseudonym: {current_name or t('status.per_run_default', lang)}",
+            f"Current: {current_name or t('status.per_run_default', lang)}",
         )
 
         raw = await asyncio.to_thread(
@@ -777,7 +617,7 @@ class SettingsScreen(Screen):
         if self._persist_settings(updated):
             if name:
                 self.context.notifications.notify(
-                    f"✓ Pseudonym set to '{name}'",
+                    t("dialog.setting_saved", lang, setting=f"Display name: {name}"),
                     NotificationLevel.SUCCESS,
                 )
             else:
@@ -789,157 +629,95 @@ class SettingsScreen(Screen):
     # ---------------------------------------------------------------- Notifications
 
     async def _notifications_menu(self) -> None:
-        while True:
+        lang = self.context.settings.ui.language
+
+        def entries() -> list[MenuEntry]:
             settings = self.context.settings
-            lang = settings.ui.language
-            self._render_category_header(
-                t("settings.cat.notifications.title", lang),
-                t("settings.cat.notifications.desc", lang),
-            )
-
+            lang_now = settings.ui.language
             notif = settings.notifications
-            is_en = notif.enabled
-            state_label = t("status.enabled", lang) if is_en else t("status.disabled", lang)
-            msg_state = t("status.on", lang) if notif.messages else t("status.off", lang)
-            room_state = t("status.on", lang) if notif.room_activity else t("status.off", lang)
-            inv_state = t("status.on", lang) if notif.invites else t("status.off", lang)
-            snd_state = t("status.on", lang) if notif.sound else t("status.off", lang)
-            vib_state = t("status.on", lang) if notif.vibration else t("status.off", lang)
-            style_label = (
-                f"{t('settings.notification_style.label', lang)} "
-                f"[{settings.chat.notification_style}]"
+            state = (
+                t("status.enabled", lang_now) if notif.enabled else t("status.disabled", lang_now)
             )
-
-            entries = (
+            return [
                 MenuEntry(
                     key="toggle",
-                    label=f"{t('settings.notifications_enabled.label', lang)} [{state_label}]",
-                    description="Master switch for in-app alert toasts",
-                    icon="🔔" if settings.notifications.enabled else "🔕",
+                    label=t("settings.notifications_enabled.label", lang_now),
+                    description=t("settings.notifications_enabled.desc", lang_now),
+                    value=state.upper(),
                 ),
                 MenuEntry(
                     key="toggle_messages",
-                    label=f"Message Alerts [{msg_state}]",
-                    description="Show alert toasts when new chat messages arrive",
-                    icon="💬" if settings.notifications.messages else "○",
+                    label=t("settings.notify_messages.label", lang_now),
+                    description=t("settings.notify_messages.desc", lang_now),
+                    value=self._on_off(notif.messages, lang_now),
                 ),
                 MenuEntry(
                     key="toggle_room",
-                    label=f"Room Activity Alerts [{room_state}]",
-                    description="Show alert toasts on room peer join/leave events",
-                    icon="👥" if settings.notifications.room_activity else "○",
+                    label=t("settings.notify_room.label", lang_now),
+                    description=t("settings.notify_room.desc", lang_now),
+                    value=self._on_off(notif.room_activity, lang_now),
                 ),
                 MenuEntry(
                     key="toggle_invites",
-                    label=f"Invite Alerts [{inv_state}]",
-                    description="Show alert toasts on invite creation and redemptions",
-                    icon="✉" if settings.notifications.invites else "○",
+                    label=t("settings.notify_invites.label", lang_now),
+                    description=t("settings.notify_invites.desc", lang_now),
+                    value=self._on_off(notif.invites, lang_now),
                 ),
                 MenuEntry(
                     key="toggle_sound",
-                    label=f"Sound Alerts [{snd_state}]",
-                    description="Audible bell notification on messages where terminal permits",
-                    icon="🔊" if settings.notifications.sound else "🔇",
+                    label=t("settings.notify_sound.label", lang_now),
+                    description=t("settings.notify_sound.desc", lang_now),
+                    value=self._on_off(notif.sound, lang_now),
                 ),
                 MenuEntry(
                     key="toggle_vibration",
-                    label=f"Vibration Alerts [{vib_state}]",
-                    description="Haptic vibration feedback on Termux/Android",
-                    icon="📳" if settings.notifications.vibration else "📴",
+                    label=t("settings.notify_vibration.label", lang_now),
+                    description=t("settings.notify_vibration.desc", lang_now),
+                    value=self._on_off(notif.vibration, lang_now),
                 ),
                 MenuEntry(
                     key="style",
-                    label=style_label,
-                    description="Choose banner, compact, or muted presentation",
-                    icon="📑",
+                    label=t("settings.notification_style.label", lang_now),
+                    description=t("settings.notification_style.desc", lang_now),
+                    value=settings.chat.notification_style.title(),
                 ),
-                MenuEntry(
-                    key="back",
-                    label=t("action.back", lang),
-                    description="Return to Settings Center",
-                    icon="↩",
-                ),
-            )
+            ]
 
-            choice = self._menu.prompt(entries, default_key="back")
-            if choice == "back":
-                return
-            if choice == "toggle":
-                new_enabled = not settings.notifications.enabled
-                updated = replace(
-                    settings,
-                    notifications=replace(settings.notifications, enabled=new_enabled),
-                )
-                if self._persist_settings(updated):
-                    status_str = (
-                        t("status.enabled", lang) if new_enabled else t("status.disabled", lang)
-                    )
-                    self.context.notifications.notify(
-                        f"✓ Notifications {status_str}",
-                        NotificationLevel.SUCCESS if new_enabled else NotificationLevel.INFO,
-                    )
-            elif choice == "toggle_messages":
-                new_val = not settings.notifications.messages
-                updated = replace(
-                    settings,
-                    notifications=replace(settings.notifications, messages=new_val),
-                )
-                if self._persist_settings(updated):
-                    status_str = t("status.on", lang) if new_val else t("status.off", lang)
-                    self.context.notifications.notify(
-                        f"✓ Message Alerts: {status_str}",
-                        NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
-                    )
-            elif choice == "toggle_room":
-                new_val = not settings.notifications.room_activity
-                updated = replace(
-                    settings,
-                    notifications=replace(settings.notifications, room_activity=new_val),
-                )
-                if self._persist_settings(updated):
-                    status_str = t("status.on", lang) if new_val else t("status.off", lang)
-                    self.context.notifications.notify(
-                        f"✓ Room Activity Alerts: {status_str}",
-                        NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
-                    )
-            elif choice == "toggle_invites":
-                new_val = not settings.notifications.invites
-                updated = replace(
-                    settings,
-                    notifications=replace(settings.notifications, invites=new_val),
-                )
-                if self._persist_settings(updated):
-                    status_str = t("status.on", lang) if new_val else t("status.off", lang)
-                    self.context.notifications.notify(
-                        f"✓ Invite Alerts: {status_str}",
-                        NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
-                    )
-            elif choice == "toggle_sound":
-                new_val = not settings.notifications.sound
-                updated = replace(
-                    settings,
-                    notifications=replace(settings.notifications, sound=new_val),
-                )
-                if self._persist_settings(updated):
-                    status_str = t("status.on", lang) if new_val else t("status.off", lang)
-                    self.context.notifications.notify(
-                        f"✓ Sound Alerts: {status_str}",
-                        NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
-                    )
-            elif choice == "toggle_vibration":
-                new_val = not settings.notifications.vibration
-                updated = replace(
-                    settings,
-                    notifications=replace(settings.notifications, vibration=new_val),
-                )
-                if self._persist_settings(updated):
-                    status_str = t("status.on", lang) if new_val else t("status.off", lang)
-                    self.context.notifications.notify(
-                        f"✓ Vibration Alerts: {status_str}",
-                        NotificationLevel.SUCCESS if new_val else NotificationLevel.INFO,
-                    )
-            elif choice == "style":
-                await self._select_notification_style()
+        async def master() -> None:
+            self._toggle_notifications("enabled", t("settings.notifications_enabled.label", lang))
+
+        async def messages() -> None:
+            self._toggle_notifications("messages", t("settings.notify_messages.label", lang))
+
+        async def room() -> None:
+            self._toggle_notifications("room_activity", t("settings.notify_room.label", lang))
+
+        async def invites() -> None:
+            self._toggle_notifications("invites", t("settings.notify_invites.label", lang))
+
+        async def sound() -> None:
+            self._toggle_notifications("sound", t("settings.notify_sound.label", lang))
+
+        async def vibration() -> None:
+            self._toggle_notifications("vibration", t("settings.notify_vibration.label", lang))
+
+        async def style() -> None:
+            await self._select_notification_style()
+
+        await self._run_submenu(
+            t("settings.cat.notifications.title", lang),
+            t("settings.cat.notifications.desc", lang),
+            entries,
+            {
+                "toggle": master,
+                "toggle_messages": messages,
+                "toggle_room": room,
+                "toggle_invites": invites,
+                "toggle_sound": sound,
+                "toggle_vibration": vibration,
+                "style": style,
+            },
+        )
 
     async def _select_notification_style(self) -> None:
         settings = self.context.settings
@@ -947,98 +725,98 @@ class SettingsScreen(Screen):
         current_style = settings.chat.notification_style
 
         descriptions = {
-            "banner": "Full prominent bordered alert banners",
-            "compact": "Concise single-line status notifications",
-            "muted": "Silent operation — only errors are displayed",
+            "banner": "Prominent bordered alert banners",
+            "compact": "Single-line status notifications",
+            "muted": "Silent — only errors are displayed",
         }
 
-        self._render_category_header(
+        self.header(
             t("dialog.style_select.title", lang),
-            "Select visual presentation of in-app notifications",
+            t("settings.notification_style.desc", lang),
         )
-        entries = []
+        entries: list[MenuEntry] = []
         for style_name in sorted(CHAT_NOTIFICATION_STYLES):
-            is_active = style_name == current_style
-            tag = f" [{t('status.active', lang)}]" if is_active else ""
             entries.append(
                 MenuEntry(
                     key=style_name,
-                    label=f"{style_name.title()}{tag}",
+                    label=style_name.title(),
                     description=descriptions.get(style_name, style_name),
-                    icon="●" if is_active else "○",
+                    value=t("status.current", lang) if style_name == current_style else "",
                 )
             )
+        entries.append(MenuEntry.spacer())
         entries.append(
             MenuEntry(
-                key="cancel",
-                label=t("action.cancel", lang),
-                description="Keep current style and return",
-                icon="✖",
+                key="cancel", label=t("action.cancel", lang), description="Keep current style"
             )
         )
 
         chosen = self._menu.prompt(entries, default_key="cancel")
-        if chosen != "cancel" and chosen != current_style:
-            updated = replace(
-                settings,
-                chat=replace(settings.chat, notification_style=chosen),
+        if chosen == "cancel" or chosen == current_style:
+            return
+        updated = replace(settings, chat=replace(settings.chat, notification_style=chosen))
+        if self._persist_settings(updated):
+            self.context.notifications.notify(
+                t(
+                    "dialog.setting_saved",
+                    lang,
+                    setting=f"{t('settings.notification_style.label', lang)}: {chosen.title()}",
+                ),
+                NotificationLevel.SUCCESS,
             )
-            if self._persist_settings(updated):
-                self.context.notifications.notify(
-                    f"✓ Notification style: {chosen}",
-                    NotificationLevel.SUCCESS,
-                )
 
     # ---------------------------------------------------------------- Network & Relay
 
     async def _network_menu(self) -> None:
-        while True:
+        lang = self.context.settings.ui.language
+
+        def entries() -> list[MenuEntry]:
             settings = self.context.settings
-            lang = settings.ui.language
-            self._render_category_header(
-                t("settings.cat.network.title", lang),
-                t("settings.cat.network.desc", lang),
-            )
-
-            relay_display = settings.relay.url.strip() or t("status.not_configured", lang)
-
-            entries = (
+            lang_now = settings.ui.language
+            relay_display = settings.relay.url.strip() or t("settings.relay.local", lang_now)
+            return [
                 MenuEntry(
                     key="configure_relay",
-                    label=f"Configure Relay Endpoint [{relay_display}]",
-                    description="Enter a WebSocket endpoint (ws:// or wss://)",
-                    icon="🔗",
+                    label=t("settings.relay_url.label", lang_now),
+                    description=t("settings.relay_url.desc", lang_now),
+                    value=relay_display,
+                ),
+                MenuEntry(
+                    key="test_connectivity",
+                    label=t("settings.relay.test.label", lang_now),
+                    description=t("settings.relay.test.desc", lang_now),
                 ),
                 MenuEntry(
                     key="clear_relay",
-                    label="Clear Relay Endpoint",
-                    description="Reset relay to run in local-only room mode",
-                    icon="✖",
+                    label=t("settings.relay.clear.label", lang_now),
+                    description=t("settings.relay.clear.desc", lang_now),
                 ),
-                MenuEntry(
-                    key="back",
-                    label=t("action.back", lang),
-                    description="Return to Settings Center",
-                    icon="↩",
-                ),
-            )
+            ]
 
-            choice = self._menu.prompt(entries, default_key="back")
-            if choice == "back":
-                return
-            if choice == "configure_relay":
-                await self._configure_relay()
-            elif choice == "clear_relay":
-                await self._clear_relay()
+        async def configure() -> None:
+            await self._configure_relay()
+
+        async def probe() -> None:
+            await self._test_connectivity()
+
+        async def clear() -> None:
+            await self._clear_relay()
+
+        await self._run_submenu(
+            t("settings.cat.network.title", lang),
+            t("settings.cat.network.desc", lang),
+            entries,
+            {"configure_relay": configure, "test_connectivity": probe, "clear_relay": clear},
+        )
 
     async def _configure_relay(self) -> None:
         console = self.context.console
         lang = self.context.settings.ui.language
         current_url = self.context.settings.relay.url
 
-        self._render_category_header(
+        self.header(
             t("settings.relay_url.label", lang),
-            f"Current: {current_url or t('status.not_configured', lang)}",
+            f"Current: {current_url or t('settings.relay.local', lang)}",
         )
 
         raw = await asyncio.to_thread(
@@ -1056,8 +834,8 @@ class SettingsScreen(Screen):
             console.newline()
             console.print(
                 notice_dialog(
-                    "Invalid Relay URL",
-                    f"The endpoint '{url}' must start with ws:// or wss://",
+                    "Invalid relay URL",
+                    f"The endpoint '{url}' must start with ws:// or wss://.",
                     tone=BadgeTone.ERROR,
                     hint="Example: wss://relay.example.org or ws://127.0.0.1:8787",
                 )
@@ -1072,7 +850,7 @@ class SettingsScreen(Screen):
         if self._persist_settings(updated):
             if url:
                 self.context.notifications.notify(
-                    f"✓ Relay configured: {url}",
+                    t("dialog.setting_saved", lang, setting=f"Relay: {url}"),
                     NotificationLevel.SUCCESS,
                 )
             else:
@@ -1080,6 +858,60 @@ class SettingsScreen(Screen):
                     t("dialog.relay_cleared", lang),
                     NotificationLevel.INFO,
                 )
+
+    async def _test_connectivity(self) -> None:
+        console = self.context.console
+        lang = self.context.settings.ui.language
+        relay = self.context.settings.relay
+        url = relay.url.strip()
+
+        self.header(t("settings.relay.test.label", lang), url or t("settings.relay.local", lang))
+        if not url:
+            relay_label = t("settings.relay_url.label", lang)
+            network_label = t("settings.cat.network.title", lang)
+            self.context.console.print(
+                notice_dialog(
+                    "No relay configured",
+                    "GhostLink is running in local room mode — there is nothing to probe.",
+                    tone=BadgeTone.INFO,
+                    hint=f"Set a relay under {network_label} → {relay_label}.",
+                )
+            )
+            await self.pause()
+            return
+
+        from ghostlink.transport.relay.client import RelayClientConfig, probe_relay
+        from ghostlink.ui.dashboards import render_relay_dashboard
+
+        console.print(Text(f"Connecting to {url}…", style="gl.muted"))
+        try:
+            report = await probe_relay(
+                url,
+                client_name=f"{APP_NAME}/{APP_VERSION}",
+                config=RelayClientConfig(
+                    connect_timeout_seconds=relay.connect_timeout_seconds,
+                    handshake_timeout_seconds=relay.handshake_timeout_seconds,
+                    heartbeat_interval_seconds=relay.heartbeat_interval_seconds,
+                    heartbeat_timeout_seconds=relay.heartbeat_timeout_seconds,
+                    reconnect_attempts=relay.reconnect_attempts,
+                    reconnect_base_delay_seconds=relay.reconnect_base_delay_seconds,
+                ),
+                pings=2,
+            )
+        except Exception as exc:
+            console.newline()
+            console.print(
+                notice_dialog(
+                    "Connection failed",
+                    f"Unable to connect to the configured relay.\nReason: {exc}",
+                    tone=BadgeTone.ERROR,
+                    hint="Check the relay URL and network access, then try again.",
+                )
+            )
+            await self.pause()
+            return
+        render_relay_dashboard(console, report)
+        await self.pause()
 
     async def _clear_relay(self) -> None:
         console = self.context.console
@@ -1092,8 +924,9 @@ class SettingsScreen(Screen):
             return
 
         confirmed = await asyncio.to_thread(
-            confirm,
+            confirm_action,
             console.console,
+            t("dialog.confirm_clear_relay_title", lang),
             t("dialog.confirm_clear_relay", lang),
             default=True,
         )
@@ -1111,54 +944,55 @@ class SettingsScreen(Screen):
     # ---------------------------------------------------------------- Storage
 
     async def _storage_menu(self) -> None:
-        while True:
+        lang = self.context.settings.ui.language
+
+        def entries() -> list[MenuEntry]:
             settings = self.context.settings
-            lang = settings.ui.language
-            self._render_category_header(
-                t("settings.cat.storage.title", lang),
-                t("settings.cat.storage.desc", lang),
-            )
-
-            current_configured = settings.storage.data_dir.strip()
-            def_str = t("status.default", lang)
-            display_path = (
-                current_configured if current_configured else f"{def_str} ({self.context.data_dir})"
-            )
-
-            entries = (
+            lang_now = settings.ui.language
+            configured = settings.storage.data_dir.strip()
+            display = configured if configured else f"{t('status.default', lang_now)}"
+            return [
                 MenuEntry(
                     key="set_datadir",
-                    label=f"Data Directory: {display_path}",
-                    description="Custom filesystem path for state and logs",
-                    icon="📁",
+                    label=t("settings.data_dir.label", lang_now),
+                    description=t("settings.data_dir.desc", lang_now),
+                    value=display,
+                ),
+                MenuEntry(
+                    key="open_storage",
+                    label=t("settings.storage_overview.label", lang_now),
+                    description=t("settings.storage_overview.desc", lang_now),
                 ),
                 MenuEntry(
                     key="reset_datadir",
-                    label="Reset to Platform Default",
-                    description="Use standard OS data directory location",
-                    icon="↺",
+                    label=t("settings.storage_reset.label", lang_now),
+                    description=t("settings.storage_reset.desc", lang_now),
                 ),
-                MenuEntry(
-                    key="back",
-                    label=t("action.back", lang),
-                    description="Return to Settings Center",
-                    icon="↩",
-                ),
-            )
+            ]
 
-            choice = self._menu.prompt(entries, default_key="back")
-            if choice == "back":
-                return
-            if choice == "set_datadir":
-                await self._configure_data_dir()
-            elif choice == "reset_datadir":
-                await self._reset_data_dir()
+        async def set_dir() -> None:
+            await self._configure_data_dir()
+
+        async def open_overview() -> None:
+            from ghostlink.ui.screens.storage import StorageManagerScreen
+
+            await StorageManagerScreen(self.context).show()
+
+        async def reset_dir() -> None:
+            await self._reset_data_dir()
+
+        await self._run_submenu(
+            t("settings.cat.storage.title", lang),
+            t("settings.cat.storage.desc", lang),
+            entries,
+            {"set_datadir": set_dir, "open_storage": open_overview, "reset_datadir": reset_dir},
+        )
 
     async def _configure_data_dir(self) -> None:
         console = self.context.console
         lang = self.context.settings.ui.language
 
-        self._render_category_header(
+        self.header(
             t("settings.data_dir.label", lang),
             f"Effective path: {self.context.data_dir}",
         )
@@ -1180,7 +1014,7 @@ class SettingsScreen(Screen):
                 console.newline()
                 console.print(
                     notice_dialog(
-                        "Invalid Directory Path",
+                        "Invalid directory path",
                         f"'{candidate}' already exists as a regular file.",
                         tone=BadgeTone.ERROR,
                         hint="Specify a valid directory path.",
@@ -1194,8 +1028,10 @@ class SettingsScreen(Screen):
             storage=replace(self.context.settings.storage, data_dir=path_str),
         )
         if self._persist_settings(updated):
+            data_label = t("settings.data_dir.label", lang)
+            shown = path_str or t("status.default", lang)
             self.context.notifications.notify(
-                f"✓ Data directory updated: {path_str or t('status.default', lang)}",
+                t("dialog.setting_saved", lang, setting=f"{data_label}: {shown}"),
                 NotificationLevel.SUCCESS,
             )
 
@@ -1214,70 +1050,63 @@ class SettingsScreen(Screen):
         )
         if self._persist_settings(updated):
             self.context.notifications.notify(
-                f"✓ Data directory reset to {t('status.default', lang)}",
+                t(
+                    "dialog.setting_saved",
+                    lang,
+                    setting=f"{t('settings.data_dir.label', lang)}: {t('status.default', lang)}",
+                ),
                 NotificationLevel.SUCCESS,
             )
 
     # ---------------------------------------------------------------- Developer & System
 
     async def _developer_menu(self) -> None:
-        while True:
+        lang = self.context.settings.ui.language
+
+        def entries() -> list[MenuEntry]:
             settings = self.context.settings
-            lang = settings.ui.language
-            self._render_category_header(
-                t("settings.cat.developer.title", lang),
-                t("settings.cat.developer.desc", lang),
-            )
-
-            is_dbg = settings.diagnostics.debug
-            debug_state = t("status.on", lang) if is_dbg else t("status.off", lang)
-
-            entries = (
+            lang_now = settings.ui.language
+            return [
                 MenuEntry(
                     key="toggle_debug",
-                    label=f"{t('settings.debug_mode.label', lang)} [{debug_state}]",
-                    description=t("settings.debug_mode.desc", lang),
-                    icon="🐞" if settings.diagnostics.debug else "○",
+                    label=t("settings.debug_mode.label", lang_now),
+                    description=t("settings.debug_mode.desc", lang_now),
+                    value=self._on_off(settings.diagnostics.debug, lang_now),
                 ),
                 MenuEntry(
                     key="view_system_info",
-                    label=t("settings.system_info.label", lang),
-                    description="View read-only environment, terminal, and identity information",
-                    icon="◆",
+                    label=t("settings.system_info.label", lang_now),
+                    description=t("settings.system_info.desc", lang_now),
                 ),
-                MenuEntry(
-                    key="back",
-                    label=t("action.back", lang),
-                    description="Return to Settings Center",
-                    icon="↩",
-                ),
-            )
+            ]
 
-            choice = self._menu.prompt(entries, default_key="back")
-            if choice == "back":
-                return
-            if choice == "toggle_debug":
-                new_debug = not settings.diagnostics.debug
-                updated = replace(
-                    settings,
-                    diagnostics=replace(settings.diagnostics, debug=new_debug),
+        async def toggle_debug() -> None:
+            settings = self.context.settings
+            new_debug = not settings.diagnostics.debug
+            updated = replace(settings, diagnostics=replace(settings.diagnostics, debug=new_debug))
+            if self._persist_settings(updated):
+                status = self._on_off(new_debug, lang)
+                self.context.notifications.notify(
+                    f"{t('settings.debug_mode.label', lang)}: {status}",
+                    NotificationLevel.WARNING if new_debug else NotificationLevel.INFO,
                 )
-                if self._persist_settings(updated):
-                    status_str = t("status.on", lang) if new_debug else t("status.off", lang)
-                    self.context.notifications.notify(
-                        f"✓ {t('settings.debug_mode.label', lang)}: {status_str}",
-                        NotificationLevel.WARNING if new_debug else NotificationLevel.INFO,
-                    )
-            elif choice == "view_system_info":
-                await self._view_system_info()
+
+        async def system_info() -> None:
+            await self._view_system_info()
+
+        await self._run_submenu(
+            t("settings.cat.developer.title", lang),
+            t("settings.cat.developer.desc", lang),
+            entries,
+            {"toggle_debug": toggle_debug, "view_system_info": system_info},
+        )
 
     async def _view_system_info(self) -> None:
         context = self.context
         console = context.console
         env = context.environment
-        theme = context.theme
+        lang = context.settings.ui.language
 
-        # Safely compute identity fingerprint
         state_dir = context.data_dir / STATE_DIR_NAME
         fingerprint_display = "No local identity initialized"
         try:
@@ -1304,50 +1133,13 @@ class SettingsScreen(Screen):
             ]
         )
 
-        badge_header = Align.center(
-            badge("Read-Only Environment & Diagnostic Information", BadgeTone.INFO, theme=theme)
-        )
-
-        body = Group(
-            badge_header,
-            Text(""),
-            facts,
-            Text(""),
+        self.header(t("settings.system_info.label", lang), "read-only")
+        console.print(facts)
+        console.newline()
+        console.print(
             Text(
-                "System values reflect the active host environment and runtime configuration.",
+                "Values reflect the active host environment and runtime configuration.",
                 style="gl.muted",
-            ),
-        )
-
-        console.clear()
-        console.newline()
-        console.print(section_panel("System Diagnostics", body, subtitle="read-only"))
-        await self.pause()
-
-    # ---------------------------------------------------------------- helpers
-
-    def _render_category_header(self, title: str, subtitle: str) -> None:
-        console = self.context.console
-        console.clear()
-        console.newline()
-        console.print(section_panel(title, Text(subtitle, style="gl.text")))
-        console.newline()
-
-    def _persist_settings(self, new_settings: AppSettings) -> bool:
-        """Atomically persist settings to disk and update context."""
-
-        try:
-            save_config_file(self.context.config_path, new_settings)
-            self.context.settings = new_settings
-            return True
-        except (ConfigurationError, ConfigValidationError, OSError) as exc:
-            self.context.console.newline()
-            self.context.console.print(
-                notice_dialog(
-                    "Could Not Save Settings",
-                    str(exc),
-                    tone=BadgeTone.ERROR,
-                    hint="Check write permissions for the configuration file and directory.",
-                )
             )
-            return False
+        )
+        await self.pause()

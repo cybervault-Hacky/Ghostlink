@@ -67,6 +67,16 @@ def default_data_dir(
     return xdg_data_home(env=env, home=home) / APP_SLUG
 
 
+def default_download_dir(
+    *,
+    home: Path | None = None,
+) -> Path:
+    """Return GhostLink's default download directory (~/Download/GhostLink)."""
+
+    base = home if home is not None else Path.home()
+    return base / "Download" / "GhostLink"
+
+
 def ensure_directory(
     path: Path,
     *,

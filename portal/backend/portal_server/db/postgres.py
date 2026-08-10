@@ -44,8 +44,8 @@ try:  # pragma: no cover - import guard
     _PSYCOPG_OK = True
 except Exception:  # pragma: no cover
     _PSYCOPG_OK = False
-    psycopg = None  # type: ignore[assignment]
-    dict_row = None  # type: ignore[assignment]
+    psycopg = None
+    dict_row = None
 
 try:  # pragma: no cover - import guard
     from psycopg_pool import ConnectionPool
@@ -53,7 +53,7 @@ try:  # pragma: no cover - import guard
     _POOL_OK = True
 except Exception:  # pragma: no cover
     _POOL_OK = False
-    ConnectionPool = None  # type: ignore[assignment, misc]
+    ConnectionPool = None
 
 
 def _redact_dsn(dsn: str) -> str:

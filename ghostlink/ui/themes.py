@@ -34,6 +34,44 @@ def _phantom() -> ThemeSpec:
     )
 
 
+def _obsidian() -> ThemeSpec:
+    return ThemeSpec(
+        name="obsidian",
+        description="Deep obsidian dark interface with refined neutral silver accents.",
+        primary="#E2E8F0",
+        accent="#94A3B8",
+        success="#4ADE80",
+        warning="#FACC15",
+        error="#F87171",
+        info="#38BDF8",
+        muted="#64748B",
+        text="#F8FAFC",
+        border="#27272A",
+        highlight="#FFFFFF",
+        gradient=("#F8FAFC", "#94A3B8"),
+        on_accent="#09090B",
+    )
+
+
+def _ember() -> ThemeSpec:
+    return ThemeSpec(
+        name="ember",
+        description="Warm ambers and sunset rose on dark charcoal.",
+        primary="#FBBF24",
+        accent="#FB923C",
+        success="#A3E635",
+        warning="#FDE047",
+        error="#F87171",
+        info="#FCD34D",
+        muted="#78716C",
+        text="#FFFBEB",
+        border="#57534E",
+        highlight="#FBBF24",
+        gradient=("#FBBF24", "#F87171"),
+        on_accent="#451A03",
+    )
+
+
 def _emerald() -> ThemeSpec:
     return ThemeSpec(
         name="emerald",
@@ -53,22 +91,41 @@ def _emerald() -> ThemeSpec:
     )
 
 
-def _ember() -> ThemeSpec:
+def _arctic() -> ThemeSpec:
     return ThemeSpec(
-        name="ember",
-        description="Warm ambers and sunset rose.",
-        primary="#FBBF24",
-        accent="#FB923C",
-        success="#A3E635",
-        warning="#FDE047",
+        name="arctic",
+        description="Glacial blues and crisp cyan on deep polar night.",
+        primary="#38BDF8",
+        accent="#67E8F9",
+        success="#4ADE80",
+        warning="#FCD34D",
         error="#F87171",
-        info="#FCD34D",
-        muted="#78716C",
-        text="#FFFBEB",
-        border="#57534E",
-        highlight="#FBBF24",
-        gradient=("#FBBF24", "#F87171"),
-        on_accent="#451A03",
+        info="#60A5FA",
+        muted="#64748B",
+        text="#F0F9FF",
+        border="#1E3A5F",
+        highlight="#38BDF8",
+        gradient=("#38BDF8", "#67E8F9"),
+        on_accent="#082F49",
+    )
+
+
+def _aurora() -> ThemeSpec:
+    return ThemeSpec(
+        name="aurora",
+        description="Vibrant cosmic violet and shimmering celestial cyan.",
+        primary="#C084FC",
+        accent="#22D3EE",
+        success="#34D399",
+        warning="#FDE047",
+        error="#FB7185",
+        info="#818CF8",
+        muted="#71717A",
+        text="#FAF5FF",
+        border="#3B2A56",
+        highlight="#C084FC",
+        gradient=("#C084FC", "#22D3EE"),
+        on_accent="#1E1035",
     )
 
 
@@ -98,7 +155,18 @@ class ThemeEngine:
         self._themes: dict[str, ThemeSpec] = (
             dict(themes)
             if themes is not None
-            else {spec.name: spec for spec in (_phantom(), _emerald(), _ember(), _mono())}
+            else {
+                spec.name: spec
+                for spec in (
+                    _phantom(),
+                    _obsidian(),
+                    _ember(),
+                    _emerald(),
+                    _arctic(),
+                    _aurora(),
+                    _mono(),
+                )
+            }
         )
 
     @property

@@ -15,11 +15,13 @@ from ghostlink.core.migration import validate_config_version
 from ghostlink.exceptions.config import ConfigParseError, ConfigValidationError
 
 ALLOWED_SCHEMA: dict[str, frozenset[str]] = {
-    # [meta] carries the schema version marker (Phase 9). Absent = v1.
-    "meta": frozenset({"config_version"}),
+    # [meta] carries the schema version marker and onboarding state.
+    "meta": frozenset({"config_version", "onboarding_completed"}),
     "ui": frozenset({"theme", "language"}),
-    "notifications": frozenset({"enabled"}),
-    "storage": frozenset({"data_dir"}),
+    "notifications": frozenset(
+        {"enabled", "messages", "room_activity", "invites", "sound", "vibration"}
+    ),
+    "storage": frozenset({"data_dir", "auto_clean_temp", "max_cache_mb"}),
     "diagnostics": frozenset({"debug"}),
     "relay": frozenset(
         {
@@ -47,10 +49,12 @@ ALLOWED_SCHEMA: dict[str, frozenset[str]] = {
             "display_name",
             "read_receipts",
             "typing_indicators",
+            "presence",
             "history_mode",
             "timestamp_format",
             "notification_style",
             "message_wrapping",
+            "cleanup_on_exit",
         }
     ),
     "transfer": frozenset(

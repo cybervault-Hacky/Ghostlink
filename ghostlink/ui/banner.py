@@ -87,12 +87,13 @@ class BannerRenderer:
             parts.append(Align.center(extra))
         return Group(*parts)  # type: ignore[arg-type]
 
-    def compact_header(self, *, subtitle: str) -> Group:
+    def compact_header(self, *, subtitle: str | None = None) -> Group:
         """Two-line header used when returning to the menu from a sub-screen."""
 
         theme = self._console.theme
         wordmark = Text(WORDMARK.replace(" ", ""), style=f"bold {theme.primary}")
         header = Text()
         header.append_text(wordmark)
-        header.append(f"  ·  {subtitle}", style="gl.muted")
+        if subtitle:
+            header.append(f"  ·  {subtitle}", style="gl.muted")
         return Group(header, Text("", end=""))

@@ -61,6 +61,20 @@ def _require_non_empty(value: str, *, field: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class MetaSettings:
+    """Application metadata and onboarding markers."""
+
+    config_version: int = 1
+    onboarding_completed: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.config_version, int):
+            raise ConfigValidationError("Setting 'meta.config_version' must be an integer.")
+        if not isinstance(self.onboarding_completed, bool):
+            raise ConfigValidationError("Setting 'meta.onboarding_completed' must be a boolean.")
+
+
+@dataclass(frozen=True, slots=True)
 class UISettings:
     """User-interface preferences."""
 
@@ -82,20 +96,36 @@ class NotificationSettings:
     """In-app notification behaviour."""
 
     enabled: bool = True
+    messages: bool = True
+    room_activity: bool = True
+    invites: bool = True
+    sound: bool = False
+    vibration: bool = False
 
     def __post_init__(self) -> None:
-        if not isinstance(self.enabled, bool):
-            raise ConfigValidationError(
-                f"Setting 'notifications.enabled' must be true or false, got {self.enabled!r}.",
-                hint="Use a TOML boolean: enabled = true",
-            )
+        for field_name in (
+            "enabled",
+            "messages",
+            "room_activity",
+            "invites",
+            "sound",
+            "vibration",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, bool):
+                raise ConfigValidationError(
+                    f"Setting 'notifications.{field_name}' must be true or false, got {value!r}.",
+                    hint="Use a TOML boolean.",
+                )
 
 
 @dataclass(frozen=True, slots=True)
 class StorageSettings:
-    """Storage locations. An empty ``data_dir`` selects the platform default."""
+    """Storage locations and policies."""
 
     data_dir: str = ""
+    auto_clean_temp: bool = True
+    max_cache_mb: int = 512
 
     def __post_init__(self) -> None:
         if not isinstance(self.data_dir, str):
@@ -103,6 +133,18 @@ class StorageSettings:
                 "Setting 'storage.data_dir' must be a string path.",
                 hint='Use a TOML string: data_dir = "~/ghostlink-data"',
             )
+        if not isinstance(self.auto_clean_temp, bool):
+            raise ConfigValidationError(
+                "Setting 'storage.auto_clean_temp' must be true or false, "
+                f"got {self.auto_clean_temp!r}.",
+                hint="Use a TOML boolean.",
+            )
+        _require_int_range(
+            self.max_cache_mb,
+            field="storage.max_cache_mb",
+            minimum=16,
+            maximum=65536,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,20 +275,17 @@ class InvitesSettings:
 
 @dataclass(frozen=True, slots=True)
 class ChatSettings:
-    """One-to-one chat behaviour (Phase 3).
-
-    ``display_name`` empty means "not configured": the CLI falls back to a
-    per-run pseudonym. History is off by default — retention is a decision
-    the user makes explicitly.
-    """
+    """One-to-one chat behaviour and privacy preferences."""
 
     display_name: str = ""
     read_receipts: bool = True
     typing_indicators: bool = True
+    presence: bool = True
     history_mode: str = DEFAULT_HISTORY_MODE
     timestamp_format: str = DEFAULT_TIMESTAMP_FORMAT
     notification_style: str = DEFAULT_NOTIFICATION_STYLE
     message_wrapping: bool = True
+    cleanup_on_exit: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.display_name, str):
@@ -264,7 +303,13 @@ class ChatSettings:
                 "Setting 'chat.display_name' must be printable text.",
                 hint="Remove control characters from the name.",
             )
-        for field_name in ("read_receipts", "typing_indicators", "message_wrapping"):
+        for field_name in (
+            "read_receipts",
+            "typing_indicators",
+            "presence",
+            "message_wrapping",
+            "cleanup_on_exit",
+        ):
             value = getattr(self, field_name)
             if not isinstance(value, bool):
                 raise ConfigValidationError(
@@ -379,6 +424,7 @@ class AppSettings:
     invites: InvitesSettings
     chat: ChatSettings
     transfer: TransferSettings
+    meta: MetaSettings = MetaSettings()
 
     @classmethod
     def defaults(cls) -> AppSettings:
@@ -392,4 +438,5 @@ class AppSettings:
             invites=InvitesSettings(),
             chat=ChatSettings(),
             transfer=TransferSettings(),
+            meta=MetaSettings(),
         )

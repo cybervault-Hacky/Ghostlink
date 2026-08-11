@@ -17,7 +17,7 @@ from ghostlink.ui.components.dialogs import notice_dialog, prompt_text
 from ghostlink.ui.components.tables import kv_grid
 from ghostlink.ui.menu import InteractiveMenu, MenuEntry
 from ghostlink.ui.screens.base import Screen, ScreenContext
-from ghostlink.utils.qr import render_invite_qr_panel
+from ghostlink.utils.qr import copy_to_clipboard, render_invite_qr_panel
 
 
 class RoomManagementScreen(Screen):
@@ -53,7 +53,7 @@ class RoomManagementScreen(Screen):
             )
 
             choice = self._menu.prompt(entries, default_key="back")
-            if choice == "back":
+            if choice == "back" or choice is None:
                 return
             if choice == "create":
                 await self._create_room_with_qr()
@@ -92,6 +92,53 @@ class RoomManagementScreen(Screen):
         )
         console.newline()
 
+    async def _display_invite_screen(
+        self,
+        invite_url: str,
+        *,
+        title: str = "ROOM INVITE",
+        expires_minutes: int | None = None,
+    ) -> None:
+        """Display the QR invite screen with copy fallback and clean navigation."""
+        console = self.context.console
+        while True:
+            console.clear()
+            console.newline()
+            qr_panel = render_invite_qr_panel(
+                invite_url,
+                title=title,
+                subtitle="Scan this code with another device",
+                expires_minutes=expires_minutes,
+            )
+            console.print(Align.center(qr_panel))
+            console.newline()
+
+            entries = (
+                MenuEntry(
+                    key="copy",
+                    label="Copy Invite",
+                    description="Copy the gl://join/… URI to clipboard",
+                ),
+                self.back_menu_entry("Return to room management"),
+            )
+
+            choice = self._menu.prompt(entries, default_key="back")
+            if choice == "back" or choice is None:
+                return
+            if choice == "copy":
+                copied = copy_to_clipboard(invite_url)
+                console.newline()
+                msg = f"Invite URI: {invite_url}"
+                detail = f"Copied to clipboard.\n\n{msg}" if copied else msg
+                console.print(
+                    notice_dialog(
+                        "Invite URI",
+                        detail,
+                        tone=BadgeTone.ACCENT,
+                    )
+                )
+                await self.pause()
+
     async def _create_room_with_qr(self) -> None:
         console = self.context.console
         raw_name = await asyncio.to_thread(
@@ -106,15 +153,12 @@ class RoomManagementScreen(Screen):
         try:
             room, invite = self.context.rooms.host_room(name=raw_name or None)
             invite_url = f"gl://join/{invite.token}"
-
-            console.clear()
-            console.newline()
-            qr_panel = render_invite_qr_panel(invite_url, title=f"Room: {room.display_name}")
-            console.print(Align.center(qr_panel))
-            console.newline()
-            summary = f"Room ID: {room.room_id}  ·  Invite: {invite.token}"
-            console.print(Align.center(Text(summary, style="bold gl.highlight")))
-            await self.pause()
+            lifetime_min = self.context.settings.rooms.default_lifetime_minutes
+            await self._display_invite_screen(
+                invite_url,
+                title=f"ROOM: {room.display_name.upper()}",
+                expires_minutes=lifetime_min,
+            )
         except Exception as exc:
             console.newline()
             console.print(notice_dialog("Could not create room", str(exc), tone=BadgeTone.ERROR))
@@ -133,8 +177,8 @@ class RoomManagementScreen(Screen):
             return
 
         link = raw_link.strip()
-        console.clear()
-        console.newline()
-        qr_panel = render_invite_qr_panel(link)
-        console.print(Align.center(qr_panel))
-        await self.pause()
+        await self._display_invite_screen(
+            link,
+            title="JOIN ROOM",
+            expires_minutes=None,
+        )

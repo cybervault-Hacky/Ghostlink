@@ -32,10 +32,11 @@ class TestClient:
     def _request(
         self, method: str, path: str, *, json_body: dict | None = None, headers: dict | None = None
     ) -> tuple[int, dict]:
+        path_info, _, query_string = path.partition("?")
         environ = {
             "REQUEST_METHOD": method,
-            "PATH_INFO": path,
-            "QUERY_STRING": "",
+            "PATH_INFO": path_info,
+            "QUERY_STRING": query_string,
             "REMOTE_ADDR": "127.0.0.1",
             "HTTP_COOKIE": "; ".join(f"{k}={v}" for k, v in self.cookies.items()),
             "HTTP_USER_AGENT": "pytest-client/1.0",

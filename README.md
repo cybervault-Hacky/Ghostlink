@@ -222,23 +222,45 @@ expired/revoked tokens are rejected.
 
 ---
 
-## Termux Integration
+## Developer Quick Start
 
-GhostLink ships a Termux-friendly CLI. Verify commands locally with
-`ghostlink developer --help`.
+The fastest way to get started developing with GhostLink:
 
 ```bash
-ghostlink developer login
-ghostlink developer logout
+# 1. Start the local developer environment (backend + portal)
+ghostlink developer start
+
+# 2. Open the portal URL shown in the terminal (e.g. http://127.0.0.1:5173)
+#    Sign in, and click "Connect this device"
+
+# 3. Pair your Termux installation using the displayed pairing code / QR
+ghostlink developer pair GL-XXXX-YYYY
+
+# 4. Your environment is ready! Run developer commands:
 ghostlink developer whoami
-ghostlink developer device register
 ghostlink developer device list
-ghostlink developer device revoke
 ghostlink developer project list
-ghostlink developer project use
-ghostlink developer credential status
-ghostlink developer security-status
 ghostlink developer doctor
+```
+
+## Termux Integration
+
+GhostLink ships a full developer CLI. Run `ghostlink developer` for the interactive developer command center.
+
+```bash
+ghostlink developer start                  # start local backend & frontend
+ghostlink developer stop                   # stop running developer servers
+ghostlink developer status                 # show real-time environment status
+ghostlink developer portal                 # open Developer Portal in browser
+ghostlink developer pair [CODE]            # pair Termux device via short-lived code
+ghostlink developer whoami                 # show developer identity & scopes
+ghostlink developer device list            # list registered devices
+ghostlink developer device revoke <id>     # revoke a device
+ghostlink developer project list           # list developer projects
+ghostlink developer credential status      # view scoped credential metadata
+ghostlink developer security-status        # view recent developer security events
+ghostlink developer doctor                 # run comprehensive diagnostics
+ghostlink developer logout                 # clear local tokens
 ```
 
 Operational commands available on a host with the portal backend:

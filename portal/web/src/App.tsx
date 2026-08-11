@@ -4,6 +4,7 @@ import ParticleField from "./components/ParticleField";
 import Nav from "./components/Nav";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Landing from "./pages/Landing";
+import QuickStart from "./pages/QuickStart";
 import SignIn from "./pages/SignIn";
 import SignUp from "./pages/SignUp";
 import Verify from "./pages/Verify";
@@ -30,6 +31,14 @@ export default function App() {
             <Route path="/sign-in" element={<SignIn />} />
             <Route path="/sign-up" element={<SignUp />} />
             <Route path="/verify" element={<Verify />} />
+            <Route
+              path="/quickstart"
+              element={
+                <ProtectedRoute>
+                  <QuickStart />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/dashboard"
               element={

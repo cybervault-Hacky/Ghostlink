@@ -637,6 +637,238 @@ def handle_activity(portal: Any, request: Request) -> Response:
     return ok({"events": rows})
 
 
+def handle_pairing_create(portal: Any, request: Request, user: dict[str, Any]) -> Response:
+    """Create a short-lived pairing session from the web portal (session-authenticated)."""
+    _rate_limit(portal, "pairing_create", f"u{user['id']}")
+    body = request.body_json or {}
+    device_name = str(body.get("device_name", "Termux Android")).strip()[:64]
+    scopes = str(body.get("scopes", "project:read device:read credential:read")).strip()
+    try:
+        scope_set = normalize_scopes(scopes)
+    except ValueError as exc:
+        return _resp(_err(str(exc), code="invalid_scope"))
+
+    code = new_pairing_code()
+    nonce = secrets.token_urlsafe(16)
+    device_id = new_device_id()
+    now = auth.now_iso()
+    expires = _future_iso(PAIRING_CODE_TTL_SECONDS)
+
+    portal.db.execute(
+        "INSERT INTO pairing_codes(user_id, code_hash, nonce, device_id, status, expires_at, "
+        "created_at) VALUES(?,?,?,?,?,?,?)",
+        (user["id"], auth.hash_secret(code), nonce, device_id, "pending", expires, now),
+    )
+    _record_api_activity(
+        portal,
+        user_id=user["id"],
+        endpoint="/devapi/pairing/create",
+        category="pairing",
+        result="created",
+    )
+    return created(
+        {
+            "pairing_code": code,
+            "nonce": nonce,
+            "device_id": device_id,
+            "qr_payload": f"gl://dev-pair?code={code}",
+            "expires_in": PAIRING_CODE_TTL_SECONDS,
+            "status": "pending",
+            "device_name": device_name,
+            "scopes": sorted(scope_set),
+        }
+    )
+
+
+def handle_pairing_status(portal: Any, request: Request, user: dict[str, Any]) -> Response:
+    """Check pairing status for a given pairing code or nonce (session-authenticated)."""
+    code = request.query_param("code")
+    nonce = request.query_param("nonce")
+    if code:
+        row = portal.db.query_one(
+            "SELECT * FROM pairing_codes WHERE user_id=? AND code_hash=?",
+            (user["id"], auth.hash_secret(code.strip())),
+        )
+    elif nonce:
+        row = portal.db.query_one(
+            "SELECT * FROM pairing_codes WHERE user_id=? AND nonce=?",
+            (user["id"], nonce.strip()),
+        )
+    else:
+        return _resp(_err("code or nonce query parameter is required.", code="invalid_input"))
+
+    if row is None:
+        return ok({"status": "not_found"})
+
+    status = row["status"]
+    if status == "pending" and row["expires_at"] < auth.now_iso():
+        status = "expired"
+
+    return ok(
+        {
+            "status": status,
+            "device_id": row["device_id"],
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+        }
+    )
+
+
+def handle_pair_complete(portal: Any, request: Request) -> Response:
+    """Complete a pairing flow from Termux CLI using a pairing code (open, rate-limited)."""
+    _rate_limit(portal, "pair_complete", request.client_ip())
+    body = request.body_json or {}
+    raw_code = str(body.get("pairing_code", "")).strip()
+    if not raw_code:
+        return _resp(_err("pairing_code is required.", code="invalid_input"))
+
+    # Support full gl://dev-pair URI or raw code
+    code = raw_code
+    if "code=" in raw_code:
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(raw_code)
+        params = urllib.parse.parse_qs(parsed.query)
+        if "code" in params:
+            code = params["code"][0]
+
+    device_name = str(body.get("device_name", "Termux Android")).strip()[:64] or "Termux Android"
+    platform = str(body.get("platform", "termux")).strip()[:32] or "termux"
+    client_version = str(body.get("client_version", "")).strip()[:32]
+
+    row = portal.db.query_one(
+        "SELECT * FROM pairing_codes WHERE code_hash=? AND status='pending'",
+        (auth.hash_secret(code),),
+    )
+    if row is None or row["expires_at"] < auth.now_iso():
+        return _resp(_err("Pairing code invalid or expired.", code="invalid_pairing", status=400))
+
+    if not row["user_id"]:
+        return _resp(
+            _err(
+                "Pairing code requires approval from the Developer Portal.",
+                code="approval_required",
+                status=400,
+            )
+        )
+
+    user = portal.db.query_one("SELECT * FROM users WHERE id=?", (row["user_id"],))
+    if user is None or user["status"] != "active":
+        return _resp(_err("Developer account is not active.", code="forbidden", status=403))
+
+    now = auth.now_iso()
+    default_scopes = "project:read device:read credential:read"
+
+    # Issue a scoped credential bound to user + device
+    credential_id = new_credential_id()
+    from ghostlink.developer import keys as dev_keys
+
+    _cid, secret = dev_keys.issue_credential()
+    verifier, salt, digest = dev_keys.make_verifier(secret)
+
+    access = new_access_token()
+    refresh = new_refresh_token()
+
+    # Atomically complete pairing, register device, store credentials and tokens
+    with portal.db.transaction():
+        portal.db.execute(
+            "UPDATE pairing_codes SET status='used' WHERE id=? AND status='pending'",
+            (row["id"],),
+        )
+        portal.db.execute(
+            "INSERT INTO developer_devices(user_id, device_id, name, platform, client_version, "
+            "status, created_at, last_seen_at) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                user["id"],
+                row["device_id"],
+                device_name,
+                platform,
+                client_version,
+                "active",
+                now,
+                now,
+            ),
+        )
+        dev_row = portal.db.query_one(
+            "SELECT id FROM developer_devices WHERE device_id=?", (row["device_id"],)
+        )
+        device_db_id = dev_row["id"] if dev_row else None
+
+        portal.db.execute(
+            "INSERT INTO api_credentials(user_id, device_id, name, credential_id, secret_hash, "
+            "secret_salt, verifier, scopes, status, created_at, last_used_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                user["id"],
+                device_db_id,
+                f"Pairing: {device_name}",
+                credential_id,
+                digest,
+                salt,
+                verifier,
+                default_scopes,
+                "active",
+                now,
+                now,
+            ),
+        )
+        cred_row = portal.db.query_one(
+            "SELECT id FROM api_credentials WHERE credential_id=?", (credential_id,)
+        )
+        cred_db_id = cred_row["id"] if cred_row else None
+
+        portal.db.execute(
+            "INSERT INTO api_tokens(user_id, device_id, project_id, credential_id, kind, "
+            "token_hash, scopes, created_at, expires_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                user["id"],
+                device_db_id,
+                None,
+                cred_db_id,
+                "access",
+                auth.hash_secret(access),
+                default_scopes,
+                now,
+                _future_iso(ACCESS_TOKEN_TTL_SECONDS),
+            ),
+        )
+        portal.db.execute(
+            "INSERT INTO api_tokens(user_id, device_id, project_id, credential_id, kind, "
+            "token_hash, scopes, created_at, expires_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                user["id"],
+                device_db_id,
+                None,
+                cred_db_id,
+                "refresh",
+                auth.hash_secret(refresh),
+                default_scopes,
+                now,
+                _future_iso(REFRESH_TOKEN_TTL_SECONDS),
+            ),
+        )
+
+    _record_api_activity(
+        portal,
+        user_id=user["id"],
+        device_id=device_db_id,
+        endpoint="/developer/auth/pair-complete",
+        category="pairing",
+        result="completed",
+    )
+
+    return ok(
+        {
+            "access_token": access,
+            "refresh_token": refresh,
+            "expires_in": ACCESS_TOKEN_TTL_SECONDS,
+            "developer_id": user["developer_id"],
+            "device_id": row["device_id"],
+            "scopes": default_scopes.split(),
+        }
+    )
+
+
 def handle_health(portal: Any, request: Request) -> Response:
     return ok({"status": "ok"})
 

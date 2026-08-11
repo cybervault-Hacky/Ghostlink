@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { request } from "../lib/api";
 import { Badge, Button, Card, EmptyState, ErrorState, Loading, StatusBadge } from "../components/ui";
+import { ConnectDeviceModal } from "../components/ConnectDeviceModal";
 
 interface Device {
   device_id: string;
@@ -16,6 +17,7 @@ export default function Devices() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showPairModal, setShowPairModal] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -45,11 +47,18 @@ export default function Devices() {
 
   return (
     <main className="container" style={{ paddingTop: 56, paddingBottom: 80 }}>
-      <h1 className="section-title" style={{ fontSize: 26 }}>Devices</h1>
-      <p className="muted" style={{ marginTop: 4, fontSize: 14 }}>
-        Termux installations registered to this developer account. Revoking a
-        device instantly invalidates its tokens.
-      </p>
+      <div className="row between">
+        <div>
+          <h1 className="section-title" style={{ fontSize: 26 }}>Devices</h1>
+          <p className="muted" style={{ marginTop: 4, fontSize: 14 }}>
+            Termux installations registered to this developer account. Revoking a
+            device instantly invalidates its tokens.
+          </p>
+        </div>
+        <Button variant="primary" onClick={() => setShowPairModal(true)}>
+          Connect device
+        </Button>
+      </div>
       <div className="stack mt-24">
         {loading && <Loading label="Loading devices…" />}
         {!loading && error && <ErrorState title="Could not load devices" message={error} onRetry={load} />}
@@ -78,6 +87,12 @@ export default function Devices() {
           </Card>
         ))}
       </div>
+
+      <ConnectDeviceModal
+        isOpen={showPairModal}
+        onClose={() => setShowPairModal(false)}
+        onConnected={load}
+      />
     </main>
   );
 }

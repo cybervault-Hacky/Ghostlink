@@ -1056,6 +1056,18 @@ ROUTES: list[Route] = [
     ),
     Route("GET", "/api/v1/devapi/activity", handle_devapi_activity, auth_required=True),
     Route("GET", "/api/v1/devapi/pairing", handle_devapi_pairing, auth_required=True),
+    Route(
+        "POST",
+        "/api/v1/devapi/pairing/create",
+        devapi_handlers.handle_pairing_create,
+        auth_required=True,
+    ),
+    Route(
+        "GET",
+        "/api/v1/devapi/pairing/status",
+        devapi_handlers.handle_pairing_status,
+        auth_required=True,
+    ),
     Route("POST", "/api/v1/security/password", handle_change_password, auth_required=True),
     Route("POST", "/api/v1/security/mfa/setup", handle_mfa_setup, auth_required=True),
     Route("POST", "/api/v1/security/mfa/disable", handle_mfa_disable, auth_required=True),
@@ -1068,6 +1080,13 @@ ROUTES: list[Route] = [
         "POST",
         "/api/v1/developer/auth/pair-begin",
         devapi_handlers.handle_pair_begin,
+        auth_required=False,
+        auth="dev-open",
+    ),
+    Route(
+        "POST",
+        "/api/v1/developer/auth/pair-complete",
+        devapi_handlers.handle_pair_complete,
         auth_required=False,
         auth="dev-open",
     ),
@@ -1114,7 +1133,11 @@ ROUTES: list[Route] = [
         auth="dev",
     ),
     Route(
-        "GET", "/api/v1/developer/credentials", devapi_handlers.handle_credentials_list, auth="dev"
+        "GET",
+        "/api/v1/developer/credentials",
+        devapi_handlers.handle_credentials_list,
+        auth_required=False,
+        auth="dev",
     ),
     Route(
         "POST",
@@ -1137,7 +1160,13 @@ ROUTES: list[Route] = [
         auth_required=False,
         auth="dev",
     ),
-    Route("GET", "/api/v1/developer/health", devapi_handlers.handle_health, auth="dev-open"),
+    Route(
+        "GET",
+        "/api/v1/developer/health",
+        devapi_handlers.handle_health,
+        auth_required=False,
+        auth="dev-open",
+    ),
 ]
 
 

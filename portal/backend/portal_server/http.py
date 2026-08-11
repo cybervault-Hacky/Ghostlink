@@ -34,6 +34,10 @@ class Request:
             self._query = parse_qs(self.environ.get("QUERY_STRING", ""))
         return self._query
 
+    def query_param(self, name: str) -> str | None:
+        values = self.query.get(name)
+        return values[0] if values else None
+
     @property
     def cookies(self) -> dict[str, str]:
         if self._cookies is None:

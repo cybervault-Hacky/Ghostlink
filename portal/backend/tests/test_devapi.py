@@ -318,6 +318,55 @@ class TestPortalWebViews:
         assert status == 401
 
 
+class TestWebInitiatedPairing:
+    def test_web_pairing_create_and_cli_complete(self, portal_app) -> None:
+        make_active_user(portal_app)
+        signin_and_set_csrf(portal_app)
+
+        # 1. Web portal creates a pairing session
+        status, body = portal_app.client.post(
+            "/api/v1/devapi/pairing/create",
+            json={
+                "device_name": "Termux Android",
+                "scopes": "project:read device:read credential:read",
+            },
+        )
+        assert status == 201, body
+        pairing_code = body["pairing_code"]
+        assert pairing_code.startswith("GL-")
+        assert body["qr_payload"].startswith("gl://dev-pair?code=")
+
+        # 2. Check pending status
+        status, s_body = portal_app.client.get(f"/api/v1/devapi/pairing/status?code={pairing_code}")
+        assert status == 200
+        assert s_body["status"] == "pending"
+
+        # 3. CLI completes pairing with the code
+        c_status, c_body = portal_app.client.post(
+            "/api/v1/developer/auth/pair-complete",
+            json={
+                "pairing_code": pairing_code,
+                "device_name": "Termux Android",
+                "platform": "termux",
+            },
+        )
+        assert c_status == 200, c_body
+        assert c_body["access_token"] and c_body["refresh_token"]
+        assert c_body["developer_id"].startswith("dev_")
+
+        # 4. Status is now used
+        status, s_body = portal_app.client.get(f"/api/v1/devapi/pairing/status?code={pairing_code}")
+        assert status == 200
+        assert s_body["status"] == "used"
+
+        # 5. Reusing the pairing code fails
+        r_status, _ = portal_app.client.post(
+            "/api/v1/developer/auth/pair-complete",
+            json={"pairing_code": pairing_code},
+        )
+        assert r_status == 400
+
+
 class TestApiRateLimit:
     def test_pair_begin_rate_limited(self, portal_app) -> None:
         from conftest import make_active_user

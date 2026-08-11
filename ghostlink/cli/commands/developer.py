@@ -1,10 +1,13 @@
-"""``ghostlink developer`` — manage the local developer account & credentials.
+"""``ghostlink developer`` — manage the developer environment, portal, and credentials.
 
-This is a local-only feature (Phase 10A). It never makes a network request,
-never uploads anything, and never displays a developer key more than once
-(at creation/rotation). After that, all output is redacted metadata.
-
-The raw key is shown exactly once with an explicit "save it now" warning.
+Provides the primary developer entry points:
+- ``ghostlink developer start``   — start backend + portal development servers
+- ``ghostlink developer stop``    — stop running developer servers
+- ``ghostlink developer status``  — check real-time developer environment status
+- ``ghostlink developer portal``  — open Developer Portal in web browser
+- ``ghostlink developer pair``    — pair Termux device with the Developer Portal
+- ``ghostlink developer doctor``  — run comprehensive environment diagnostics
+- ``ghostlink developer``         — open interactive developer command center
 """
 
 from __future__ import annotations
@@ -41,12 +44,6 @@ def _panel(runtime: CommandRuntime, body: RenderableType, *, subtitle: str) -> P
     )
 
 
-def _redact(credential: str) -> str:
-    """Redact a credential to a metadata-only preview (never the secret)."""
-    prefix = credential[: len("gl_dev_dk_") + 2]
-    return f"{prefix}••••••••••••••••"
-
-
 def _developer_dir(runtime: CommandRuntime) -> Path:
     return runtime.config.data_dir / DEV_DIR_NAME
 
@@ -57,11 +54,16 @@ def _manager(runtime: CommandRuntime) -> DeveloperManager:
 
 def run_developer(options: CLIOptions) -> int:
     """Dispatch a developer-account action and return the exit code."""
-    action = options.developer_action or "status"
+    action = options.developer_action
+
+    # Running `ghostlink developer` without subcommands opens the interactive developer menu
+    if action is None:
+        from ghostlink.cli.commands.developer_portal import run_developer_portal
+
+        return run_developer_portal(options, "menu")
+
     if action == "init":
         return _init(options)
-    if action == "status":
-        return _status(options)
     if action == "export-info":
         return _export_info(options)
     if action == "key":
@@ -78,8 +80,14 @@ def run_developer(options: CLIOptions) -> int:
             f"Unknown developer key action '{key_action}'.",
             hint="Valid: create, list, rotate, revoke.",
         )
-    # Phase 12: portal-integration actions (Termux ↔ Developer Portal).
+
+    # Portal integration actions (Termux ↔ Developer Portal)
     if action in (
+        "start",
+        "stop",
+        "status",
+        "portal",
+        "pair",
         "login",
         "logout",
         "whoami",
@@ -92,10 +100,11 @@ def run_developer(options: CLIOptions) -> int:
         from ghostlink.cli.commands.developer_portal import run_developer_portal
 
         return run_developer_portal(options, action)
+
     raise DeveloperError(
         f"Unknown developer action '{action}'.",
-        hint="Valid: init, status, key, export-info, login, logout, whoami, "
-        "device, project, credential, security-status, doctor.",
+        hint="Valid: start, stop, status, portal, pair, doctor, login, logout, "
+        "whoami, device, project, credential, security-status, init, key, export-info.",
     )
 
 
@@ -127,8 +136,8 @@ def _init(options: CLIOptions) -> int:
                 ("Save this key now. It will not be shown again.\n\n", "gl.warning"),
                 (credential, "gl.highlight"),
                 (
-                    "\n\nUse it to authenticate to the future GhostLink developer "
-                    "portal (Phase 10B). It is stored only as salted verification "
+                    "\n\nUse it to authenticate to the GhostLink developer "
+                    "portal. It is stored only as salted verification "
                     "material — never in plaintext.",
                     "gl.muted",
                 ),
@@ -146,36 +155,6 @@ def _init(options: CLIOptions) -> int:
             style="gl.muted",
         )
     )
-    return int(ExitCode.OK)
-
-
-# ------------------------------------------------------------------ status
-
-
-def _status(options: CLIOptions) -> int:
-    runtime = build_runtime(options)
-    console = runtime.console
-    manager = _manager(runtime)
-    account = manager.status()
-    if account is None:
-        console.print(
-            _panel(
-                runtime,
-                Text("No developer account configured.", style="gl.muted"),
-                subtitle="run: ghostlink developer init",
-            )
-        )
-        return int(ExitCode.OK)
-    active = [c for c in account.credentials.values() if c.is_active]
-    grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="gl.muted", no_wrap=True)
-    grid.add_column(style="gl.text")
-    grid.add_row("Status", account.status.upper())
-    grid.add_row("Developer", Text(account.developer_id, style="gl.accent"))
-    grid.add_row("Created", account.created_at.date().isoformat())
-    grid.add_row("Active credentials", str(len(active)))
-    grid.add_row("Total credentials", str(len(account.credentials)))
-    console.print(_panel(runtime, grid, subtitle="local developer account — no secrets shown"))
     return int(ExitCode.OK)
 
 
@@ -294,13 +273,7 @@ def _key_revoke(options: CLIOptions) -> int:
 
 
 def _export_info(options: CLIOptions) -> int:
-    """Print the public account metadata as JSON (never the secret).
-
-    This is the future-compatible surface for a Phase 10B registration
-    flow: it emits only public identifiers and status — no secret, no
-    verification hash. Registration still requires the user to explicitly
-    share the credential out-of-band; nothing is uploaded here.
-    """
+    """Print the public account metadata as JSON (never the secret)."""
     import json
 
     runtime = build_runtime(options)

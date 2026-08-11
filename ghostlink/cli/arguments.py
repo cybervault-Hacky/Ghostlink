@@ -387,8 +387,13 @@ def build_parser() -> argparse.ArgumentParser:
         "developer_action",
         nargs="?",
         choices=[
-            "init",
+            "start",
+            "stop",
             "status",
+            "portal",
+            "pair",
+            "doctor",
+            "init",
             "key",
             "export-info",
             "login",
@@ -398,7 +403,6 @@ def build_parser() -> argparse.ArgumentParser:
             "project",
             "credential",
             "security-status",
-            "doctor",
         ],
         default=None,
         help="developer account / portal-integration action",
@@ -406,9 +410,8 @@ def build_parser() -> argparse.ArgumentParser:
     developer.add_argument(
         "developer_key_action",
         nargs="?",
-        choices=["create", "list", "rotate", "revoke", "register", "use", "status"],
         default=None,
-        help="sub-action for key / device / project / credential",
+        help="sub-action for key / device / project / credential, or pairing code",
     )
     developer.add_argument(
         "developer_key_id",

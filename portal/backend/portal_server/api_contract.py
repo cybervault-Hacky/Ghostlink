@@ -17,6 +17,7 @@ from typing import Any
 PUBLIC_ENDPOINTS: list[dict[str, Any]] = [
     {"path": "/api/v1/developer/auth/pair-begin", "method": "POST", "scopes": None},
     {"path": "/api/v1/developer/auth/pair-approve", "method": "POST", "scopes": None},
+    {"path": "/api/v1/developer/auth/pair-complete", "method": "POST", "scopes": None},
     {"path": "/api/v1/developer/auth/token", "method": "POST", "scopes": None},
     {"path": "/api/v1/developer/auth/refresh", "method": "POST", "scopes": None},
     {"path": "/api/v1/developer/devices", "method": "GET", "scopes": ["device:read"]},

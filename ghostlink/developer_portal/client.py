@@ -88,6 +88,24 @@ class PortalClient:
             },
         )
 
+    def pair_complete(
+        self,
+        pairing_code: str,
+        device_name: str = "Termux Android",
+        platform: str = "termux",
+        client_version: str = "0.17.0",
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/v1/developer/auth/pair-complete",
+            body={
+                "pairing_code": pairing_code,
+                "device_name": device_name,
+                "platform": platform,
+                "client_version": client_version,
+            },
+        )
+
     def token_exchange(self, credential_id: str, credential_secret: str) -> dict[str, Any]:
         return self._request(
             "POST",

@@ -205,3 +205,69 @@ class TestClientHttpErrors:
         finally:
             srv.shutdown()
             srv.server_close()
+
+
+class TestDeveloperOrchestrator:
+    def test_prerequisites_check(self) -> None:
+        from ghostlink.developer_portal.server import check_prerequisites
+
+        prereqs = check_prerequisites()
+        assert prereqs.python_ok is True
+        assert prereqs.backend_code_ok is True
+
+    def test_find_available_port(self) -> None:
+        from ghostlink.developer_portal.server import find_available_port
+
+        port = find_available_port(8788)
+        assert 8788 <= port <= 8888
+
+    def test_dev_servers_state_lifecycle(self, tmp_path: Path) -> None:
+        from ghostlink.developer_portal.server import (
+            clear_dev_servers_state,
+            load_dev_servers_state,
+            save_dev_servers_state,
+        )
+
+        assert load_dev_servers_state(tmp_path) is None
+        state = {
+            "backend_pid": 12345,
+            "backend_port": 8788,
+            "backend_url": "http://127.0.0.1:8788",
+            "frontend_pid": 12346,
+            "frontend_port": 5173,
+            "frontend_url": "http://127.0.0.1:5173",
+            "started_at": "2026-08-11T12:00:00Z",
+        }
+        save_dev_servers_state(tmp_path, state)
+        loaded = load_dev_servers_state(tmp_path)
+        assert loaded is not None
+        assert loaded["backend_pid"] == 12345
+        assert loaded["frontend_port"] == 5173
+
+        clear_dev_servers_state(tmp_path)
+        assert load_dev_servers_state(tmp_path) is None
+
+    def test_stop_developer_services_empty(self, tmp_path: Path) -> None:
+        from ghostlink.developer_portal.server import stop_developer_services
+
+        res = stop_developer_services(tmp_path)
+        assert res["stopped"] is True
+        assert res["stopped_pids"] == []
+
+    def test_get_developer_status(self, tmp_path: Path) -> None:
+        from ghostlink.developer_portal.server import get_developer_status
+
+        status = get_developer_status(tmp_path)
+        assert "backend_ready" in status
+        assert "frontend_ready" in status
+        assert "authenticated" in status
+        assert status["authenticated"] is False
+
+
+class TestPairingFlow:
+    def test_pair_complete_client_method(self) -> None:
+        import inspect
+
+        source = inspect.getsource(PortalClient.pair_complete)
+        assert "/api/v1/developer/auth/pair-complete" in source
+        assert "pairing_code" in source

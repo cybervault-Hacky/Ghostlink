@@ -62,8 +62,8 @@ export default function DeveloperApi() {
         <GlassCard strong style={{ padding: 24, marginTop: 24 }}>
           <Badge tone="warn">Pending device pairings</Badge>
           <p className="muted mt-8" style={{ fontSize: 14 }}>
-            {pairing.length} device(s) waiting for approval. Approve from a Termux
-            device via <span className="mono">ghostlink developer login</span>.
+            {pairing.length} device(s) waiting for connection. Connect from a Termux
+            installation via <span className="mono">ghostlink developer pair</span>.
           </p>
         </GlassCard>
       )}

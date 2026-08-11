@@ -2,6 +2,7 @@ import { NavLink, Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 
 const authed = [
+  { to: "/quickstart", label: "Quick start" },
   { to: "/dashboard", label: "Dashboard" },
   { to: "/developer-api", label: "Developer API" },
   { to: "/devices", label: "Devices" },

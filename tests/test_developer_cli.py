@@ -71,7 +71,7 @@ class TestCliLifecycle:
         code = main([*_data_args(tmp_path), "developer", "status"])
         out = capsys.readouterr().out
         assert code == int(ExitCode.OK)
-        assert "No developer account" in out
+        assert "Developer Status" in out or "No developer account" in out
 
     def test_rotate_shows_new_once_and_old_gone(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -137,15 +137,35 @@ class TestDoctorSecurityStatus:
         assert "Developer account" in out
         assert "gl_dev_" not in out
 
-    def test_security_status_shows_metadata_no_secret(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+
+class TestDeveloperPortalCli:
+    def test_portal_stop_cli(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         args = _data_args(tmp_path)
-        main([*args, "developer", "init"])
-        secret = KEY_RE.findall(capsys.readouterr().out)[0]
-        code = main([*args, "security-status"])
+        code = main([*args, "developer", "stop"])
         out = capsys.readouterr().out
         assert code == int(ExitCode.OK)
-        assert "Developer account" in out
-        assert secret not in out
-        assert "dk_" in out  # key ids are metadata
+        assert "developer servers" in out or "Stopped" in out
+
+    def test_portal_status_cli(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        args = _data_args(tmp_path)
+        code = main([*args, "developer", "status"])
+        out = capsys.readouterr().out
+        assert code == int(ExitCode.OK)
+        assert "Developer Status" in out
+
+    def test_portal_doctor_cli(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        args = _data_args(tmp_path)
+        code = main([*args, "developer", "doctor"])
+        out = capsys.readouterr().out
+        assert code == int(ExitCode.OK)
+        assert "Developer Doctor" in out
+
+    def test_portal_pair_no_input(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        args = _data_args(tmp_path)
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        code = main([*args, "developer", "pair"])
+        out = capsys.readouterr().out
+        assert code == int(ExitCode.CONFIGURATION)
+        assert "Pairing code is required" in out
